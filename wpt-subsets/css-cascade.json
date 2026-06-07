@@ -1,0 +1,11 @@
+{
+  "name": "css-cascade",
+  "owner": "cascade",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "css/cascade-specificity.html",
+    "css/inheritance-initial.html",
+    "css/selector-cascade.html"
+  ],
+  "baselinePassCount": 9
+}

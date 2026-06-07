@@ -109,10 +109,15 @@ Rules:
 ## First Target Subsets
 
 1. `dom-core`: create/query/mutate nodes, attributes, text, classList, dataset.
-2. `events`: EventTarget, capture/bubble, default prevention.
-3. `css-cascade`: selectors, specificity, inheritance, initial values.
+2. `css-cascade`: selectors, specificity, inheritance, initial values.
+3. `events`: EventTarget, capture/bubble, default prevention.
 4. `css-values`: lengths, percentages, `calc()`, colors, transforms.
 5. `layout-block-inline`: block flow, inline flow, margin collapse, line boxes.
 6. `layout-flex-grid`: flex and grid algorithm subsets.
 7. `paint-compositing`: backgrounds, borders, overflow, transforms, opacity.
 8. `html-parser`: tree construction, quirks, serialization recovery.
+
+Maintained today:
+
+- `wpt-subsets/dom-core.json`
+- `wpt-subsets/css-cascade.json`

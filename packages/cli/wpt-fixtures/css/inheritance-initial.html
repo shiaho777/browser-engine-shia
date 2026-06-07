@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS inheritance and initial values</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #parent { color: rgb(1, 2, 3); font-size: 20px; }
+  #child { width: 40px; height: 10px; }
+</style>
+<body>
+  <div id="parent"><span id="child">child</span></div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("child"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(1, 2, 3)", "color inherits from parent");
+}, "inherited color flows from parent to child");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("child"));
+  assert_equals(cs.getPropertyValue("font-size"), "20px", "font-size inherits from parent");
+}, "inherited font-size flows from parent to child");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("child"));
+  assert_equals(cs.getPropertyValue("background-color"), "rgba(0, 0, 0, 0)", "background-color initial is transparent");
+}, "non-inherited background-color falls back to its initial value");
+</script>
+</body>

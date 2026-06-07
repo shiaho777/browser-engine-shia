@@ -45,9 +45,9 @@ Deliverables:
 
 - Root command: `npm run wpt -- [wpt-root] [--limit N] [--json]`.
 - Curated official subsets under `wpt-subsets/` for parser, DOM, CSS cascade,
-  selectors, layout, paint, and event loop. The first maintained manifest is
-  `wpt-subsets/dom-core.json`; more manifests should land as compatibility
-  fronts become stable.
+  selectors, layout, paint, and event loop. The first maintained manifests are
+  `wpt-subsets/dom-core.json` and `wpt-subsets/css-cascade.json`; more manifests
+  should land as compatibility fronts become stable.
 - Scoreboard integration that records pass count per subset and blocks
   regressions.
 - Failure triage output by stage: parser / cascade / layout / paint / backend /
