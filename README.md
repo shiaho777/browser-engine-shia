@@ -33,6 +33,16 @@ stage that communicates only through frozen IR (design.md §4, §6):
 | `test-harness` | WPT subset runner, reftest, naive-vs-incremental diff |
 | `benchmark` | Live repository metrics + cited Chromium comparison report |
 
+## Strategic docs
+
+- `ROADMAP.md` — the phase plan for turning this into a universal,
+  browser-class open-source engine.
+- `ARCHITECTURE.md` — the constitution: IR boundaries, incrementality, geometry,
+  backend, runtime, and WPT contracts.
+- `CONTRIBUTING.md` — how to add CSS, DOM, layout, paint, backend, and WPT
+  features without breaking the mechanism.
+- `docs/WPT-WAR-ROOM.md` — official WPT workflow and failure classification.
+
 ## Development
 
 ```bash
@@ -41,6 +51,8 @@ npm run typecheck   # tsc --strict across the whole monorepo
 npm run lint        # ESLint baseline (constitution rules attach here)
 npm run ci          # typecheck + lint + tests, mirrors the CI entry point
 npm run benchmark   # recompute BENCHMARK.md from live repository metrics
+npm run wpt         # run vendored WPT-format fixtures
+npm run wpt -- /path/to/web-platform-tests/dom --limit 100
 
 node packages/cli/dist/index.js render input.html -o out.png
 ```

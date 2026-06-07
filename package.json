@@ -20,6 +20,7 @@
     "test:constitution": "tsc --build && node --test tools/constitution-fixtures/constitution-guards.test.js",
     "test": "tsc --build && node --test packages/*/dist/*.test.js",
     "benchmark": "npm run benchmark --workspace @browser-engine/benchmark",
+    "wpt": "tsc --build && node packages/cli/dist/index.js wpt",
     "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test"
   },
   "devDependencies": {

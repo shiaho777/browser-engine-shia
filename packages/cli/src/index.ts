@@ -8,6 +8,8 @@
  * Two invocation modes (dispatched in {@link runCli}):
  *   - `browser-engine render <input.html> -o <out.png>` — render a document to a
  *     PNG screenshot through the whole pipeline (Requirement 14.1).
+ *   - `browser-engine wpt [wpt-root] [--limit N] [--json]` — run WPT-format
+ *     tests against the engine.
  *   - `browser-engine` (no subcommand) — run the Phase 0 / constitution check
  *     gate and print its status (the historical default behaviour).
  *
@@ -54,6 +56,7 @@ export {
 
 import { formatStatus, runPhase0Checks } from "./checks.js";
 import { runRender } from "./render.js";
+import { runWptCommand } from "./wpt-run.js";
 
 // ---- §3.11 render command (full parse → … → paint → backend → PNG) --------
 export {
@@ -127,6 +130,12 @@ export {
   type WptSuiteReport,
   type ResourceResolver,
 } from "./wpt-suite.js";
+export {
+  parseWptArgs,
+  runWptCommand,
+  formatWptReport,
+  type WptCommandArgs,
+} from "./wpt-run.js";
 
 // ---- Deterministic event loop + async fetch (real event-loop semantics) ----
 export { runEventDriven, runEventDrivenReal, type EventDrivenRun } from "./event-loop.js";
@@ -189,6 +198,9 @@ export async function runCli(argv: readonly string[] = process.argv.slice(2)): P
   const [command, ...rest] = argv;
   if (command === "render") {
     return runRender(rest);
+  }
+  if (command === "wpt") {
+    return runWptCommand(rest);
   }
   return runChecks();
 }
