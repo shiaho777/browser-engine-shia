@@ -24,13 +24,26 @@ Emit machine-readable JSON:
 npm run wpt -- /path/to/web-platform-tests/html --limit 50 --json
 ```
 
+Run maintained subset manifests and enforce their stored pass-count baselines:
+
+```bash
+npm run wpt:subsets
+```
+
+Run the same manifests against an external checkout root:
+
+```bash
+npm run wpt:subsets -- --wpt-root /path/to/web-platform-tests
+```
+
 The command exits with:
 
 - `0` when every discovered subtest passes
 - `1` when any subtest fails/errors or no tests are discovered
 
-For exploration against a broad WPT checkout, a non-zero exit is expected until
-the subset becomes a maintained gate.
+For `npm run wpt`, a non-zero exit is expected when exploring unsupported WPT
+areas. For `npm run wpt:subsets`, non-zero means a maintained baseline regressed
+or the manifest could not be run.
 
 ## Workflow
 
@@ -60,24 +73,26 @@ Use these buckets in issues and PR descriptions:
 
 ## Maintained Subsets
 
-The next step is to add `wpt-subsets/*.json` manifests. Each manifest should
-contain:
+Maintained subsets live under `wpt-subsets/*.json`. Each manifest contains:
 
 ```json
 {
   "name": "dom-core",
   "owner": "guest",
-  "root": "dom",
+  "root": "packages/cli/wpt-fixtures",
   "files": [
-    "nodes/Document-createElement.html"
+    "dom/getelementbyid.html"
   ],
-  "baselinePassCount": 0
+  "baselinePassCount": 3
 }
 ```
 
 Rules:
 
 - A manifest is a CI contract.
+- `root` is resolved from the repository root by default.
+- `--wpt-root /path/to/web-platform-tests` replaces the repository root as the
+  base for `root`, so future official subsets can point at a real checkout.
 - Lowering `baselinePassCount` is a compatibility regression unless the test was
   removed upstream and the PR explains why.
 - Expanding a manifest is the preferred way to make compatibility progress

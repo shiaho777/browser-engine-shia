@@ -1,0 +1,11 @@
+{
+  "name": "dom-core",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "dom/getelementbyid.html",
+    "dom/queryselector.html",
+    "dom/attributes.window.js"
+  ],
+  "baselinePassCount": 8
+}

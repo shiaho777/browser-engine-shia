@@ -12,6 +12,7 @@ npm run build
 npm run ci
 npm run benchmark
 npm run wpt
+npm run wpt:subsets
 ```
 
 `npm run wpt` runs the vendored WPT-format fixtures by default. To run a local
@@ -137,6 +138,12 @@ The preferred compatibility proof is official WPT.
    - genuine engine bug
 4. Add or update a subset manifest when the files become a maintained gate.
 5. Store a baseline pass count and block regressions before claiming support.
+
+Maintained manifests live in `wpt-subsets/*.json` and are enforced by:
+
+```bash
+npm run wpt:subsets
+```
 
 ## Commit Discipline
 

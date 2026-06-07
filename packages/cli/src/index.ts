@@ -10,6 +10,8 @@
  *     PNG screenshot through the whole pipeline (Requirement 14.1).
  *   - `browser-engine wpt [wpt-root] [--limit N] [--json]` — run WPT-format
  *     tests against the engine.
+ *   - `browser-engine wpt-subsets [manifest-dir] [--wpt-root path] [--json]` —
+ *     run maintained WPT subset manifests and enforce their pass-count baselines.
  *   - `browser-engine` (no subcommand) — run the Phase 0 / constitution check
  *     gate and print its status (the historical default behaviour).
  *
@@ -57,6 +59,7 @@ export {
 import { formatStatus, runPhase0Checks } from "./checks.js";
 import { runRender } from "./render.js";
 import { runWptCommand } from "./wpt-run.js";
+import { runWptSubsetsCommand } from "./wpt-subsets-run.js";
 
 // ---- §3.11 render command (full parse → … → paint → backend → PNG) --------
 export {
@@ -125,6 +128,8 @@ export {
   runWptHtml,
   runWptScriptFile,
   runWptDirectory,
+  runWptFile,
+  runWptFiles,
   collectWptTests,
   extractScripts,
   type WptSuiteReport,
@@ -136,6 +141,22 @@ export {
   formatWptReport,
   type WptCommandArgs,
 } from "./wpt-run.js";
+export {
+  defaultWptSubsetDir,
+  loadWptSubsetManifest,
+  collectWptSubsetManifestFiles,
+  runWptSubsetManifest,
+  runWptSubsetManifestDir,
+  type WptSubsetManifest,
+  type WptSubsetManifestRun,
+  type WptSubsetManifestRunSummary,
+} from "./wpt-manifest.js";
+export {
+  parseWptSubsetArgs,
+  runWptSubsetsCommand,
+  formatWptSubsetSummary,
+  type WptSubsetCommandArgs,
+} from "./wpt-subsets-run.js";
 
 // ---- Deterministic event loop + async fetch (real event-loop semantics) ----
 export { runEventDriven, runEventDrivenReal, type EventDrivenRun } from "./event-loop.js";
@@ -201,6 +222,9 @@ export async function runCli(argv: readonly string[] = process.argv.slice(2)): P
   }
   if (command === "wpt") {
     return runWptCommand(rest);
+  }
+  if (command === "wpt-subsets") {
+    return runWptSubsetsCommand(rest);
   }
   return runChecks();
 }

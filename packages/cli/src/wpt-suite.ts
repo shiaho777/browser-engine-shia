@@ -284,6 +284,44 @@ function isRunnableWptTest(file: string): boolean {
   return false;
 }
 
+/** Run one WPT file under `root`, resolving support resources against the same checkout. */
+export async function runWptFile(root: string, file: string): Promise<readonly [string, WptReport]> {
+  const full = path.isAbsolute(file) ? file : path.join(root, file);
+  const resolve: ResourceResolver = (src) => {
+    const target = src.startsWith("/") ? path.join(root, src) : path.join(path.dirname(full), src);
+    try {
+      return readFileSync(target, "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const source = readFileSync(full, "utf8");
+  const report = /\.(window|any)\.js$/.test(full)
+    ? await runWptScriptFile(source, resolve)
+    : await runWptHtml(source, resolve);
+  return [path.relative(root, full), report] as const;
+}
+
+/** Run an explicit file list under `root`, scoring only those tests. */
+export async function runWptFiles(root: string, files: readonly string[]): Promise<WptSuiteReport> {
+  const byFile = new Map<string, WptReport>();
+  let subtests = 0;
+  let passed = 0;
+  let failed = 0;
+  let errored = 0;
+
+  for (const file of files) {
+    const [relative, report] = await runWptFile(root, file);
+    byFile.set(relative, report);
+    subtests += report.subtests.length;
+    passed += report.passed;
+    failed += report.subtests.filter((t) => t.status === "FAIL").length;
+    errored += report.subtests.filter((t) => t.status === "ERROR").length;
+  }
+
+  return { files: files.length, subtests, passed, failed, errored, byFile };
+}
+
 /**
  * Run every WPT test under `root` (a real web-platform-tests checkout), scoring
  * each against this engine. `<script src>` includes resolve against the
@@ -292,31 +330,5 @@ function isRunnableWptTest(file: string): boolean {
  */
 export async function runWptDirectory(root: string, limit = Infinity): Promise<WptSuiteReport> {
   const files = collectWptTests(root).slice(0, limit);
-  const byFile = new Map<string, WptReport>();
-  let subtests = 0;
-  let passed = 0;
-  let failed = 0;
-  let errored = 0;
-
-  for (const file of files) {
-    const resolve: ResourceResolver = (src) => {
-      const target = src.startsWith("/") ? path.join(root, src) : path.join(path.dirname(file), src);
-      try {
-        return readFileSync(target, "utf8");
-      } catch {
-        return undefined;
-      }
-    };
-    const source = readFileSync(file, "utf8");
-    const report = /\.(window|any)\.js$/.test(file)
-      ? await runWptScriptFile(source, resolve)
-      : await runWptHtml(source, resolve);
-    byFile.set(path.relative(root, file), report);
-    subtests += report.subtests.length;
-    passed += report.passed;
-    failed += report.subtests.filter((t) => t.status === "FAIL").length;
-    errored += report.subtests.filter((t) => t.status === "ERROR").length;
-  }
-
-  return { files: files.length, subtests, passed, failed, errored, byFile };
+  return runWptFiles(root, files);
 }

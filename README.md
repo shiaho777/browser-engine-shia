@@ -53,6 +53,7 @@ npm run ci          # typecheck + lint + tests, mirrors the CI entry point
 npm run benchmark   # recompute BENCHMARK.md from live repository metrics
 npm run wpt         # run vendored WPT-format fixtures
 npm run wpt -- /path/to/web-platform-tests/dom --limit 100
+npm run wpt:subsets # run maintained WPT subset manifests + baseline gates
 
 node packages/cli/dist/index.js render input.html -o out.png
 ```

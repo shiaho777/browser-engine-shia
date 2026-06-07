@@ -21,7 +21,8 @@
     "test": "tsc --build && node --test packages/*/dist/*.test.js",
     "benchmark": "npm run benchmark --workspace @browser-engine/benchmark",
     "wpt": "tsc --build && node packages/cli/dist/index.js wpt",
-    "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test"
+    "wpt:subsets": "tsc --build && node packages/cli/dist/index.js wpt-subsets",
+    "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test && npm run wpt:subsets"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
