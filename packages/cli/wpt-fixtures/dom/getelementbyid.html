@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Document.getElementById</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="test1" class="a b">hello</div>
+<p id="para" data-x="42">text</p>
+<script>
+test(function () {
+  var el = document.getElementById("test1");
+  assert_true(el !== null, "element is found");
+  assert_equals(el.tagName, "DIV", "tagName is uppercased");
+}, "getElementById finds an existing element");
+
+test(function () {
+  assert_equals(document.getElementById("para").getAttribute("data-x"), "42");
+}, "getElementById + getAttribute");
+
+test(function () {
+  assert_equals(document.getElementById("missing"), null, "absent id returns null");
+}, "getElementById returns null for an absent id");
+</script>
+</body>

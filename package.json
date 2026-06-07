@@ -1,0 +1,32 @@
+{
+  "name": "browser-engine-shia",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A from-scratch, read-it-front-to-back browser engine. North star: highest compat-per-LOC.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --force",
+    "clean": "tsc --build --clean",
+    "lint": "eslint .",
+    "test:eslint-rules": "node --test tools/eslint-rules/*.test.js",
+    "test:constitution": "tsc --build && node --test tools/constitution-fixtures/constitution-guards.test.js",
+    "test": "tsc --build && node --test packages/*/dist/*.test.js",
+    "benchmark": "npm run benchmark --workspace @browser-engine/benchmark",
+    "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "eslint": "^9.18.0",
+    "fast-check": "4.8.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0"
+  }
+}

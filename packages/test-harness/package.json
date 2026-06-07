@@ -1,0 +1,21 @@
+{
+  "name": "@browser-engine/test-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "test": "tsc --build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@browser-engine/kernel": "0.0.0"
+  },
+  "devDependencies": {
+    "fast-check": "4.8.0"
+  }
+}

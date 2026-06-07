@@ -1,0 +1,21 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/ir" },
+    { "path": "packages/kernel" },
+    { "path": "packages/generator" },
+    { "path": "packages/html-parser" },
+    { "path": "packages/css-parser" },
+    { "path": "packages/cascade" },
+    { "path": "packages/layout" },
+    { "path": "packages/paint" },
+    { "path": "packages/font" },
+    { "path": "packages/gpu" },
+    { "path": "packages/backend" },
+    { "path": "packages/guest" },
+    { "path": "packages/cli" },
+    { "path": "packages/scoreboard" },
+    { "path": "packages/test-harness" },
+    { "path": "packages/benchmark" }
+  ]
+}

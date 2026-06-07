@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../ir" },
+    { "path": "../kernel" },
+    { "path": "../generator" }
+  ],
+  "include": ["src/**/*.ts"]
+}

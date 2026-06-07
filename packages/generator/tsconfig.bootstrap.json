@@ -1,0 +1,19 @@
+{
+  // Cold-start config used ONLY to (re)generate the `src/generated/*` artifacts
+  // from scratch — e.g. after deleting them. The normal build (`tsconfig.json`)
+  // re-exports the committed generated files from `index.ts`, so it cannot
+  // compile until those files exist; this config breaks that chicken-and-egg by
+  // compiling just the generator logic (excluding `index.ts`, the generated
+  // dir, and tests). Run: `npx tsc -p tsconfig.bootstrap.json && node dist/bin/generate.js`.
+  // Normal use is `npm run generate` (the generated files are committed).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": false,
+    "incremental": false
+  },
+  "references": [{ "path": "../ir" }],
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/index.ts", "src/generated/**", "src/**/*.test.ts"]
+}

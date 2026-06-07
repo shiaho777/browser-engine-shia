@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Document.querySelector</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div class="box">boxed</div>
+<script>
+test(function () {
+  assert_equals(document.querySelector(".box").textContent, "boxed");
+}, "querySelector by class returns the element");
+
+promise_test(function () {
+  return Promise.resolve(document.querySelector(".box")).then(function (el) {
+    assert_true(el !== null, "resolved element is non-null");
+  });
+}, "querySelector works inside a promise_test");
+</script>
+</body>

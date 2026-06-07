@@ -1,0 +1,108 @@
+# CI — Phase 0 "constitution" entry point.
+#
+# This workflow is the single place where the architectural invariants from
+# design.md §2 become physically enforced rules. In Phase 0 the pipeline is
+# empty: every stage signals NotImplemented, yet all configured checks must
+# report passing (Requirement 12.5). When no commit is pushed, no run is
+# triggered and the reported status stays passing (Requirement 12.6).
+#
+# Later phases bolt the WPT subset, reftest suite and the naive-vs-incremental
+# differential harness onto the `checks` job (tasks 1.7–1.10, 1.11).
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  # Manual trigger so the green baseline can be reproduced on demand.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: typecheck + lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Constitution rule: strict TypeScript compiles across the whole monorepo.
+      - name: Typecheck (tsc --strict, project references)
+        run: npm run typecheck
+
+      # Constitution rule surface: lint baseline (silent-stub and cross-stage
+      # import rules attach here in tasks 1.3 / 1.4).
+      - name: Lint
+        run: npm run lint
+
+      # Constitution rule self-tests: prove the silent-stub guard (task 1.3)
+      # rejects placeholder returns and accepts NotImplemented throws.
+      - name: Test ESLint constitution rules
+        run: npm run test:eslint-rules
+
+      # "Deliberate violation" proof (task 1.11): lint the parked violation
+      # fixtures on purpose and assert each of the four constitution classes
+      # turns CI RED (cross-stage import, silent stub, manual stale-marking,
+      # WPT pass-count regression) while the compliant twins stay green
+      # (Requirements 12.1, 12.2, 12.3, 12.7, 10.2). Builds first because the
+      # harness imports the built scoreboard + kernel from dist/.
+      - name: Test constitution guards (deliberate-violation fixtures)
+        run: npm run test:constitution
+
+      # Every workspace package's unit + property tests, including the §7.2
+      # empty-pipeline wiring and the Phase 0 check gate (task 1.10).
+      - name: Test (all workspace packages)
+        run: npm run test
+
+  # Phase 0 empty-pipeline gates (task 1.10). On every commit this runs the
+  # three constitution check types against the empty pipeline:
+  #   - WPT subset runner       (Requirement 10.1)
+  #   - reftest suite           (Requirement 10.4)
+  #   - differential harness, naive vs incremental (Requirement 9.2)
+  # plus the empty-pipeline invariant: every stage must signal NotImplemented,
+  # never a placeholder (Requirement 12.5). With the empty WPT/reftest baselines
+  # and the deterministic NotImplemented signal, all checks report passing — the
+  # EXPECTED Phase 0 green baseline. When no commit is pushed, no run is
+  # triggered and the reported status stays passing (Requirement 12.6).
+  scoreboard:
+    name: scoreboard (Phase 0 empty pipeline)
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Runs the WPT subset, reftest suite, and naive-vs-naive differential
+      # harness, plus the empty-pipeline NotImplemented invariant. Exits non-zero
+      # if any configured check fails; green in Phase 0 (Requirements 12.4, 12.5).
+      - name: Phase 0 empty-pipeline check gate
+        run: node packages/cli/dist/index.js

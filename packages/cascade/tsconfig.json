@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../ir" },
+    { "path": "../generator" },
+    { "path": "../kernel" },
+    { "path": "../html-parser" },
+    { "path": "../css-parser" }
+  ],
+  "include": ["src/**/*.ts"]
+}

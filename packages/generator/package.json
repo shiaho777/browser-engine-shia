@@ -1,0 +1,19 @@
+{
+  "name": "@browser-engine/generator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "generate": "tsc --build && node dist/bin/generate.js",
+    "test": "tsc --build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@browser-engine/ir": "0.0.0"
+  }
+}
