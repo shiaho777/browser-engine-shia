@@ -27,7 +27,12 @@ import type { CssPropertyDef } from "@browser-engine/generator";
 import { getBoundingClientRect as boundingRect } from "@browser-engine/layout";
 import { ruleMatches, parseEasing, sampleEasing, interpolateValue } from "@browser-engine/cascade";
 import type { Easing } from "@browser-engine/cascade";
-import { coerceGuestString } from "@browser-engine/guest";
+import {
+  coerceGuestString,
+  CustomEvent as CustomEventImpl,
+  Event as EventImpl,
+  MouseEvent as MouseEventImpl,
+} from "@browser-engine/guest";
 
 import { parseHtml } from "@browser-engine/html-parser";
 import { FineSession } from "./fine.js";
@@ -2462,29 +2467,14 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       mutations += 1;
       return makeElementCached(id);
     },
-    createEvent(_type: unknown): {
-      type: string;
-      bubbles: boolean;
-      cancelable: boolean;
-      data: unknown;
-      initEvent: (type: unknown, bubbles?: unknown, cancelable?: unknown) => void;
-      preventDefault: () => void;
-      stopPropagation: () => void;
-    } {
-      const ev = {
-        type: "",
-        bubbles: false,
-        cancelable: false,
-        data: undefined as unknown,
-        initEvent(type: unknown, bubbles?: unknown, cancelable?: unknown) {
-          this.type = coerceGuestString(type);
-          this.bubbles = Boolean(bubbles);
-          this.cancelable = Boolean(cancelable);
-        },
-        preventDefault() {},
-        stopPropagation() {},
-      };
-      return ev;
+    createEvent(eventType: unknown): object {
+      // Real event instances so initEvent/initCustomEvent and dispatch share
+      // one implementation with guest-constructed events. Legacy createEvent
+      // yields an UNINITIALIZED event: empty type until initEvent runs.
+      const kind = coerceGuestString(eventType);
+      if (kind === "CustomEvent") return new CustomEventImpl("");
+      if (kind === "MouseEvent" || kind === "MouseEvents") return new MouseEventImpl("");
+      return new EventImpl("");
     },
     createEventObject(): { data: unknown; type: string } {
       return { data: undefined, type: "" };

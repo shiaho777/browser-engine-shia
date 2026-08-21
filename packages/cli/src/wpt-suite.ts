@@ -25,7 +25,18 @@ import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
-import { AbortController, AbortSignal, CustomEvent, Event, EventTarget } from "@browser-engine/guest";
+import {
+  AbortController,
+  AbortSignal,
+  CustomEvent,
+  Event,
+  EventTarget,
+  FocusEvent,
+  InputEvent,
+  KeyboardEvent,
+  MouseEvent,
+  UIEvent,
+} from "@browser-engine/guest";
 import type { WptReport, WptSubtest } from "./wpt.js";
 
 /** Aggregate result of running a directory of WPT tests. */
@@ -86,16 +97,66 @@ function buildAsyncHarness(): AsyncHarness {
     message: error instanceof Error ? error.message : String(error),
   });
 
+  /** The per-test tool object (`t`) the real harness binds as `this`. */
+  interface TestTools {
+    step(f: unknown, ...args: unknown[]): unknown;
+    step_func(f: unknown): (...args: unknown[]) => unknown;
+    step_func_done(f: unknown): (...args: unknown[]) => void;
+    unreached_func(msg?: unknown): () => void;
+    done(): void;
+    add_cleanup(f: unknown): void;
+  }
+
+  const makeTools = (finish: (status: WptSubtest["status"], message: string | null) => void): TestTools => {
+    const tools: TestTools = {
+      step(f, ...args) {
+        try {
+          return typeof f === "function" ? (f as (...a: unknown[]) => unknown)(...args) : undefined;
+        } catch (e) {
+          const c = classify(e);
+          finish(c.status, c.message);
+          return undefined;
+        }
+      },
+      step_func(f) {
+        return (...args: unknown[]) => tools.step(f, ...args);
+      },
+      step_func_done(f) {
+        return (...args: unknown[]) => {
+          tools.step(f, ...args);
+          finish("PASS", null);
+        };
+      },
+      unreached_func(msg) {
+        return () => finish("FAIL", `unreached: ${String(msg)}`);
+      },
+      done() {
+        finish("PASS", null);
+      },
+      add_cleanup() {},
+    };
+    return tools;
+  };
+
   const test = (func: unknown, name: unknown): void => {
     if (typeof func !== "function") return;
     const n = typeof name === "string" ? name : "(unnamed test)";
+    // A synchronous test still gets the tool object as `this` (tests call
+    // `this.step_func(...)`), and a failing step marks the whole test failed.
+    const outcome: { status?: WptSubtest["status"]; message?: string | null } = {};
+    const tools = makeTools((status, message) => {
+      outcome.status ??= status;
+      outcome.message ??= message;
+    });
     try {
-      (func as () => void)();
-      push(n, "PASS", null);
+      (func as (this: TestTools) => void).call(tools);
     } catch (e) {
       const c = classify(e);
       push(n, c.status, c.message);
+      return;
     }
+    if (outcome.status !== undefined) push(n, outcome.status, outcome.message ?? null);
+    else push(n, "PASS", null);
   };
 
   const asyncTest = (func: unknown, name: unknown): object => {
@@ -109,43 +170,32 @@ function buildAsyncHarness(): AsyncHarness {
       push(n, status, message);
       resolveDone();
     };
-    const step = (f: unknown, ...args: unknown[]): unknown => {
-      try {
-        return typeof f === "function" ? (f as (...a: unknown[]) => unknown)(...args) : undefined;
-      } catch (e) {
-        const c = classify(e);
-        finish(c.status, c.message);
-        return undefined;
-      }
-    };
-    const t = {
-      step,
-      step_func: (f: unknown) => (...a: unknown[]) => step(f, ...a),
-      step_func_done: (f: unknown) => (...a: unknown[]) => {
-        step(f, ...a);
-        finish("PASS", null);
-      },
-      unreached_func: (msg: unknown) => () => finish("FAIL", `unreached: ${String(msg)}`),
-      done: () => finish("PASS", null),
-      add_cleanup: () => undefined,
-    };
-    if (typeof func === "function") step(func, t);
+    const t = makeTools(finish);
+    if (typeof func === "function") t.step(func, t);
     return t;
   };
 
   const promiseTest = (func: unknown, name: unknown): void => {
     const n = typeof name === "string" ? name : "(unnamed promise_test)";
     if (typeof func !== "function") return;
-    const p = Promise.resolve()
-      .then(() => (func as (t: object) => unknown)({ add_cleanup: () => undefined }))
+    let settled = false;
+    let resolveDone!: () => void;
+    pending.push(new Promise<void>((r) => (resolveDone = r)));
+    const finish = (status: WptSubtest["status"], message: string | null): void => {
+      if (settled) return;
+      settled = true;
+      push(n, status, message);
+      resolveDone();
+    };
+    void Promise.resolve()
+      .then(() => (func as (t: TestTools) => unknown)(makeTools(finish)))
       .then(
-        () => push(n, "PASS", null),
+        () => finish("PASS", null),
         (e: unknown) => {
           const c = classify(e);
-          push(n, c.status, c.message);
+          finish(c.status, c.message);
         },
       );
-    pending.push(p);
   };
 
   const globals: Record<string, unknown> = {
@@ -240,6 +290,11 @@ export async function runWptHtml(
   sandbox["EventTarget"] = EventTarget;
   sandbox["Event"] = Event;
   sandbox["CustomEvent"] = CustomEvent;
+  sandbox["UIEvent"] = UIEvent;
+  sandbox["MouseEvent"] = MouseEvent;
+  sandbox["KeyboardEvent"] = KeyboardEvent;
+  sandbox["FocusEvent"] = FocusEvent;
+  sandbox["InputEvent"] = InputEvent;
   sandbox["AbortController"] = AbortController;
   sandbox["AbortSignal"] = AbortSignal;
   const windowTarget = new EventTarget();

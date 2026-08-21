@@ -17,18 +17,24 @@
 // ---------------------------------------------------------------------------
 
 export class EventImpl {
-  readonly #type: string;
-  readonly #bubbles: boolean;
-  readonly #cancelable: boolean;
+  #type: string;
+  #bubbles: boolean;
+  #cancelable: boolean;
   #defaultPrevented = false;
   #propagationStopped = false;
   #immediatePropagationStopped = false;
   #target: unknown = null;
   #currentTarget: unknown = null;
   #eventPhase = 0; // 0=none, 1=capturing, 2=at_target, 3=bubbling
+  readonly #timeStamp = performance.now();
 
-  constructor(type: string, init?: EventInit) {
-    this.#type = type;
+  constructor(type?: string, init?: EventInit) {
+    // WebIDL: the `type` argument is mandatory and converted via DOMString,
+    // so a non-string (or its exotic toString) coerces here.
+    if (type === undefined) {
+      throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present.");
+    }
+    this.#type = String(type);
     this.#bubbles = init?.bubbles ?? false;
     this.#cancelable = init?.cancelable ?? false;
   }
@@ -38,8 +44,27 @@ export class EventImpl {
   get cancelable(): boolean { return this.#cancelable; }
   get defaultPrevented(): boolean { return this.#defaultPrevented; }
   get target(): unknown { return this.#target; }
+  /** Legacy alias of {@link target}. */
+  get srcElement(): unknown { return this.#target; }
   get currentTarget(): unknown { return this.#currentTarget; }
   get eventPhase(): number { return this.#eventPhase; }
+  get isTrusted(): boolean { return false; }
+  get timeStamp(): number { return this.#timeStamp; }
+
+  /** Legacy `returnValue`: mirrors (and can clear) the canceled flag. */
+  get returnValue(): boolean { return !this.#defaultPrevented; }
+  set returnValue(value: unknown) {
+    if (!value) this.preventDefault();
+  }
+
+  /**
+   * Legacy `cancelBubble`: reads the stop-propagation flag; setting `true`
+   * stops propagation (setting `false` never revives a stopped event).
+   */
+  get cancelBubble(): boolean { return this.#propagationStopped || this.#immediatePropagationStopped; }
+  set cancelBubble(value: unknown) {
+    if (value) this.stopPropagation();
+  }
 
   /** @internal */
   _setTarget(t: unknown): void { this.#target = t; }
@@ -70,6 +95,27 @@ export class EventImpl {
     this.#propagationStopped = true;
     this.#immediatePropagationStopped = true;
   }
+
+  /**
+   * The legacy initializer (DOM §2.2 initEvent): re-type the event and reset
+   * every dispatch flag. A no-op while the event is being dispatched.
+   */
+  initEvent(type?: unknown, bubbles?: unknown, cancelable?: unknown): void {
+    if (this.#eventPhase !== 0) return;
+    this.#type = String(type);
+    this.#bubbles = Boolean(bubbles);
+    this.#cancelable = Boolean(cancelable);
+    this.#defaultPrevented = false;
+    this.#propagationStopped = false;
+    this.#immediatePropagationStopped = false;
+    this.#eventPhase = 0;
+  }
+
+  /** Phase constants shared with EventTarget (DOM §3.1). */
+  static readonly NONE = 0;
+  static readonly CAPTURING_PHASE = 1;
+  static readonly AT_TARGET = 2;
+  static readonly BUBBLING_PHASE = 3;
 }
 
 export interface EventInit {
@@ -85,7 +131,7 @@ export class UIEventImpl extends EventImpl {
   readonly #detail: number;
   readonly #view: unknown;
 
-  constructor(type: string, init?: UIEventInit & EventInit) {
+  constructor(type?: string, init?: UIEventInit & EventInit) {
     super(type, init);
     this.#detail = init?.detail ?? 0;
     this.#view = init?.view ?? null;
@@ -117,7 +163,7 @@ export class MouseEventImpl extends UIEventImpl {
   readonly #metaKey: boolean;
   readonly #relatedTarget: unknown;
 
-  constructor(type: string, init?: MouseEventInit & UIEventInit & EventInit) {
+  constructor(type?: string, init?: MouseEventInit & UIEventInit & EventInit) {
     super(type, init);
     this.#screenX = init?.screenX ?? 0;
     this.#screenY = init?.screenY ?? 0;
@@ -186,7 +232,7 @@ export class KeyboardEventImpl extends UIEventImpl {
   readonly #repeat: boolean;
   readonly #isComposing: boolean;
 
-  constructor(type: string, init?: KeyboardEventInit & UIEventInit & EventInit) {
+  constructor(type?: string, init?: KeyboardEventInit & UIEventInit & EventInit) {
     super(type, init);
     this.#key = init?.key ?? "";
     this.#code = init?.code ?? "";
@@ -237,14 +283,23 @@ export interface KeyboardEventInit extends UIEventInit {
 // ---------------------------------------------------------------------------
 
 export class CustomEventImpl extends EventImpl {
-  readonly #detail: unknown;
+  #detail: unknown = null;
 
-  constructor(type: string, init?: CustomEventInit & EventInit) {
+  constructor(type?: string, init?: CustomEventInit & EventInit) {
     super(type, init);
     this.#detail = init?.detail ?? null;
   }
 
   get detail(): unknown { return this.#detail; }
+
+  /** The legacy initializer; `type` is mandatory (WebIDL required argument). */
+  initCustomEvent(type?: unknown, bubbles?: unknown, cancelable?: unknown, detail?: unknown): void {
+    if (type === undefined) {
+      throw new TypeError("Failed to execute 'initCustomEvent': 1 argument required, but only 0 present.");
+    }
+    this.initEvent(type, bubbles, cancelable);
+    this.#detail = detail ?? null;
+  }
 }
 
 export interface CustomEventInit extends EventInit {
@@ -258,7 +313,7 @@ export interface CustomEventInit extends EventInit {
 export class FocusEventImpl extends UIEventImpl {
   readonly #relatedTarget: unknown;
 
-  constructor(type: string, init?: FocusEventInit & UIEventInit & EventInit) {
+  constructor(type?: string, init?: FocusEventInit & UIEventInit & EventInit) {
     super(type, init);
     this.#relatedTarget = init?.relatedTarget ?? null;
   }
@@ -279,7 +334,7 @@ export class InputEventImpl extends UIEventImpl {
   readonly #inputType: string;
   readonly #isComposing: boolean;
 
-  constructor(type: string, init?: InputEventInit & UIEventInit & EventInit) {
+  constructor(type?: string, init?: InputEventInit & UIEventInit & EventInit) {
     super(type, init);
     this.#data = init?.data ?? null;
     this.#inputType = init?.inputType ?? "";
@@ -316,6 +371,11 @@ type EventListenerCallback = (event: EventImpl) => void;
  * by delegating to an EventTargetImpl instance.
  */
 export class EventTargetImpl {
+  static readonly NONE = 0;
+  static readonly CAPTURING_PHASE = 1;
+  static readonly AT_TARGET = 2;
+  static readonly BUBBLING_PHASE = 3;
+
   readonly #listeners = new Map<string, EventListenerEntry[]>();
 
   addEventListener(type: string, listener: unknown, options?: AddEventListenerOptions | boolean): void {
