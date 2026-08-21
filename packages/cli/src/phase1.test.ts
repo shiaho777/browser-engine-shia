@@ -65,9 +65,12 @@ void test("divHelloBaseline renders the documented Phase 1 vertical-slice docume
   assert.equal(DIV_HELLO_SOURCE, "<div>hello</div>");
   const baseline = divHelloBaseline();
   assert.equal(baseline.name, "div-hello");
-  // Rendered and reference are both real, equal-length PNGs.
+  // Rendered and reference are real PNGs of the same document; they match
+  // within the configured threshold (cross-platform glyph anti-aliasing
+  // variance — see DIV_HELLO_MAX_DIFF_PIXELS).
   assert.ok(baseline.rendered.length > 0);
-  assert.deepEqual([...baseline.rendered], [...baseline.reference]);
+  const result = compareReftest(baseline.rendered, baseline.reference, baseline.options);
+  assert.equal(result.pass, true, `diffPixels=${result.diffPixels}/${result.totalPixels}`);
 });
 
 // ---------------------------------------------------------------------------
