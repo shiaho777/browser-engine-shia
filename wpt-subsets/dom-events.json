@@ -1,0 +1,12 @@
+{
+  "name": "dom-events",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "dom/events/AddEventListenerOptions-once.any.js",
+    "dom/events/Event-type.html",
+    "dom/events/EventTarget-add-remove-listener.any.js",
+    "dom/events/EventTarget-addEventListener.any.js"
+  ],
+  "baselinePassCount": 9
+}

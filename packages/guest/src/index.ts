@@ -107,6 +107,13 @@ export {
 } from "./network.js";
 export { CookieJar, type StoredCookie } from "./cookie-jar.js";
 
+// ---- aborting (DOM §3.2): AbortController / AbortSignal --------------------
+export {
+  AbortControllerImpl as AbortController,
+  AbortSignalImpl as AbortSignal,
+  DOMExceptionImpl as DOMException,
+} from "./abort.js";
+
 // ---- guest fetch over the reused stack (Requirements 16.5, 16.7) ----------
 export { createGuestFetch, type GuestFetch, type GuestResponse } from "./fetch.js";
 

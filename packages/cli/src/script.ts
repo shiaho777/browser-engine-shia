@@ -1912,46 +1912,89 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return path;
   }
 
+  // The dispatch machinery drives BOTH internal plain-object events
+  // ({@link makeEvent}) and real guest `EventImpl` instances whose target /
+  // currentTarget / eventPhase are readonly accessors — mutate and read
+  // dispatch state through the internal hooks when they exist.
+  type DispatchableEvent = GuestEvent & {
+    _setTarget?: (v: object | null) => void;
+    _setCurrentTarget?: (v: object | null) => void;
+    _setPhase?: (p: number) => void;
+    _propagationStopped?: () => boolean;
+    _immediatePropagationStopped?: () => boolean;
+  };
+
+  function setEventTarget(evt: GuestEvent, value: object | null): void {
+    const impl = evt as DispatchableEvent;
+    if (typeof impl._setTarget === "function") impl._setTarget(value);
+    else evt.target = value;
+  }
+
+  function setEventCurrentTarget(evt: GuestEvent, value: object | null): void {
+    const impl = evt as DispatchableEvent;
+    if (typeof impl._setCurrentTarget === "function") impl._setCurrentTarget(value);
+    else evt.currentTarget = value;
+  }
+
+  function setEventPhase(evt: GuestEvent, phase: number): void {
+    const impl = evt as DispatchableEvent;
+    if (typeof impl._setPhase === "function") impl._setPhase(phase);
+    else evt.eventPhase = phase;
+  }
+
+  function propagationStopped(evt: GuestEvent): boolean {
+    const impl = evt as DispatchableEvent;
+    if (typeof impl._propagationStopped === "function") return impl._propagationStopped();
+    return evt.__stop === true;
+  }
+
+  function immediatePropagationStopped(evt: GuestEvent): boolean {
+    const impl = evt as DispatchableEvent;
+    if (typeof impl._immediatePropagationStopped === "function") return impl._immediatePropagationStopped();
+    return evt.__stopImmediate === true;
+  }
+
   /** Invoke the listeners registered on `node` for this phase; honour stop flags. */
   function invokeAt(node: NodeId, evt: GuestEvent, capturePhase: boolean): void {
     const list = listeners.get(node);
     if (list === undefined) return;
-    evt.currentTarget = makeElementCached(node);
+    const cached = makeElementCached(node);
+    setEventCurrentTarget(evt, cached);
     for (const l of [...list]) {
       if (l.type !== evt.type) continue;
-      const isTargetNode = idOf.get(evt.currentTarget) === node && evt.eventPhase === 2;
+      const isTargetNode = idOf.get(cached) === node && evt.eventPhase === 2;
       if (!isTargetNode && l.capture !== capturePhase) continue;
       l.fn.call(evt.currentTarget, evt);
-      if (evt.__stopImmediate) return;
+      if (immediatePropagationStopped(evt)) return;
     }
   }
 
   /** Dispatch `event` to `targetId` through capture/target/bubble phases. */
   function dispatch(targetId: NodeId, event: GuestEvent): boolean {
     const path = ancestorPath(targetId); // [target, ...ancestors, root]
-    event.target = makeElementCached(targetId);
+    setEventTarget(event, makeElementCached(targetId));
     // Capture phase: root → just above target.
-    event.eventPhase = 1;
+    setEventPhase(event, 1);
     for (let i = path.length - 1; i >= 1; i -= 1) {
       invokeAt(path[i] as NodeId, event, true);
-      if (event.__stop) {
-        event.eventPhase = 0;
+      if (propagationStopped(event)) {
+        setEventPhase(event, 0);
         return !event.defaultPrevented;
       }
     }
     // Target phase.
-    event.eventPhase = 2;
+    setEventPhase(event, 2);
     invokeAt(targetId, event, false);
     // Bubble phase: just above target → root.
-    if (event.bubbles && !event.__stop) {
-      event.eventPhase = 3;
+    if (event.bubbles && !propagationStopped(event)) {
+      setEventPhase(event, 3);
       for (let i = 1; i < path.length; i += 1) {
         invokeAt(path[i] as NodeId, event, false);
-        if (event.__stop) break;
+        if (propagationStopped(event)) break;
       }
     }
-    event.eventPhase = 0;
-    event.currentTarget = null;
+    setEventPhase(event, 0);
+    setEventCurrentTarget(event, null);
     return !event.defaultPrevented;
   }
 
