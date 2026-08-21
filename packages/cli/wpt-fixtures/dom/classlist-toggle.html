@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOMTokenList classList toggle force</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="el" class="alpha beta"></div>
+<script>
+test(function () {
+  var el = document.getElementById("el");
+  assert_equals(el.classList.toggle("gamma", true), true, "force=true returns true");
+  assert_true(el.classList.contains("gamma"), "force=true adds token");
+  assert_equals(el.classList.toggle("gamma", true), true, "force=true keeps existing token");
+  assert_equals(el.className, "alpha beta gamma", "className reflects added token");
+}, "classList.toggle(token, true) forces the token present");
+
+test(function () {
+  var el = document.getElementById("el");
+  assert_equals(el.classList.toggle("beta", false), false, "force=false returns false");
+  assert_false(el.classList.contains("beta"), "force=false removes token");
+  assert_equals(el.classList.toggle("missing", false), false, "force=false keeps missing token absent");
+  assert_false(el.classList.contains("missing"));
+}, "classList.toggle(token, false) forces the token absent");
+
+test(function () {
+  var el = document.getElementById("el");
+  assert_equals(el.classList.item(0), "alpha");
+  assert_equals(el.classList.item(1), "gamma");
+  assert_equals(el.classList.item(2), null);
+  assert_equals(el.classList.length, 2);
+}, "classList.item and length reflect the current className");
+</script>
+</body>

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS @media query conditional rules</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target { width: 100px; }
+  @media screen {
+    #target { width: 200px; }
+  }
+  @media print {
+    #target { width: 999px; }
+  }
+  @media screen and (min-width: 500px) {
+    #wide { width: 300px; }
+  }
+  @media screen and (max-width: 400px) {
+    #narrow { width: 50px; }
+  }
+</style>
+<body>
+<div id="target"></div>
+<div id="wide"></div>
+<div id="narrow"></div>
+<script>
+test(function () {
+  assert_equals(document.getElementById("target").getBoundingClientRect().width, 200, "@media screen overrides base");
+}, "@media screen rules apply on screen");
+
+test(function () {
+  assert_equals(document.getElementById("wide").getBoundingClientRect().width, 300, "@media min-width: 500px matches 800px viewport");
+}, "@media with min-width feature matches");
+
+test(function () {
+  // max-width: 400px does not match an 800px viewport → the rule is excluded
+  // → #narrow has no width declared → auto width (fills container)
+  var rect = document.getElementById("narrow").getBoundingClientRect();
+  assert_true(rect.width > 300, "@media max-width: 400px does not match 800px viewport, so the rule is excluded");
+}, "@media with non-matching condition excludes rules");
+</script>
+</body>

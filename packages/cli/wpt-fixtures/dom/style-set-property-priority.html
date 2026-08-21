@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration setProperty priority argument</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3) !important;
+    width: 11px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "";
+  el.style.setProperty("color", "rgb(9, 8, 7)", "IMPORTANT");
+
+  assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "property value omits priority text");
+  assert_equals(el.style.getPropertyPriority("color"), "important", "priority is normalized to important");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important", "style attribute serializes the priority");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "inline important beats author important");
+}, "setProperty records an important priority and exposes it through CSSOM");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7) !important; width: 42px";
+  el.style.setProperty("color", "rgb(3, 4, 5)", "urgent");
+  el.style.setProperty("height", "50px", "urgent");
+
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important; width: 42px", "invalid priority does not mutate the declaration block");
+  assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "existing value survives invalid priority");
+  assert_equals(el.style.getPropertyPriority("color"), "important", "existing priority survives invalid priority");
+  assert_equals(el.style.getPropertyValue("height"), "", "missing property is not created with invalid priority");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "computed style still reflects the original important inline declaration");
+}, "invalid setProperty priority values are rejected without mutation");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7) !important";
+  el.style.setProperty("color", "rgb(3, 4, 5)");
+
+  assert_equals(el.style.getPropertyValue("color"), "rgb(3, 4, 5)", "new value is stored");
+  assert_equals(el.style.getPropertyPriority("color"), "", "omitted priority clears the previous important priority");
+  assert_equals(el.getAttribute("style"), "color: rgb(3, 4, 5)", "style attribute no longer serializes !important");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "normal inline style loses to author important");
+}, "setProperty with no priority stores a normal inline declaration");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7) !important; width: 42px";
+  el.style.setProperty("color", "", "urgent");
+
+  assert_equals(el.style.getPropertyValue("color"), "", "empty value removes the declaration even with invalid priority text");
+  assert_equals(el.style.getPropertyPriority("color"), "", "removed declaration has no priority");
+  assert_equals(el.getAttribute("style"), "width: 42px", "style attribute drops the removed important declaration");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed color falls back after removal");
+}, "empty setProperty value removes before priority validation");
+</script>
+</body>

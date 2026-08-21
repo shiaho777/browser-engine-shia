@@ -37,7 +37,9 @@
  */
 import type { FragmentId, NodeId, DomNode } from "@browser-engine/ir";
 import { NotImplemented } from "@browser-engine/ir";
-import type { Db, QueryDef } from "@browser-engine/kernel";
+import type { Db, InputSlot, QueryDef } from "@browser-engine/kernel";
+import type { LiveDom } from "./live-dom.js";
+import type { WrapperCache } from "./wrapper-cache.js";
 
 /**
  * The module-private boundary key. The engine-internal handle is stored *behind*
@@ -67,6 +69,12 @@ export interface NodeInternal {
    * of geometry (design.md §6, §8.4). Optional because layout may not have run.
    */
   readonly fragmentIndex?: FragmentId;
+  /** The mutable DOM layer backing this wrapper (may be absent for legacy handles). */
+  readonly liveDom?: LiveDom;
+  /** The kernel input slot used to push DOM mutations back to the kernel. */
+  readonly nodeInput?: InputSlot<NodeId, DomNode>;
+  /** The wrapper cache ensuring reference identity per NodeId. */
+  readonly wrapperCache?: WrapperCache;
 }
 
 /**

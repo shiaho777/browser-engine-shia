@@ -18,7 +18,7 @@
  * margin box lives in `BoxGeometry.marginBox` (FragmentTree).
  */
 import type { Branded } from "./brand.js";
-import type { Color, DisplayValue, Edges, Px } from "./values.js";
+import type { Color, Edges, Px } from "./values.js";
 
 /** The cascade product for one element. Nominally branded.
  *
@@ -29,7 +29,10 @@ import type { Color, DisplayValue, Edges, Px } from "./values.js";
  */
 export type ComputedStyle = Branded<
   {
-    readonly display: DisplayValue;
+    // `display` is a `string` (not the narrower DisplayValue union) so legacy /
+    // vendor display keywords (`-webkit-box`, `inline-flex`, …) that the parser
+    // accepts can be carried here and normalized by the layout engine.
+    readonly display: string;
     readonly color: Color;
     readonly fontSize: Px;
     readonly margin: Edges<Px>;

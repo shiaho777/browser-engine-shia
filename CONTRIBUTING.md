@@ -10,6 +10,7 @@ goal with real mechanisms, tests, and measurable compatibility.
 npm install
 npm run build
 npm run ci
+npm run evidence
 npm run benchmark
 npm run wpt
 npm run wpt:subsets
@@ -22,6 +23,47 @@ web-platform-tests checkout:
 npm run wpt -- /path/to/wpt --limit 100
 ```
 
+New contributors should start with `docs/GOOD-FIRST-ISSUES.md`. Changes that
+create or reshape stage seams, generated surfaces, backend adapters, browser
+services, or public evidence schema should use `docs/RFC-PROCESS.md`.
+
+## Evidence Ladder
+
+Every contribution should climb the smallest evidence ladder that proves the
+change without pretending to prove more than it does.
+
+| Change type | Minimum evidence | Stronger public evidence |
+| --- | --- | --- |
+| Parser / CSS parser | focused unit or property test | WPT-format fixture or maintained WPT subset |
+| Cascade / selector / computed value | cascade test plus WPT-format fixture | `npm run wpt:subsets -- --trace` with the relevant manifest |
+| Layout algorithm | layout unit test plus naive-vs-incremental differential | reftest or WPT subset with stage trace |
+| Paint / backend / image / text | DisplayList/backend test plus PNG/reftest evidence | resource-loaded page or real-site smoke evidence |
+| DOM / JS / event loop / fetch | WPT-format guest/runtime test | script-driven DOM mutation or real-site smoke evidence |
+| Incremental behavior | recompute-count or verified-hit assertion | benchmark edit-sequence evidence in `BENCHMARK.md` |
+| Public workflow / metrics | deterministic report test | regenerated public evidence artifacts with stable hashes |
+
+The current public benchmark evidence includes:
+
+- maintained WPT subset trace
+- deterministic incremental edit-sequence trace
+- real V8 script-driven DOM mutation trace
+- URL/resource-loaded page evidence
+- real-site smoke evidence
+
+Regenerate public evidence artifacts with:
+
+```bash
+npm run evidence
+```
+
+CI uploads those artifacts as `public-evidence` for PR review. On the default
+branch, the same bundle is published as the public dashboard.
+
+When your change affects hand-written LOC, test LOC, feature counts, WPT
+outcomes, trace counts, or smoke evidence, commit the resulting `BENCHMARK.md`,
+`benchmark-evidence.json`, and `evidence-dashboard.html` changes and mention
+the reason in the PR.
+
 ## Development Rules
 
 1. Do not add silent stubs. Throw `NotImplemented` for missing capabilities.
@@ -31,6 +73,26 @@ npm run wpt -- /path/to/wpt --limit 100
 4. Do not add manual invalidation APIs. The kernel owns dependency tracking.
 5. Do not fake compatibility. Add WPT, reftest, differential, or unit evidence.
 6. Prefer data rows and shared mechanisms over per-feature hand-written code.
+
+## Labels And Issue Routing
+
+`.github/labels.json` is the versioned label taxonomy. Use labels to make every
+issue reviewable by phase, stage, subset, and evidence type:
+
+- `phase:*` says which roadmap front owns the work.
+- `stage:*` says which engine boundary owns the behavior.
+- `subset:*` says which maintained WPT gate is involved.
+- `wpt`, `evidence`, `rfc`, and `good first issue` describe the proof path.
+
+Do not mark a task `good first issue` unless it has a concrete command and a
+real compatibility, evidence, or workflow outcome.
+
+## RFCs
+
+Use `docs/RFC-PROCESS.md` and `docs/rfcs/0000-template.md` when a change affects
+a new seam, generated surface, backend adapter, public evidence schema, or
+network/security policy. An accepted RFC is not evidence by itself; follow-up
+implementation PRs still need tests, WPT, trace, benchmark, or dashboard proof.
 
 ## Before Sending A PR
 
@@ -42,7 +104,8 @@ npm run lint
 npm run test:eslint-rules
 npm run test:constitution
 npm run test
-npm run benchmark
+npm run wpt:subsets -- --trace
+npm run evidence
 ```
 
 For compatibility changes, also run the relevant WPT subset or fixture:
@@ -50,7 +113,17 @@ For compatibility changes, also run the relevant WPT subset or fixture:
 ```bash
 npm run wpt
 npm run wpt -- /path/to/wpt/dom --limit 50
+npm run wpt -- /path/to/wpt/dom --limit 50 --trace
 ```
+
+For render/resource changes, also run a traced render:
+
+```bash
+node packages/cli/dist/index.js render input.html -o out.png --trace
+```
+
+For URL/resource-loader changes, prefer a deterministic mock-backed test over a
+network-dependent benchmark. Public reports must be reproducible.
 
 ## Adding A CSS Property
 
@@ -143,7 +216,27 @@ Maintained manifests live in `wpt-subsets/*.json` and are enforced by:
 
 ```bash
 npm run wpt:subsets
+npm run wpt:subsets -- --trace
 ```
+
+`--trace` is not decoration. It records the actual fine-grained query graph
+used by the WPT runner, including recomputes, cache hits, verified hits, and
+dependency reads. Use it when claiming an incremental or stage-boundary win.
+
+## Adding Public Benchmark Evidence
+
+Use `packages/benchmark/src/evidence.ts` when a capability should become part
+of the public report. `BENCHMARK.md`, `benchmark-evidence.json`, and
+`evidence-dashboard.html` are generated from the same snapshot; keep evidence
+deterministic:
+
+1. Count stable facts only: pass counts, resource counts, query counts, cache
+   hits, dependency reads, PNG dimensions, command counts.
+2. Do not embed wall-clock timings in public benchmark artifacts.
+3. Use deterministic fixtures or maintained smoke scenarios, not live network
+   resources.
+4. Add report tests in `packages/benchmark/src/benchmark.test.ts`.
+5. Run `npm run evidence` twice if determinism is in doubt.
 
 ## Commit Discipline
 

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS :not and state pseudo-classes</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  input:not([type="text"]) { width: 31px; }
+  div > :not(input) { height: 17px; }
+  input:checked { color: rgb(1, 2, 3); }
+  input:disabled { background-color: rgb(4, 5, 6); }
+  input:required { height: 23px; }
+  a:any-link { color: rgb(7, 8, 9); }
+</style>
+<body>
+<div id="form">
+  <input id="text" type="text" required>
+  <input id="checkbox" type="checkbox" checked disabled>
+  <a id="link" href="/target">link</a>
+  <span id="plain">plain</span>
+</div>
+<script>
+test(function () {
+  assert_equals(getComputedStyle(document.getElementById("checkbox")).getPropertyValue("width"), "31px");
+  assert_equals(getComputedStyle(document.getElementById("text")).getPropertyValue("width"), "auto");
+  assert_equals(getComputedStyle(document.getElementById("plain")).getPropertyValue("height"), "17px");
+}, ":not() excludes matching inner compounds");
+
+test(function () {
+  var checkbox = getComputedStyle(document.getElementById("checkbox"));
+  var text = getComputedStyle(document.getElementById("text"));
+  assert_equals(checkbox.getPropertyValue("color"), "rgb(1, 2, 3)", ":checked");
+  assert_equals(checkbox.getPropertyValue("background-color"), "rgb(4, 5, 6)", ":disabled");
+  assert_equals(text.getPropertyValue("height"), "23px", ":required");
+}, "DOM-decidable form state pseudo-classes drive computed style");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("link")).getPropertyValue("color"),
+    "rgb(7, 8, 9)"
+  );
+  assert_equals(
+    getComputedStyle(document.getElementById("plain")).getPropertyValue("color"),
+    "rgb(0, 0, 0)"
+  );
+}, ":any-link matches anchors carrying href");
+</script>
+</body>

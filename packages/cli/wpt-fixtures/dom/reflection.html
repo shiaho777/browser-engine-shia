@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM classList dataset and style reflection</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="el" class="a b"></div>
+<script>
+test(function () {
+  var el = document.getElementById("el");
+  assert_true(el.classList.contains("a"));
+  assert_equals(el.classList.length, 2);
+  el.classList.add("c");
+  assert_true(el.classList.contains("c"));
+  el.classList.remove("a");
+  assert_false(el.classList.contains("a"));
+  assert_equals(el.classList.toggle("d"), true);
+  assert_equals(el.classList.toggle("d"), false);
+}, "classList supports contains, length, add, remove, and toggle");
+
+test(function () {
+  var el = document.getElementById("el");
+  el.dataset.fooBar = "7";
+  assert_equals(el.getAttribute("data-foo-bar"), "7", "camelCase maps to a data-* attribute");
+  assert_equals(el.dataset.fooBar, "7", "dataset reads back from the attribute map");
+}, "dataset reflects data-* attributes");
+
+test(function () {
+  var el = document.getElementById("el");
+  el.style.setProperty("color", "red");
+  assert_equals(el.style.getPropertyValue("color"), "red");
+  assert_true(el.getAttribute("style").indexOf("color: red") >= 0, "style attribute stores the declaration");
+  el.style.removeProperty("color");
+  assert_equals(el.style.getPropertyValue("color"), "", "removed property reads as empty");
+}, "style declaration methods reflect the style attribute");
+</script>
+</body>

@@ -17,19 +17,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { DomNode, DomTree, Fragment, FragmentTree, NodeId } from "@browser-engine/ir";
+import type { DomNode, DomTree, Fragment, FragmentTree, NodeId, Px } from "@browser-engine/ir";
 import { parseHtml } from "@browser-engine/html-parser";
 import { parseCss } from "@browser-engine/css-parser";
 import { cascade } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
+import { uaStylesheet } from "./stylesheets.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
-/** Build the real FragmentTree for a document (parse → cascade → layout). */
+/**
+ * Build the real FragmentTree for a document (parse → cascade → layout). The
+ * UA stylesheet is included (as the real pipeline does) so `<div>` and friends
+ * default to `display: block` — without it, an un-styled div computes as
+ * `inline` and participates in the inline formatting context instead of block
+ * flow.
+ */
 function layoutDoc(html: string, css: string): { dom: DomTree; tree: FragmentTree } {
   const dom = parseHtml(enc(html));
-  const sheets = [parseCss(enc(css))];
+  const sheets = [uaStylesheet(), parseCss(enc(css))];
   const tree = layout(dom, (node: NodeId) => cascade(dom, sheets, node));
   return { dom, tree };
 }
@@ -37,7 +44,7 @@ function layoutDoc(html: string, css: string): { dom: DomTree; tree: FragmentTre
 /** Build the real DisplayList for a document (parse → cascade → layout → paint). */
 function paintDoc(html: string, css: string): string[] {
   const dom = parseHtml(enc(html));
-  const sheets = [parseCss(enc(css))];
+  const sheets = [uaStylesheet(), parseCss(enc(css))];
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   return paint(layout(dom, styleOf), styleOf).commands.map((c) => c.op);
 }
@@ -49,6 +56,17 @@ function elementsByTag(dom: DomTree, tag: string): DomNode[] {
     if (node.kind === "element" && node.tag === tag) out.push(node);
   }
   return out;
+}
+
+/** The direct child fragments of the element with the given class. */
+function fragmentsOfChildren(tree: FragmentTree, dom: DomTree, className: string): Fragment[] {
+  for (const node of dom.nodes.values()) {
+    if (node.kind === "element" && node.attrs?.get("class") === className) {
+      const parent = fragmentForNode(tree, node.id);
+      return parent.children.map((id) => tree.fragments.get(id)!);
+    }
+  }
+  return [];
 }
 
 /** The fragment laid out for a given DOM node. */
@@ -138,12 +156,14 @@ void test("Req 5.4: a real position:absolute document places the box at its inse
 });
 
 void test("Req 5.1-5.4: a real relative document offsets the box but keeps its in-flow space", () => {
+  // Block-level (div) siblings exercise the relative-in-block-flow path; span
+  // siblings would participate in the inline formatting context instead.
   const { dom, tree } = layoutDoc(
-    '<div class="c"><span class="rel"></span><span class="flow"></span></div>',
+    '<div class="c"><div class="rel"></div><div class="flow"></div></div>',
     ".c { width: 300px } .rel { position: relative; top: 5px; left: 8px; height: 40px } .flow { height: 30px }",
   );
-  const rel = fragmentForNode(tree, elementsByTag(dom, "span")[0]!.id);
-  const flow = fragmentForNode(tree, elementsByTag(dom, "span")[1]!.id);
+  const rel = fragmentForNode(tree, elementsByTag(dom, "div")[1]!.id);
+  const flow = fragmentForNode(tree, elementsByTag(dom, "div")[2]!.id);
   assert.equal(Number(rel.box.borderBox.x), 8, "relative box is visually offset by its insets");
   assert.equal(Number(rel.box.borderBox.y), 5);
   assert.equal(Number(flow.box.borderBox.y), 40, "relative offset preserves the in-flow space (40px)");
@@ -630,6 +650,24 @@ void test("text paints at the aligned position end-to-end (text-align flows to t
   assert.ok(Number(text.at.x) > 0, "right-aligned text paints at a positive x offset, not the origin");
 });
 
+void test("text-align:justify stretches inter-word gaps so a wrapped line fills the width", () => {
+  // A narrow container forces a wrap; justify stretches the first line's word
+  // gaps so its last glyph reaches close to the containing width.
+  const run = textRunUnder(
+    '<div class="t">alpha beta gamma</div>',
+    ".t { width: 60px; font-size: 10px; text-align: justify }",
+  );
+  assert.ok(run.text !== undefined, "the run carries a shaped text glyph stream");
+  const glyphs = run.text.glyphs;
+  // Glyphs share a y per line; group by y and inspect the first line's extent.
+  const firstLineY = Number(glyphs[0]!.y);
+  const firstLine = glyphs.filter((g) => Number(g.y) === firstLineY);
+  const lastGlyphX = Number(firstLine[firstLine.length - 1]!.x);
+  // A justified line's trailing glyph should reach near 60px (the container),
+  // whereas an unjustified line would be well short of it.
+  assert.ok(lastGlyphX > 45, `justified first line reaches near the edge (got ${lastGlyphX}), not packed left`);
+});
+
 // ===========================================================================
 // Inline metrics: letter-spacing + word-spacing from a real document. Both add
 // advance to the inline run (per glyph / per inter-word space). Default 0 ⇒ the
@@ -750,4 +788,153 @@ void test("nowrap + overflow:hidden clips the overflowing single-line run end-to
     ".t { width: 60px; height: 16px; white-space: nowrap; overflow: hidden }",
   );
   assert.ok(ops.includes("push-clip"), "overflow:hidden clips the nowrap overflow");
+});
+
+// ===========================================================================
+// Percentage geometry: width/height % and border-radius %
+// ===========================================================================
+
+void test("width: 50% resolves against the containing block content width", () => {
+  // 200px container, child width:50% ⇒ 100px border-box.
+  const real = layoutDoc('<div class="c"><div class="h"></div></div>', ".c { width: 200px; height: 100px } .h { width: 50%; height: 20px }");
+  let hFrag: Fragment | null = null;
+  for (const n of real.dom.nodes.values()) {
+    if (n.kind === "element" && n.attrs?.get("class") === "h") hFrag = fragmentForNode(real.tree, n.id);
+  }
+  assert.ok(hFrag !== null, "the .h element exists");
+  assert.equal(Number(hFrag.box.borderBox.width), 100, "width:50% of 200px ⇒ 100px");
+});
+
+void test("height: 50% resolves against a definite containing block height", () => {
+  const real = layoutDoc('<div class="c"><div class="h"></div></div>', ".c { width: 200px; height: 100px } .h { width: 20px; height: 50% }");
+  let hFrag: Fragment | null = null;
+  for (const n of real.dom.nodes.values()) {
+    if (n.kind === "element" && n.attrs?.get("class") === "h") hFrag = fragmentForNode(real.tree, n.id);
+  }
+  assert.ok(hFrag !== null);
+  assert.equal(Number(hFrag.box.borderBox.height), 50, "height:50% of 100px ⇒ 50px");
+});
+
+void test("border-radius: 50% paints a circular radius on a square box", () => {
+  // A 40×40 box with border-radius:50% ⇒ the paint rect/border carries a 20px
+  // radius (50% of min(40,40) = 20), so avatars/icons become circles.
+  const dom = parseHtml(enc('<div class="a"></div>'));
+  const sheets = [parseCss(enc(".a { width: 40px; height: 40px; background-color: red; border-radius: 50% }"))];
+  const styleOf = (node: NodeId) => cascade(dom, sheets, node);
+  const list = paint(layout(dom, styleOf), styleOf);
+  const rect = list.commands.find((c) => c.op === "rect");
+  assert.ok(rect !== undefined && rect.op === "rect");
+  assert.equal(Number((rect as { radius?: Px }).radius ?? 0), 20, "border-radius:50% on 40px box ⇒ radius 20");
+});
+
+// ===========================================================================
+// Inline formatting context: consecutive inline-level children flow into line
+// boxes left-to-right instead of each taking a vertical row.
+// ===========================================================================
+
+void test("inline run: text + span + text flow on ONE horizontal line", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="c">alpha<span class="s">beta</span>gamma</div>',
+    ".c { width: 400px; font-size: 16px } .s { color: red }",
+  );
+  // The run's members: text(alpha), span(beta), text(gamma) — all on line 0.
+  // The span is an atomic box whose OWN text child lives beneath it, so the
+  // container has 3 children: alpha text, the span box, gamma text.
+  const fragments = fragmentsOfChildren(tree, dom, "c");
+  assert.equal(fragments.length, 3, "text, span box, text");
+  const withText = fragments.filter((f) => f.text !== undefined);
+  assert.equal(withText.length, 2, "two of the three children are text-bearing");
+  // The span box sits BETWEEN the two texts on the same line.
+  const xs = fragments.map((f) => Number(f.box.borderBox.x));
+  assert.ok(xs[0]! < xs[1]! && xs[1]! < xs[2]!, "members flow left to right (x increases)");
+  const ys = fragments.map((f) => Number(f.box.borderBox.y));
+  assert.equal(new Set(ys).size, 1, "all members share one line (same y)");
+});
+
+void test("inline run wraps to a second line when it overflows the width", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="c">aaaa bbbb cccc dddd eeee</div>',
+    ".c { width: 80px; font-size: 16px }",
+  );
+  const frag = fragmentForNode(tree, elementsByTag(dom, "div")[0]!.id);
+  // The text wraps to several lines; the block's height reflects that.
+  assert.ok(Number(frag.box.borderBox.height) > 16, "text wraps to multiple lines inside the block");
+});
+
+void test("inline-block participates as an atomic unit on the same line", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="c">go<span class="i"></span></div>',
+    ".c { width: 300px; font-size: 16px } .i { display: inline-block; width: 30px; height: 10px; background-color: red }",
+  );
+  const span = elementsByTag(dom, "span")[0]!;
+  const spanFrag = fragmentForNode(tree, span.id);
+  // The span (inline-block) sits to the RIGHT of the text, on the same line.
+  const textNode = [...dom.nodes.values()].find((n) => n.kind === "text")!;
+  const text = fragmentForNode(tree, textNode.id);
+  assert.ok(Number(text.box.borderBox.x) < Number(spanFrag.box.borderBox.x), "text left of inline-block");
+  assert.equal(Number(text.box.borderBox.y), Number(spanFrag.box.borderBox.y), "same line (same y)");
+});
+
+void test("a block-level sibling breaks the inline run", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="c">alpha<div class="mid"></div>omega</div>',
+    ".c { width: 300px; font-size: 16px } .mid { height: 30px }",
+  );
+  const texts = [...dom.nodes.values()]
+    .filter((n) => n.kind === "text" && (n.text ?? "").trim().length > 0)
+    .map((n) => fragmentForNode(tree, n.id));
+  assert.equal(texts.length, 2, "two text fragments");
+  // alpha is above omega (the block div sits between them in flow).
+  assert.ok(
+    Number(texts[0]!.box.borderBox.y) < Number(texts[1]!.box.borderBox.y),
+    "the block sibling separates the two inline runs vertically",
+  );
+});
+
+void test("inline run honors text-align:center at the LINE level", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="c">aa<span class="s">bb</span></div>',
+    ".c { width: 300px; font-size: 16px; text-align: center }",
+  );
+  // The whole line is centered: the first member (alpha text) starts at a
+  // positive x, and the span (second member) follows to its right.
+  const cFrags = fragmentsOfChildren(tree, dom, "c");
+  const alphaX = Number(cFrags[0]!.box.borderBox.x);
+  assert.ok(alphaX > 0, "the run starts at a positive x (centered)");
+  assert.ok(
+    Number(cFrags[1]!.box.borderBox.x) > alphaX,
+    "the span follows the first member on the same line",
+  );
+});
+
+// ===========================================================================
+// text-overflow: ellipsis — long single-line text is truncated with an ellipsis.
+// ===========================================================================
+
+void test("text-overflow:ellipsis truncates an overflowing single line with …", () => {
+  // "abcdefghijklmno" at font-size 16 → each glyph ~8px ⇒ 15×8 = 120px in a
+  // 60px container with white-space:nowrap + overflow:hidden + ellipsis.
+  const { dom, tree } = layoutDoc(
+    '<div class="t">abcdefghijklmno</div>',
+    ".t { width: 60px; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }",
+  );
+  const textNode = [...dom.nodes.values()].find((n) => n.kind === "text")!;
+  const frag = fragmentForNode(tree, textNode.id);
+  assert.ok(frag.text !== undefined, "text run present");
+  const glyphs = frag.text.glyphs;
+  // The last glyph is the ellipsis U+2026.
+  assert.equal(glyphs[glyphs.length - 1]!.glyphId, 0x2026, "trailing glyph is the ellipsis");
+  // The run was truncated: fewer glyphs than the original 15 characters.
+  assert.ok(glyphs.length < 15, "the overflowing text was truncated");
+});
+
+void test("text-overflow:ellipsis is NOT applied when the text fits", () => {
+  const { dom, tree } = layoutDoc(
+    '<div class="t">hi</div>',
+    ".t { width: 200px; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }",
+  );
+  const textNode = [...dom.nodes.values()].find((n) => n.kind === "text")!;
+  const frag = fragmentForNode(tree, textNode.id);
+  const glyphs = frag.text!.glyphs;
+  assert.equal(glyphs[glyphs.length - 1]!.glyphId, "i".charCodeAt(0), "no ellipsis when the text fits");
 });

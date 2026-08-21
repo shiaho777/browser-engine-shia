@@ -11,7 +11,7 @@
  *     is parsed as a CSS sheet (the tokenizer emits `<style>` content as a
  *     single RAWTEXT characters node, so this is just its `text`).
  *   - **`<link rel="stylesheet" href="data:…">`** — an inline `data:` URL whose
- *     `text/css` payload is decoded and parsed. External `http(s)` links need
+ *     explicit `text/css` payload is decoded and parsed. External `http(s)` links need
  *     the resource loader (M2's networking sub-step) and are collected via the
  *     injected `fetchSheet` hook when provided; with no hook an external link is
  *     SKIPPED (a stylesheet that fails to load is a real, graceful web
@@ -26,6 +26,9 @@
  */
 import type { DomNode, DomTree, NodeId, StyleSheet } from "@browser-engine/ir";
 import { parseCss } from "@browser-engine/css-parser";
+import type { MediaEnvironment } from "@browser-engine/css-parser";
+
+import { isActiveStylesheetLink } from "./link-rel.js";
 
 const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -38,8 +41,24 @@ const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
  * normal cascade (it is the LOWEST-precedence sheet, prepended first).
  */
 const UA_CSS =
-  "head { display: none } style { display: none } script { display: none }" +
-  " title { display: none } meta { display: none } link { display: none } base { display: none }";
+  "html, body, div, p, h1, h2, h3, h4, h5, h6, section, article, header, footer, main, nav, " +
+  "ul, ol, li, form, blockquote, pre, hr, figure, figcaption, address, " +
+  "table, thead, tbody, tfoot, tr, td, th, fieldset, legend { display: block }" +
+  " head, style, script, title, meta, link, base, noscript, template { display: none }" +
+  " body { margin: 8px }" +
+  " h1 { font-size: 2em; margin: 0.67em 0 }" +
+  " h2 { font-size: 1.5em; margin: 0.75em 0 }" +
+  " h3 { font-size: 1.17em; margin: 0.83em 0 }" +
+  " h4 { font-size: 1em; margin: 1.12em 0 }" +
+  " h5 { font-size: 0.83em; margin: 1.5em 0 }" +
+  " h6 { font-size: 0.67em; margin: 1.67em 0 }" +
+  " p { margin: 1em 0 }" +
+  " ul, ol { margin: 1em 0; padding-left: 40px }" +
+  " a { color: #0000ee }" +
+  " strong, b { font-weight: 700 }" +
+  " em, i { font-style: italic }" +
+  " .lqip { opacity: 0 !important; pointer-events: none !important }" +
+  " img { object-fit: cover }";
 
 let uaSheetCache: StyleSheet | undefined;
 
@@ -55,8 +74,12 @@ export function uaStylesheet(): StyleSheet {
  * This is the single point the live/static pipelines feed the cascade, so UA
  * defaults apply everywhere uniformly.
  */
-export function documentStylesheets(dom: DomTree, loadExternal?: SheetLoader): StyleSheet[] {
-  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal)];
+export function documentStylesheets(
+  dom: DomTree,
+  loadExternal?: SheetLoader,
+  media?: MediaEnvironment,
+): StyleSheet[] {
+  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media)];
 }
 
 /** Optional hook to load an external stylesheet by URL (M2 networking). */
@@ -67,7 +90,11 @@ export type SheetLoader = (href: string) => Uint8Array | undefined;
  * inline `data:` `<link>`s are always collected; an external `<link>` is loaded
  * via `loadExternal` when provided, else skipped.
  */
-export function collectStylesheets(dom: DomTree, loadExternal?: SheetLoader): StyleSheet[] {
+export function collectStylesheets(
+  dom: DomTree,
+  loadExternal?: SheetLoader,
+  media?: MediaEnvironment,
+): StyleSheet[] {
   const sheets: StyleSheet[] = [];
   const root = dom.nodes.get(dom.root);
   if (root === undefined) {
@@ -80,11 +107,11 @@ export function collectStylesheets(dom: DomTree, loadExternal?: SheetLoader): St
       return;
     }
     if (node.kind === "element" && node.tag === "style") {
-      sheets.push(parseCss(encode(styleText(dom, node))));
-    } else if (node.kind === "element" && node.tag === "link" && isStylesheetLink(node)) {
+      sheets.push(media !== undefined ? parseCss(encode(styleText(dom, node)), media) : parseCss(encode(styleText(dom, node))));
+    } else if (isActiveStylesheetLink(node)) {
       const bytes = loadLinkedSheet(node, loadExternal);
       if (bytes !== undefined) {
-        sheets.push(parseCss(bytes));
+        sheets.push(media !== undefined ? parseCss(bytes, media) : parseCss(bytes));
       }
     }
     for (const child of node.children) {
@@ -108,15 +135,6 @@ function styleText(dom: DomTree, style: DomNode): string {
   return text;
 }
 
-/** Whether a `<link>` element is a stylesheet link (`rel` contains `stylesheet`). */
-function isStylesheetLink(link: DomNode): boolean {
-  const rel = link.attrs?.get("rel") ?? "";
-  return rel
-    .toLowerCase()
-    .split(/\s+/)
-    .includes("stylesheet");
-}
-
 /**
  * Resolve a `<link rel=stylesheet>`'s bytes: an inline `data:` URL is decoded
  * here; any other URL is loaded via the injected `loadExternal` hook (M2
@@ -124,33 +142,65 @@ function isStylesheetLink(link: DomNode): boolean {
  */
 function loadLinkedSheet(link: DomNode, loadExternal?: SheetLoader): Uint8Array | undefined {
   const href = link.attrs?.get("href");
-  if (href === undefined || href.length === 0) {
+  if (href === undefined) {
     return undefined;
   }
-  const data = decodeDataUrl(href);
-  if (data !== undefined) {
-    return data;
+  if (isDataUrl(href)) {
+    return decodeCssDataUrl(href);
   }
   return loadExternal?.(href);
 }
 
 /**
- * Decode a `data:` URL's payload to bytes, or `undefined` when `href` is not a
- * `data:` URL. Supports `data:[<mediatype>][;base64],<data>` (the `;base64`
- * flag selects base64 vs percent-decoded text).
+ * Decode a CSS `data:` URL's payload to bytes, or `undefined` when the media
+ * type is not explicitly CSS-compatible. Supports
+ * `data:text/css[;charset=...][;base64],<data>` (the `;base64` flag selects
+ * base64 vs percent-decoded text).
  */
-function decodeDataUrl(href: string): Uint8Array | undefined {
-  if (!href.startsWith("data:")) {
-    return undefined;
-  }
+function decodeCssDataUrl(href: string): Uint8Array | undefined {
   const comma = href.indexOf(",");
   if (comma === -1) {
     return undefined;
   }
   const meta = href.slice(5, comma);
+  if (!isCssDataMediaType(meta)) {
+    return undefined;
+  }
   const payload = href.slice(comma + 1);
-  if (meta.toLowerCase().includes(";base64")) {
+  if (hasBase64Flag(meta)) {
     return Uint8Array.from(Buffer.from(payload, "base64"));
   }
-  return encode(decodeURIComponent(payload));
+  try {
+    return encode(decodeURIComponent(payload));
+  } catch {
+    return undefined;
+  }
+}
+
+/** URL schemes are ASCII case-insensitive. */
+function isDataUrl(href: string): boolean {
+  return href.slice(0, 5).toLowerCase() === "data:";
+}
+
+/** Only explicit text/css data URLs with supported metadata participate as linked CSS. */
+function isCssDataMediaType(meta: string): boolean {
+  const [type = ""] = meta.split(";", 1);
+  if (type.trim().toLowerCase() !== "text/css") {
+    return false;
+  }
+  return meta
+    .split(";")
+    .slice(1)
+    .every((part) => {
+      const normalized = part.trim().toLowerCase();
+      return normalized === "" || normalized === "base64" || normalized === "charset=utf-8";
+    });
+}
+
+/** Whether the data URL metadata carries a standalone ;base64 flag. */
+function hasBase64Flag(meta: string): boolean {
+  return meta
+    .split(";")
+    .slice(1)
+    .some((part) => part.trim().toLowerCase() === "base64");
 }

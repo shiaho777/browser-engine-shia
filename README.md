@@ -41,25 +41,57 @@ stage that communicates only through frozen IR (design.md §4, §6):
   backend, runtime, and WPT contracts.
 - `CONTRIBUTING.md` — how to add CSS, DOM, layout, paint, backend, and WPT
   features without breaking the mechanism.
+- `docs/EVIDENCE.md` — public evidence artifacts, commands, CI gate, and review
+  rules.
+- `docs/GOOD-FIRST-ISSUES.md` — small real compatibility and evidence tasks
+  for new contributors.
+- `docs/RFC-PROCESS.md` — decision process for new seams, generated surfaces,
+  backends, and public evidence workflows.
 - `docs/WPT-WAR-ROOM.md` — official WPT workflow and failure classification.
 
 ## Development
 
 ```bash
 npm install
+npm run app          # Electron shell: engine content + hit-test link clicks
+npm run app:web      # lightweight web chrome fallback
 npm run typecheck   # tsc --strict across the whole monorepo
 npm run lint        # ESLint baseline (constitution rules attach here)
 npm run ci          # typecheck + lint + tests, mirrors the CI entry point
+npm run test:open-source
+                    # labels/templates/RFC/good-first metadata guard
 npm run benchmark   # recompute BENCHMARK.md from live repository metrics
+npm run evidence    # traced maintained WPT subsets + public evidence artifacts
 npm run wpt         # run vendored WPT-format fixtures
 npm run wpt -- /path/to/web-platform-tests/dom --limit 100
+npm run wpt -- /path/to/web-platform-tests/dom --limit 100 --trace
 npm run wpt:subsets # run maintained WPT subset manifests + baseline gates
+npm run wpt:subsets -- --trace
 
-node packages/cli/dist/index.js render input.html -o out.png
+node packages/cli/dist/index.js render input.html -o out.png --trace
 ```
 
 Phase 0 is the "constitution": architectural invariants are enforced by the
 type system and CI (`.github/workflows/ci.yml`), not by convention.
+
+## Public evidence
+
+`BENCHMARK.md`, `benchmark-evidence.json`, and `evidence-dashboard.html` are
+generated, not hand-written. They currently report live repository metrics plus
+maintained WPT trace, incremental edit-sequence trace, script-driven DOM
+mutation trace, resource-loaded page evidence, and real-site smoke evidence.
+CI uploads the same files as a `public-evidence` artifact, and default-branch
+pushes publish the dashboard to GitHub Pages.
+
+```bash
+npm run evidence
+shasum -a 256 BENCHMARK.md benchmark-evidence.json evidence-dashboard.html
+```
+
+Contributors should update all generated evidence artifacts when their change
+affects LOC, feature counts, WPT outcomes, trace counts, resource evidence, or
+smoke evidence. See `docs/EVIDENCE.md` and `CONTRIBUTING.md` for the evidence
+ladder.
 
 ## Current status
 

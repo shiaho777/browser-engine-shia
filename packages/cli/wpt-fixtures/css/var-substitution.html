@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS custom properties and var() substitution</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  :root {
+    --brand: red;
+    --base-width: 100px;
+  }
+  #var-color {
+    color: var(--brand);
+  }
+  #var-calc {
+    width: calc(var(--base-width) + 50px);
+  }
+  #var-fallback {
+    color: var(--missing, blue);
+  }
+  #var-inherit {
+    color: var(--brand);
+  }
+  #var-nested {
+    --derived: calc(var(--base-width) * 2);
+    width: var(--derived);
+  }
+</style>
+<body>
+<div id="var-color"></div>
+<div id="var-calc"></div>
+<div id="var-fallback"></div>
+<div id="var-inherit"></div>
+<div id="var-nested"></div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("var-color"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(255, 0, 0)", "var() substitutes custom property");
+}, "var() substitutes a color");
+
+test(function () {
+  assert_equals(document.getElementById("var-calc").getBoundingClientRect().width, 150, "calc(var(--base-width) + 50px) = 150px");
+}, "var() inside calc()");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("var-fallback"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 255)", "var() fallback when undefined");
+}, "var() uses fallback when custom property is undefined");
+
+test(function () {
+  assert_equals(document.getElementById("var-nested").getBoundingClientRect().width, 200, "var() nested custom property");
+}, "var() resolves nested custom property references");
+</script>
+</body>

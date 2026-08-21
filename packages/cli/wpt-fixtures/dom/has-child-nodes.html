@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Node hasChildNodes</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="host"><span id="filled">V</span><span id="empty"></span></section>
+<aside id="old"></aside>
+<script>
+test(function () {
+  var host = document.getElementById("host");
+  var filled = document.getElementById("filled");
+  var empty = document.getElementById("empty");
+  var text = document.createTextNode("leaf");
+  var comment = document.createComment("note");
+
+  assert_true(document.hasChildNodes(), "document has its root element child");
+  assert_true(host.hasChildNodes(), "element with child elements reports true");
+  assert_true(filled.hasChildNodes(), "element with a text child reports true");
+  assert_false(empty.hasChildNodes(), "empty element reports false");
+  assert_false(text.hasChildNodes(), "text node reports false");
+  assert_false(comment.hasChildNodes(), "comment node reports false");
+}, "hasChildNodes reports current state for documents, elements, text, and comments");
+
+test(function () {
+  var empty = document.getElementById("empty");
+  var text = document.createTextNode("leaf");
+
+  empty.appendChild(text);
+  assert_true(empty.hasChildNodes(), "adding a text child updates the result");
+  empty.removeChild(text);
+  assert_false(empty.hasChildNodes(), "removing the last child updates the result");
+}, "hasChildNodes updates after appendChild and removeChild");
+
+test(function () {
+  var empty = document.getElementById("empty");
+  var old = document.getElementById("old");
+  var comment = document.createComment("note");
+
+  empty.appendChild(comment);
+  assert_true(empty.hasChildNodes(), "adding a comment child updates the result");
+  old.appendChild(comment);
+  assert_false(empty.hasChildNodes(), "reparenting the last child updates the old parent");
+  assert_true(old.hasChildNodes(), "reparenting updates the new parent");
+  old.removeChild(comment);
+  assert_false(old.hasChildNodes(), "removing the moved child updates the new parent");
+}, "hasChildNodes updates after reparenting without cached child state");
+</script>
+</body>

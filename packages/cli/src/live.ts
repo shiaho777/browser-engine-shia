@@ -158,6 +158,15 @@ export function withAttribute(dom: DomTree, node: NodeId, name: string, value: s
   });
 }
 
+/** A new DomTree with `node`'s attribute `name` removed (an element). */
+export function withRemoveAttribute(dom: DomTree, node: NodeId, name: string): DomTree {
+  return replaceNode(dom, node, (n) => {
+    const attrs = new Map(n.attrs ?? []);
+    attrs.delete(name);
+    return { ...n, attrs };
+  });
+}
+
 /** Build a new frozen DomTree with exactly one node transformed by `edit`. */
 function replaceNode(dom: DomTree, node: NodeId, edit: (n: DomNode) => DomNode): DomTree {
   const existing = dom.nodes.get(node);

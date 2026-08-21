@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM baseURI reflection</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<base id="first-base" href="https://cdn.test/assets/">
+<base id="later-base" href="https://ignored.test/assets/">
+<body>
+<div id="target"></div>
+<script>
+test(function () {
+  assert_equals(document.URL, "wpt://doc/dom/base-uri.html", "document URL exposes the WPT document URL");
+  assert_equals(document.documentURI, document.URL, "documentURI mirrors document URL");
+}, "document URL and documentURI expose the document URL");
+
+test(function () {
+  var target = document.getElementById("target");
+  assert_equals(document.baseURI, "https://cdn.test/assets/", "document baseURI uses the first base href");
+  assert_equals(target.baseURI, document.baseURI, "element baseURI matches the document base URL");
+}, "document and element baseURI reflect the first base href");
+
+test(function () {
+  document.getElementById("later-base").setAttribute("href", "https://later.test/assets/");
+
+  assert_equals(document.baseURI, "https://cdn.test/assets/", "later base href does not retarget baseURI");
+  assert_equals(document.getElementById("target").baseURI, "https://cdn.test/assets/", "node baseURI ignores later base mutation");
+}, "mutating a later base href does not change baseURI");
+
+test(function () {
+  document.getElementById("first-base").setAttribute("href", "https://other.test/root/");
+
+  assert_equals(document.baseURI, "https://other.test/root/", "first base href mutation updates document baseURI");
+  assert_equals(document.getElementById("target").baseURI, "https://other.test/root/", "node baseURI follows first base mutation");
+}, "mutating the first base href updates baseURI");
+</script>
+</body>

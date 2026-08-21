@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM traversal and remove</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<ul id="u"><li id="a">a</li><li id="b">b</li><li id="c">c</li></ul>
+<script>
+test(function () {
+  var b = document.getElementById("b");
+  assert_equals(b.parentElement.getAttribute("id"), "u", "parentElement");
+  assert_equals(b.parentNode.getAttribute("id"), "u", "parentNode");
+  assert_equals(b.previousElementSibling.getAttribute("id"), "a", "previousElementSibling");
+  assert_equals(b.nextElementSibling.getAttribute("id"), "c", "nextElementSibling");
+}, "parent and sibling traversal exposes the surrounding element tree");
+
+test(function () {
+  var u = document.getElementById("u");
+  assert_equals(u.children.length, 3, "children contains element children");
+  assert_equals(u.childNodes.length, 3, "childNodes contains every child node");
+  assert_equals(u.childElementCount, 3, "childElementCount counts elements");
+  assert_equals(u.firstChild.getAttribute("id"), "a", "firstChild");
+  assert_equals(u.lastChild.getAttribute("id"), "c", "lastChild");
+}, "child collections and first/last child reflect document order");
+
+test(function () {
+  var u = document.getElementById("u");
+  document.getElementById("b").remove();
+  assert_equals(u.childElementCount, 2, "remove detaches the node");
+  assert_equals(document.getElementById("a").nextElementSibling.getAttribute("id"), "c", "siblings re-link");
+  assert_equals(document.getElementById("c").previousElementSibling.getAttribute("id"), "a", "previous sibling re-links");
+}, "Element.remove detaches a child and relinks element siblings");
+</script>
+</body>

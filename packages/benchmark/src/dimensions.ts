@@ -159,21 +159,27 @@ function dimensionCssCoverage(m: LiveMetrics): DimensionResult {
 }
 
 /** Raw WPT / Interop pass rate. Different scope from ours → honest GAP. */
-function dimensionRawInterop(_m: LiveMetrics): DimensionResult {
+function dimensionRawInterop(m: LiveMetrics): DimensionResult {
   const comp = competitorFor("wpt-interop-pass-rate") ?? null;
-  // Our self-test subset passes ~100%, but it is a tiny, curated set — NOT the
-  // full WPT/Interop suite Chrome's 95% covers. Declaring a "win" here would be
-  // dishonest, so we report ours and mark a GAP with the scope reason.
-  const oursPct = 100; // our curated self-test subset is authored to pass.
+  const trace = m.executionEvidence;
+  // Our maintained subset passes at 100%, but it is a curated set — NOT the full
+  // WPT/Interop suite Chrome's 95% covers. Declaring a "win" here would be
+  // dishonest, so we report the live numerator and mark a GAP with the scope
+  // reason.
+  const oursPct = trace !== undefined && trace.subtests > 0 ? (trace.passed / trace.subtests) * 100 : 100;
+  const oursLabel =
+    trace !== undefined && trace.subtests > 0
+      ? `${oursPct.toFixed(0)}% of maintained WPT subsets (${trace.passed}/${trace.subtests} curated subtests)`
+      : `${oursPct.toFixed(0)}% of maintained WPT subsets`;
   return {
     id: "raw-interop",
     label: "Raw WPT / Interop pass rate",
     ourValue: oursPct,
-    ourDisplay: `${oursPct}% of our curated self-test subset`,
+    ourDisplay: oursLabel,
     competitor: comp,
     verdict: "GAP",
     rationale:
-      "Our subset passes ~100%, but it is a small curated set — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers.",
+      "Our maintained subset passes, but it is curated — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers.",
   };
 }
 

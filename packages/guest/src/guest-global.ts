@@ -27,9 +27,24 @@
 import { DOM_SURFACE, type InterfaceDescriptor } from "@browser-engine/generator";
 
 import { installSurface } from "./surface-members.js";
+import { EventImpl, UIEventImpl, MouseEventImpl, KeyboardEventImpl, CustomEventImpl, FocusEventImpl, InputEventImpl, EventTargetImpl } from "./event-system.js";
+import { StorageImpl } from "./storage.js";
 
 /** A plain object usable as a V8 context global (string-keyed surface members). */
 export type GuestGlobal = Record<string, unknown>;
+
+/** Interfaces that are guest-constructible (real classes, not thrower constructors). */
+const GUEST_CONSTRUCTIBLE = new Set([
+  "Event",
+  "UIEvent",
+  "MouseEvent",
+  "KeyboardEvent",
+  "CustomEvent",
+  "FocusEvent",
+  "InputEvent",
+  "EventTarget",
+  "Storage",
+]);
 
 /** Options controlling which generated surface is exposed to the guest. */
 export interface GuestGlobalOptions {
@@ -56,6 +71,10 @@ export function buildGuestGlobal(options: GuestGlobalOptions = {}): GuestGlobal 
   const guestGlobal: GuestGlobal = {};
 
   for (const descriptor of surface) {
+    // Skip interfaces that will be replaced with guest-constructible real
+    // implementations (events, EventTarget) — they are injected after the loop.
+    if (GUEST_CONSTRUCTIBLE.has(descriptor.name)) continue;
+
     // A fresh constructor per interface. It throws if a guest tries to `new` it
     // directly — engine-built wrappers are minted by trusted in-package code
     // (e.g. createElementWrapper), never by guest construction — but it carries
@@ -74,6 +93,39 @@ export function buildGuestGlobal(options: GuestGlobalOptions = {}): GuestGlobal 
   // A real global names itself; expose only the surface object, nothing more.
   Object.defineProperty(guestGlobal, "globalThis", {
     value: guestGlobal,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+
+  // ---- Guest-constructible event constructors -------------------------------
+  // These are the REAL classes (not NotImplemented throwers) because the spec
+  // requires `new Event("click")` to work in guest JS. They are non-enumerable
+  // like all global constructors.
+  const eventCtors: Record<string, { new (...args: unknown[]): unknown }> = {
+    Event: EventImpl as unknown as { new (...args: unknown[]): unknown },
+    UIEvent: UIEventImpl as unknown as { new (...args: unknown[]): unknown },
+    MouseEvent: MouseEventImpl as unknown as { new (...args: unknown[]): unknown },
+    KeyboardEvent: KeyboardEventImpl as unknown as { new (...args: unknown[]): unknown },
+    CustomEvent: CustomEventImpl as unknown as { new (...args: unknown[]): unknown },
+    FocusEvent: FocusEventImpl as unknown as { new (...args: unknown[]): unknown },
+    InputEvent: InputEventImpl as unknown as { new (...args: unknown[]): unknown },
+    EventTarget: EventTargetImpl,
+  };
+  for (const [name, ctor] of Object.entries(eventCtors)) {
+    // These are the REAL constructors (guest-constructible, not throwers).
+    Object.defineProperty(guestGlobal, name, {
+      value: ctor,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+
+  // ---- Storage (localStorage / sessionStorage) ------------------------------
+  // Storage is the real class (not a thrower) so guests can `new Storage()`.
+  Object.defineProperty(guestGlobal, "Storage", {
+    value: StorageImpl,
     enumerable: false,
     configurable: false,
     writable: false,

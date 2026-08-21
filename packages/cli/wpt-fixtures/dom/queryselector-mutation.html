@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>querySelector after DOM mutation</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="append-root"></main>
+<section id="scope-root"></section>
+<section id="old-parent"><span id="moved-node" class="move-target">m</span></section>
+<section id="new-parent"></section>
+<section id="remove-root"><span id="removed-node" class="remove-target">r</span></section>
+<section id="attribute-root"><span id="attribute-node" class="cold" data-state="cold">a</span></section>
+<script>
+test(function () {
+  var root = document.getElementById("append-root");
+  var made = document.createElement("article");
+  made.id = "fresh-append";
+  made.className = "fresh-target";
+
+  assert_equals(document.querySelector("#append-root .fresh-target"), null, "precondition: appended target is absent");
+  root.appendChild(made);
+
+  assert_equals(document.querySelector("#append-root .fresh-target"), made, "document query sees an appended descendant");
+}, "Document.querySelector observes appendChild in the same script");
+
+test(function () {
+  var scope = document.getElementById("scope-root");
+  var child = document.createElement("span");
+  child.id = "scoped-append";
+  child.className = "scoped-target";
+
+  assert_equals(scope.querySelector(".scoped-target"), null, "precondition: scoped target is absent");
+  scope.appendChild(child);
+
+  assert_equals(scope.querySelector(".scoped-target"), child, "element query sees its appended descendant");
+  assert_equals(child.querySelector(".scoped-target"), null, "element query remains descendant-scoped and excludes self");
+}, "Element.querySelector observes appended descendants without matching the scope root");
+
+test(function () {
+  var oldParent = document.getElementById("old-parent");
+  var newParent = document.getElementById("new-parent");
+  var moved = document.getElementById("moved-node");
+
+  assert_equals(oldParent.querySelector(".move-target"), moved, "precondition: old parent sees moved node");
+  assert_equals(newParent.querySelector(".move-target"), null, "precondition: new parent is empty");
+  newParent.appendChild(moved);
+
+  assert_equals(oldParent.querySelector(".move-target"), null, "fresh scoped query no longer sees reparented child");
+  assert_equals(newParent.querySelector(".move-target"), moved, "fresh scoped query sees the new descendant");
+  assert_equals(document.querySelector("#old-parent .move-target"), null, "document query drops the old ancestry");
+  assert_equals(document.querySelector("#new-parent .move-target"), moved, "document query observes the new ancestry");
+}, "querySelector observes reparenting through appendChild");
+
+test(function () {
+  var root = document.getElementById("remove-root");
+  var removed = document.getElementById("removed-node");
+
+  assert_equals(root.querySelector(".remove-target"), removed, "precondition: removable node is in scope");
+  removed.remove();
+
+  assert_equals(root.querySelector(".remove-target"), null, "scoped query no longer sees removed node");
+  assert_equals(document.querySelector("#remove-root .remove-target"), null, "document query no longer sees removed node");
+  assert_equals(document.querySelector("#removed-node"), null, "id selector no longer finds detached nodes");
+}, "querySelector observes Element.remove");
+
+test(function () {
+  var root = document.getElementById("attribute-root");
+  var el = document.getElementById("attribute-node");
+
+  assert_equals(root.querySelector(".hot"), null, "precondition: class selector is not matched");
+  assert_equals(root.querySelector("[data-state=\"hot\"]"), null, "precondition: attribute selector is not matched");
+
+  el.className = "hot";
+  el.setAttribute("data-state", "hot");
+
+  assert_equals(root.querySelector(".hot"), el, "class selector observes className mutation");
+  assert_equals(document.querySelector("[data-state=\"hot\"]"), el, "attribute selector observes setAttribute mutation");
+
+  el.className = "cold";
+  el.setAttribute("data-state", "cold");
+
+  assert_equals(root.querySelector(".hot"), null, "class selector stops matching after className changes away");
+  assert_equals(document.querySelector("[data-state=\"hot\"]"), null, "attribute selector stops matching after setAttribute changes away");
+}, "querySelector observes className and attribute selector mutations");
+</script>
+</body>

@@ -82,3 +82,11 @@ export interface GlyphRaster {
   readonly left: number;
   readonly top: number;
 }
+
+export interface GlyphCoverageSource {
+  glyphId(codePoint: number): number;
+  advanceEm(glyphId: number): number;
+  readonly ascentEm: number;
+  raster(glyphId: number, fontSizePx: number): GlyphRaster;
+}
+

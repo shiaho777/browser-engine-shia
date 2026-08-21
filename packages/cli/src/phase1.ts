@@ -88,16 +88,25 @@ export function renderDivHelloPng(): Uint8Array {
 }
 
 /**
+ * The committed reference was rendered on one platform, but text rasterization
+ * goes through system font fallback (macOS SF/Helvetica vs Linux DejaVu), so
+ * glyph anti-aliasing differs slightly across OSes (~350 of 480 000 pixels
+ * observed). The allowance absorbs that noise while still failing any real
+ * layout regression, which displaces far more pixels.
+ */
+export const DIV_HELLO_MAX_DIFF_PIXELS = 2000;
+
+/**
  * Build the `<div>hello</div>` reftest baseline: a freshly-rendered PNG paired
- * with the committed reference. The render is deterministic, so the configured
- * threshold is an exact (0-pixel) match.
+ * with the committed reference. The render is deterministic per platform; the
+ * configured threshold absorbs cross-platform glyph anti-aliasing variance.
  */
 export function divHelloBaseline(): ReftestBaseline {
   return {
     name: "div-hello",
     rendered: renderDivHelloPng(),
     reference: loadDivHelloReference(),
-    options: { maxDiffPixels: 0 },
+    options: { maxDiffPixels: DIV_HELLO_MAX_DIFF_PIXELS },
   };
 }
 

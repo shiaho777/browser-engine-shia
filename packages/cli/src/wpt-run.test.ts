@@ -9,13 +9,15 @@ void test("parseWptArgs defaults to the vendored WPT-format fixtures", () => {
   assert.ok(args.root.endsWith("packages/cli/wpt-fixtures"));
   assert.equal(args.limit, Infinity);
   assert.equal(args.json, false);
+  assert.equal(args.trace, false);
 });
 
 void test("parseWptArgs accepts root, --limit, and --json", () => {
-  const args = parseWptArgs(["/tmp/wpt/dom", "--limit", "25", "--json"]);
+  const args = parseWptArgs(["/tmp/wpt/dom", "--limit", "25", "--json", "--trace"]);
   assert.equal(args.root, "/tmp/wpt/dom");
   assert.equal(args.limit, 25);
   assert.equal(args.json, true);
+  assert.equal(args.trace, true);
 });
 
 void test("formatWptReport summarizes suite totals and failing files", () => {
@@ -39,6 +41,25 @@ void test("formatWptReport summarizes suite totals and failing files", () => {
         },
       ],
     ]),
+    trace: {
+      events: [],
+      summaries: [
+        {
+          stage: "qFinePaint",
+          calls: 1,
+          recomputes: 1,
+          cacheHits: 0,
+          verifiedCacheHits: 0,
+          totalDurationMs: 1,
+          maxDurationMs: 1,
+          totalDependencyCount: 2,
+        },
+      ],
+      totalCalls: 1,
+      totalRecomputes: 1,
+      totalCacheHits: 0,
+      totalDurationMs: 1,
+    },
   };
 
   const text = formatWptReport("/tmp/wpt", report);
@@ -46,4 +67,6 @@ void test("formatWptReport summarizes suite totals and failing files", () => {
   assert.match(text, /passed: 1/);
   assert.match(text, /dom\/example\.html/);
   assert.match(text, /harnessError=missing document API/);
+  assert.match(text, /stage trace:/);
+  assert.match(text, /qFinePaint/);
 });

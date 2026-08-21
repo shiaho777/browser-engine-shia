@@ -1,0 +1,19 @@
+{
+  "name": "css-values",
+  "owner": "cascade",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "css/border-radius-decoration.html",
+    "css/calc-length.html",
+    "css/flex-gap-order.html",
+    "css/flex-layout.html",
+    "css/float-clear.html",
+    "css/grid-tracks.html",
+    "css/media-query.html",
+    "css/shorthand-expansion.html",
+    "css/text-indent-wordbreak.html",
+    "css/text-properties.html",
+    "css/var-substitution.html"
+  ],
+  "baselinePassCount": 38
+}

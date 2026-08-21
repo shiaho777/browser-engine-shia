@@ -55,6 +55,7 @@ import { domTreesEquivalent, parseHtml, parseHtmlWithMetrics, serializeDom } fro
 import { parseCss } from "@browser-engine/css-parser";
 import { cascade } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
+import { documentStylesheets } from "./stylesheets.js";
 import {
   computeScoreboard,
   runWptSubset,
@@ -516,9 +517,11 @@ const CSS_LAYOUT_TESTS: WptSubset = [
     run: () => {
       // Inline text wraps when it overflows the containing inline width: three
       // 4-char words at width 40 (per-glyph advance 8px, default font-size 16)
-      // wrap to three lines, so the text box is 3 × 16 = 48px tall.
+      // wrap to three lines, so the text box is 3 × 16 = 48px tall. The cascade
+      // includes the UA sheet — the same list the live pipeline feeds — so the
+      // bare `<div>` is a block box and the text run wraps inside it.
       const dom = parseHtml(encode("<div>aaaa bbbb cccc</div>"));
-      const tree = layout(dom, (node) => cascade(dom, [], node), { viewportWidth: px(40) });
+      const tree = layout(dom, (node) => cascade(dom, documentStylesheets(dom), node), { viewportWidth: px(40) });
       const textFrag = fragmentForNode(tree, firstTextId(dom));
       expect(textFrag.box.borderBox.height === 48, `wrapped text height (3 lines): ${textFrag.box.borderBox.height}`);
     },

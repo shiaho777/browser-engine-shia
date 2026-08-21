@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser Engine Evidence Dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f7f4;
+  color: #1f2521;
+}
+body {
+  margin: 0;
+}
+header, main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+header {
+  display: grid;
+  gap: 12px;
+  padding-top: 48px;
+}
+h1 {
+  margin: 0;
+  font-size: 38px;
+  line-height: 1.05;
+}
+h2 {
+  margin: 0 0 14px;
+  font-size: 20px;
+}
+p {
+  max-width: 760px;
+  margin: 0;
+  color: #526057;
+  line-height: 1.6;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #36443b;
+}
+.pill {
+  border: 1px solid #cbd3c7;
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 13px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+.card, section {
+  background: #ffffff;
+  border: 1px solid #d7ded4;
+  border-radius: 8px;
+  box-shadow: 0 1px 0 rgba(31, 37, 33, 0.04);
+}
+.card {
+  padding: 16px;
+}
+.label {
+  color: #627067;
+  font-size: 13px;
+}
+.value {
+  margin-top: 8px;
+  font-size: 28px;
+  font-weight: 720;
+}
+.hint {
+  margin-top: 4px;
+  color: #6e7a71;
+  font-size: 13px;
+}
+main {
+  display: grid;
+  gap: 18px;
+}
+section {
+  padding: 18px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th, td {
+  padding: 10px 0;
+  border-top: 1px solid #e5e9e2;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  width: 42%;
+  font-weight: 650;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 18px;
+}
+.fact {
+  border-top: 1px solid #e5e9e2;
+  padding-top: 10px;
+}
+.fact b {
+  display: block;
+  margin-bottom: 3px;
+}
+footer {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 20px 40px;
+  color: #66736a;
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Evidence Dashboard</h1>
+  <p>Generated from the same deterministic benchmark snapshot as BENCHMARK.md and benchmark-evidence.json. This HTML file is the static dashboard view of that evidence; no live network data or wall-clock timing is embedded.</p>
+  <div class="summary">
+    <span class="pill">3 wins</span>
+    <span class="pill">2 honest gaps</span>
+    <span class="pill">1 not comparable</span>
+    <span class="pill">schema v1</span>
+  </div>
+</header>
+<main>
+  <div class="grid">
+    <article class="card"><div class="label">Hand-written lines</div><div class="value">46,620</div><div class="hint">product surface</div></article>
+    <article class="card"><div class="label">Platform features</div><div class="value">892</div><div class="hint">CSS + DOM data</div></article>
+    <article class="card"><div class="label">Compat / LOC</div><div class="value">0.0010</div><div class="hint">passes per line</div></article>
+    <article class="card"><div class="label">Mechanism density</div><div class="value">19.13</div><div class="hint">features / kloc</div></article>
+  </div>
+  <section>
+    <h2>Benchmark Dimensions</h2>
+    <table>
+      <tbody>
+<tr><th>Hand-written surface (smaller = more readable)</th><td>46,620 lines</td><td>WIN</td></tr>
+<tr><th>compat-per-LOC (North Star)</th><td>0.0010 passes/line</td><td>WIN</td></tr>
+<tr><th>mechanism-density (features per 1k hand-written lines)</th><td>19.13 features/kloc</td><td>WIN</td></tr>
+<tr><th>CSS-property coverage (raw count)</th><td>340 properties</td><td>GAP</td></tr>
+<tr><th>Raw WPT / Interop pass rate</th><td>100% of maintained WPT subsets (318/318 curated subtests)</td><td>GAP</td></tr>
+<tr><th>Runtime performance (Speedometer-class)</th><td>not measured</td><td>NOT-COMPARABLE</td></tr>
+      </tbody>
+    </table>
+  </section>
+<section>
+    <h2>Maintained WPT Trace</h2>
+    <div class="facts">
+<div class="fact"><b>Subsets</b><span>3</span></div>
+<div class="fact"><b>Files / subtests</b><span>90 / 318</span></div>
+<div class="fact"><b>Outcomes</b><span>318 passed, 0 failed, 0 errored</span></div>
+<div class="fact"><b>Query calls</b><span>11106</span></div>
+<div class="fact"><b>Recomputes</b><span>3884</span></div>
+<div class="fact"><b>Cache hits</b><span>7222</span></div>
+<div class="fact"><b>Dependency reads</b><span>121506</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Incremental Edit Sequence</h2>
+    <div class="facts">
+<div class="fact"><b>Scenario</b><span>40 sibling boxes; paint-only class edit, layout-affecting class edit, no-mutation render</span></div>
+<div class="fact"><b>Paint-only reused layout</b><span>yes</span></div>
+<div class="fact"><b>Layout edit recomputed layout</b><span>yes</span></div>
+<div class="fact"><b>No-mutation recomputes</b><span>0</span></div>
+<div class="fact"><b>Verified cache hits</b><span>333</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Script-Driven DOM Mutation</h2>
+    <div class="facts">
+<div class="fact"><b>Scenario</b><span>real V8 script uses classList.add, document.createElement, id/className setters, and appendChild</span></div>
+<div class="fact"><b>Document nodes</b><span>8 → 9</span></div>
+<div class="fact"><b>Script mutations</b><span>6</span></div>
+<div class="fact"><b>appendChild increased nodes</b><span>yes</span></div>
+<div class="fact"><b>Appended node painted</b><span>yes</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Resource-Loaded Page</h2>
+    <div class="facts">
+<div class="fact"><b>URL</b><span>https://benchmark.test/index.html</span></div>
+<div class="fact"><b>External resources</b><span>3 discovered, 2 loaded, 1 missing</span></div>
+<div class="fact"><b>Stylesheets / images</b><span>2 / 1</span></div>
+<div class="fact"><b>Missing image painted</b><span>no</span></div>
+<div class="fact"><b>Invalid image decoded</b><span>0</span></div>
+<div class="fact"><b>Invalid image painted</b><span>no</span></div>
+<div class="fact"><b>Duplicate shared fetches</b><span>1</span></div>
+<div class="fact"><b>Duplicate painted images</b><span>2</span></div>
+<div class="fact"><b>Duplicate stylesheet shared fetches</b><span>1</span></div>
+<div class="fact"><b>Duplicate stylesheet author sheets</b><span>3</span></div>
+<div class="fact"><b>Duplicate stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Data URL fetch calls</b><span>1</span></div>
+<div class="fact"><b>Data URL painted image</b><span>1</span></div>
+<div class="fact"><b>Data URL charset percent author declarations</b><span>3</span></div>
+<div class="fact"><b>Data URL charset base64 author declarations</b><span>3</span></div>
+<div class="fact"><b>Data URL unsupported charset author sheets</b><span>0</span></div>
+<div class="fact"><b>Data URL stylesheet external-after source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Data URL stylesheet data-after source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Data URL stylesheet data URL fetch calls</b><span>0 / 0</span></div>
+<div class="fact"><b>External/inline stylesheet inline-after source-order winner</b><span>yes</span></div>
+<div class="fact"><b>External/inline stylesheet external-after source-order winner</b><span>yes</span></div>
+<div class="fact"><b>External/inline stylesheet external fetches</b><span>1 / 1</span></div>
+<div class="fact"><b>Invalid data image painted</b><span>0</span></div>
+<div class="fact"><b>Invalid data stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Invalid data stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Non-CSS data stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Non-CSS data stylesheet background</b><span>no</span></div>
+<div class="fact"><b>No-href stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>No-href stylesheet background</b><span>yes</span></div>
+<div class="fact"><b>Empty-href stylesheet loaded resources</b><span>1</span></div>
+<div class="fact"><b>Empty-href stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Empty-href stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Fragment-href stylesheet loaded resources</b><span>1</span></div>
+<div class="fact"><b>Fragment-href stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Fragment-href stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Query-href stylesheet loaded resources</b><span>1</span></div>
+<div class="fact"><b>Query-href stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Query-href stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Protocol-relative stylesheet loaded resources</b><span>1</span></div>
+<div class="fact"><b>Protocol-relative stylesheet author declarations</b><span>3</span></div>
+<div class="fact"><b>Protocol-relative stylesheet background</b><span>yes</span></div>
+<div class="fact"><b>Whitespace-rel stylesheet loaded resources</b><span>2</span></div>
+<div class="fact"><b>Whitespace-rel stylesheet author declarations</b><span>4</span></div>
+<div class="fact"><b>Whitespace-rel stylesheet background</b><span>yes</span></div>
+<div class="fact"><b>Whitespace-rel stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Whitespace-rel alternate author sheets</b><span>0</span></div>
+<div class="fact"><b>Duplicate-rel stylesheet loaded resources</b><span>2</span></div>
+<div class="fact"><b>Duplicate-rel stylesheet author sheets</b><span>2</span></div>
+<div class="fact"><b>Duplicate-rel stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Duplicate-rel alternate author sheets</b><span>0</span></div>
+<div class="fact"><b>Whitespace-href stylesheet loaded resources</b><span>2</span></div>
+<div class="fact"><b>Whitespace-href stylesheet loaded URL</b><span>https://benchmark.test/early.css</span></div>
+<div class="fact"><b>Whitespace-href stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Control-char href stylesheet loaded URL</b><span>https://benchmark.test/early.css</span></div>
+<div class="fact"><b>Control-char href stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Base-href stylesheet loaded URL</b><span>https://cdn.benchmark.test/assets/css/theme.css</span></div>
+<div class="fact"><b>Base-href image loaded URL</b><span>https://cdn.benchmark.test/assets/img/pic.png</span></div>
+<div class="fact"><b>Base-href stylesheet/image fetches</b><span>1 / 1</span></div>
+<div class="fact"><b>Invalid-url stylesheet loaded resources</b><span>1</span></div>
+<div class="fact"><b>Invalid-url stylesheet author sheets</b><span>2</span></div>
+<div class="fact"><b>Invalid-url stylesheet source-order winner</b><span>yes</span></div>
+<div class="fact"><b>Invalid-url-only missing resources</b><span>0</span></div>
+<div class="fact"><b>Alternate stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Alternate stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Disabled stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Disabled stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Print-media stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Print-media stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Empty media stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Whitespace-only media stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-list stylesheet matching author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-list stylesheet matching background</b><span>yes</span></div>
+<div class="fact"><b>Spaced media-list author sheets</b><span>1</span></div>
+<div class="fact"><b>Spaced media-list background</b><span>yes</span></div>
+<div class="fact"><b>Empty item before screen media author sheets</b><span>1</span></div>
+<div class="fact"><b>Empty item after screen media author sheets</b><span>1</span></div>
+<div class="fact"><b>Empty-only media list author sheets</b><span>0</span></div>
+<div class="fact"><b>Unsupported media-list then screen author sheets</b><span>1</span></div>
+<div class="fact"><b>Unsupported media-list then screen background</b><span>yes</span></div>
+<div class="fact"><b>Unsupported media-list only author sheets</b><span>0</span></div>
+<div class="fact"><b>Unknown media type then screen author sheets</b><span>1</span></div>
+<div class="fact"><b>Unknown media type only author sheets</b><span>0</span></div>
+<div class="fact"><b>Uppercase screen media author sheets</b><span>1</span></div>
+<div class="fact"><b>Mixed-case only-screen media author sheets</b><span>1</span></div>
+<div class="fact"><b>Spaced only-screen media author sheets</b><span>1</span></div>
+<div class="fact"><b>Uppercase print media author sheets</b><span>0</span></div>
+<div class="fact"><b>All media stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Only-all stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Not-all stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Spaced not-all stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Not-print stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Spaced not-print stylesheet author sheets</b><span>1</span></div>
+<div class="fact"><b>Only-print stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Spaced only-print stylesheet author sheets</b><span>0</span></div>
+<div class="fact"><b>Media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Uppercase media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Decimal media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Spaced media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature bare min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>All-and media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>All-and media-feature max-width author sheets</b><span>0</span></div>
+<div class="fact"><b>Only-all-and media-feature min-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Unsupported range media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Unsupported range media-feature background</b><span>no</span></div>
+<div class="fact"><b>Unsupported range then screen author sheets</b><span>1</span></div>
+<div class="fact"><b>Unsupported calc media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Unsupported hover media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Invalid empty media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Unsupported boolean width media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Unknown media-feature author sheets</b><span>0</span></div>
+<div class="fact"><b>Invalid empty feature then screen author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature max-width author sheets</b><span>0</span></div>
+<div class="fact"><b>Media-feature max-width background</b><span>no</span></div>
+<div class="fact"><b>Decimal media-feature max-width author sheets</b><span>0</span></div>
+<div class="fact"><b>Decimal media-feature max-width background</b><span>no</span></div>
+<div class="fact"><b>Spaced media-feature max-width author sheets</b><span>0</span></div>
+<div class="fact"><b>Spaced media-feature max-width background</b><span>no</span></div>
+<div class="fact"><b>Media-feature min-height author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature max-height author sheets</b><span>0</span></div>
+<div class="fact"><b>Media-feature max-height background</b><span>no</span></div>
+<div class="fact"><b>Media-feature exact-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Decimal media-feature exact-width author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature exact-height author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature exact-height miss author sheets</b><span>0</span></div>
+<div class="fact"><b>Media-feature negated matching author sheets</b><span>0</span></div>
+<div class="fact"><b>Media-feature negated missing author sheets</b><span>1</span></div>
+<div class="fact"><b>Media-feature negated missing background</b><span>yes</span></div>
+<div class="fact"><b>Orientation landscape author sheets</b><span>1</span></div>
+<div class="fact"><b>Orientation landscape background</b><span>yes</span></div>
+<div class="fact"><b>Uppercase orientation landscape author sheets</b><span>1</span></div>
+<div class="fact"><b>Uppercase orientation landscape background</b><span>yes</span></div>
+<div class="fact"><b>Orientation portrait author sheets</b><span>0</span></div>
+<div class="fact"><b>Orientation portrait background</b><span>no</span></div>
+<div class="fact"><b>Uppercase orientation portrait author sheets</b><span>0</span></div>
+<div class="fact"><b>Uppercase orientation portrait background</b><span>no</span></div>
+<div class="fact"><b>Combined media-feature author sheets</b><span>1</span></div>
+<div class="fact"><b>Combined media-feature background</b><span>yes</span></div>
+<div class="fact"><b>Combined media-feature miss author sheets</b><span>0</span></div>
+<div class="fact"><b>Combined media-feature miss background</b><span>no</span></div>
+<div class="fact"><b>Invalid external stylesheet resources</b><span>1 loaded, 0 missing</span></div>
+<div class="fact"><b>Invalid external stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Missing stylesheet author declarations</b><span>0</span></div>
+<div class="fact"><b>Missing stylesheet background</b><span>no</span></div>
+<div class="fact"><b>Paint ops</b><span>image, text</span></div>
+<div class="fact"><b>PNG output</b><span>800x600</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Real-Site Smoke</h2>
+    <div class="facts">
+<div class="fact"><b>Scenarios</b><span>2</span></div>
+<div class="fact"><b>Outcomes</b><span>2 passed, 0 failed</span></div>
+<div class="fact"><b>Capabilities</b><span>event-loop-microtask, fetch, font-face, v8-guest-execution</span></div>
+    </div>
+  </section>
+</main>
+<footer>Regenerate with npm run evidence. Public artifacts must stay committed together.</footer>
+</body>
+</html>

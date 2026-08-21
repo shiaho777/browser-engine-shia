@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Flex gap, order, and wrap</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #flex-gap {
+    display: flex;
+    gap: 10px;
+    width: 320px;
+    height: 50px;
+  }
+  #fg1 { width: 100px; }
+  #fg2 { width: 100px; }
+
+  #flex-order {
+    display: flex;
+    width: 300px;
+    height: 50px;
+  }
+  #fo1 { width: 50px; order: 2; }
+  #fo2 { width: 50px; order: 1; }
+  #fo3 { width: 50px; order: 3; }
+</style>
+<body>
+<div id="flex-gap"><div id="fg1"></div><div id="fg2"></div></div>
+<div id="flex-order"><div id="fo1"></div><div id="fo2"></div><div id="fo3"></div></div>
+<script>
+test(function () {
+  // 320px container, 10px gap, two 100px items
+  // fg1 starts at 0, fg2 starts at 110 (100 + 10 gap)
+  var r1 = document.getElementById("fg1").getBoundingClientRect();
+  var r2 = document.getElementById("fg2").getBoundingClientRect();
+  assert_equals(r1.x, 0, "first item at x=0");
+  assert_equals(r2.x, 110, "second item at x=110 (100 + 10px gap)");
+}, "flex gap creates space between items");
+
+test(function () {
+  // order: 2,1,3 → fo2 (order 1) is first, fo1 (order 2) second, fo3 (order 3) third
+  var r2 = document.getElementById("fo2").getBoundingClientRect();
+  var r1 = document.getElementById("fo1").getBoundingClientRect();
+  var r3 = document.getElementById("fo3").getBoundingClientRect();
+  assert_equals(r2.x, 0, "order 1 item at x=0");
+  assert_equals(r1.x, 50, "order 2 item at x=50");
+  assert_equals(r3.x, 100, "order 3 item at x=100");
+}, "flex order reorders items");
+</script>
+</body>

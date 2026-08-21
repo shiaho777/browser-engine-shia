@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Element toggleAttribute</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  [data-on] {
+    width: 33px;
+    height: 17px;
+    background-color: rgb(1, 2, 3);
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  assert_false(el.hasAttribute("data-basic"), "precondition: data-basic is missing");
+  assert_equals(el.toggleAttribute("data-basic"), true, "adding a missing attribute returns true");
+  assert_true(el.hasAttribute("data-basic"), "attribute exists after no-force add");
+  assert_equals(el.getAttribute("data-basic"), "", "new boolean attribute value is the empty string");
+
+  assert_equals(el.toggleAttribute("data-basic"), false, "removing an existing attribute returns false");
+  assert_false(el.hasAttribute("data-basic"), "attribute is absent after no-force removal");
+  assert_equals(el.getAttribute("data-basic"), null, "getAttribute returns null after removal");
+}, "toggleAttribute without force adds and removes an attribute");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  assert_equals(el.toggleAttribute("data-forced", true), true, "force=true returns true for a missing attribute");
+  assert_true(el.hasAttribute("data-forced"), "force=true adds a missing attribute");
+  assert_equals(el.toggleAttribute("data-forced", true), true, "force=true returns true for an existing attribute");
+  assert_true(el.hasAttribute("data-forced"), "force=true keeps an existing attribute present");
+}, "toggleAttribute with force=true keeps the attribute present");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.setAttribute("data-forced-remove", "yes");
+  assert_equals(el.toggleAttribute("data-forced-remove", false), false, "force=false returns false for an existing attribute");
+  assert_false(el.hasAttribute("data-forced-remove"), "force=false removes an existing attribute");
+  assert_equals(el.toggleAttribute("data-forced-remove", false), false, "force=false returns false for a missing attribute");
+  assert_false(el.hasAttribute("data-forced-remove"), "force=false keeps a missing attribute absent");
+}, "toggleAttribute with force=false keeps the attribute absent");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  assert_equals(el.toggleAttribute("data-truthy", 1), true, "truthy force values convert to true");
+  assert_true(el.hasAttribute("data-truthy"), "truthy force adds the attribute");
+  assert_equals(el.toggleAttribute("data-truthy", 0), false, "falsy force values convert to false");
+  assert_false(el.hasAttribute("data-truthy"), "falsy force removes the attribute");
+}, "toggleAttribute force uses boolean conversion");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  assert_false(el.matches("[data-on]"), "precondition: selector does not match");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "precondition: height uses initial value");
+
+  assert_equals(el.toggleAttribute("data-on"), true, "toggle adds the selector attribute");
+  assert_true(el.matches("[data-on]"), "presence selector matches after add");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "33px", "computed width updates after add");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "17px", "computed height updates after add");
+  assert_equals(getComputedStyle(el).getPropertyValue("background-color"), "rgb(1, 2, 3)", "computed paint style updates after add");
+
+  assert_equals(el.toggleAttribute("data-on"), false, "toggle removes the selector attribute");
+  assert_false(el.matches("[data-on]"), "presence selector stops matching after removal");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "computed style falls back after removal");
+}, "toggleAttribute updates selector matching and computed style");
+</script>
+</body>

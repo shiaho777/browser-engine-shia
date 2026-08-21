@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM dataset enumeration and descriptors</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="scope">
+  <div id="parsed" class="ignored" data-alpha-beta="one" data-count="2"></div>
+  <div id="write-target"></div>
+  <div id="delete-target" data-old-value="gone" data-keep-me="stay"></div>
+  <div id="attribute-target" data-start-value="seed"></div>
+</section>
+<script>
+function sortedKeys(object) {
+  return Object.keys(object).sort();
+}
+
+test(function () {
+  var el = document.getElementById("parsed");
+
+  assert_array_equals(sortedKeys(el.dataset), ["alphaBeta", "count"], "Object.keys sees parsed data-* attributes");
+  assert_equals(el.dataset.alphaBeta, "one", "camelCase key reads the dashed data-* value");
+  assert_equals(el.dataset.count, "2", "single-token data-* key is enumerable");
+  assert_false(Object.keys(el.dataset).indexOf("class") >= 0, "non-data attributes are not dataset keys");
+}, "Object.keys enumerates parsed data-* attributes as dataset keys");
+
+test(function () {
+  var dataset = document.getElementById("parsed").dataset;
+  var descriptor = Object.getOwnPropertyDescriptor(dataset, "alphaBeta");
+
+  assert_equals(descriptor.value, "one", "descriptor value reflects the attribute value");
+  assert_true(descriptor.enumerable, "dataset properties are enumerable");
+  assert_true(descriptor.configurable, "dataset properties are configurable");
+  assert_true(descriptor.writable, "dataset properties are writable");
+  assert_true(Object.prototype.hasOwnProperty.call(dataset, "alphaBeta"), "hasOwnProperty sees reflected data-* keys");
+  assert_true(Object.prototype.propertyIsEnumerable.call(dataset, "alphaBeta"), "propertyIsEnumerable sees reflected data-* keys");
+  assert_equals(Object.getOwnPropertyDescriptor(dataset, "missingValue"), undefined, "missing keys have no descriptor");
+  assert_false(Object.prototype.hasOwnProperty.call(dataset, "missingValue"), "hasOwnProperty rejects missing keys");
+}, "dataset property descriptors reflect live data-* attributes");
+
+test(function () {
+  var el = document.getElementById("write-target");
+  var dataset = el.dataset;
+
+  dataset.createdValue = "new";
+  dataset.extraFlag = "yes";
+
+  assert_array_equals(sortedKeys(dataset), ["createdValue", "extraFlag"], "Object.keys sees dataset writes");
+  assert_equals(Object.getOwnPropertyDescriptor(dataset, "createdValue").value, "new", "descriptor value sees dataset writes");
+  assert_equals(Object.assign({}, dataset).createdValue, "new", "Object.assign copies enumerable dataset writes");
+  assert_equals(Object.assign({}, dataset).extraFlag, "yes", "Object.assign copies every enumerable dataset key");
+}, "dataset writes appear in enumeration and object copies");
+
+test(function () {
+  var el = document.getElementById("delete-target");
+  var dataset = el.dataset;
+
+  assert_array_equals(sortedKeys(dataset), ["keepMe", "oldValue"], "precondition: both parsed keys are enumerable");
+  delete dataset.oldValue;
+
+  assert_array_equals(sortedKeys(dataset), ["keepMe"], "Object.keys drops deleted dataset keys");
+  assert_equals(Object.getOwnPropertyDescriptor(dataset, "oldValue"), undefined, "deleted keys have no descriptor");
+  assert_false(Object.prototype.hasOwnProperty.call(dataset, "oldValue"), "hasOwnProperty drops deleted keys");
+  assert_equals(Object.assign({}, dataset).keepMe, "stay", "Object.assign keeps remaining enumerable keys");
+  assert_equals(Object.assign({}, dataset).oldValue, undefined, "Object.assign does not copy deleted keys");
+}, "dataset delete updates enumeration and descriptors");
+
+test(function () {
+  var el = document.getElementById("attribute-target");
+  var dataset = el.dataset;
+
+  assert_array_equals(sortedKeys(dataset), ["startValue"], "precondition: initial attribute is enumerable");
+
+  el.setAttribute("data-dynamic-name", "late");
+
+  assert_array_equals(sortedKeys(dataset), ["dynamicName", "startValue"], "an existing dataset object sees setAttribute");
+  assert_equals(Object.getOwnPropertyDescriptor(dataset, "dynamicName").value, "late", "descriptor sees setAttribute");
+
+  el.removeAttribute("data-start-value");
+
+  assert_array_equals(sortedKeys(dataset), ["dynamicName"], "an existing dataset object sees removeAttribute");
+  assert_equals(dataset.startValue, undefined, "removed attribute no longer reads through the old dataset object");
+  assert_false(Object.prototype.hasOwnProperty.call(dataset, "startValue"), "removed attribute no longer has an own property");
+}, "dataset enumeration stays live across setAttribute and removeAttribute");
+</script>
+</body>

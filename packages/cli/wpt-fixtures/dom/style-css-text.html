@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration cssText</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3);
+    width: 11px;
+    height: 7px !important;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7); width: 42px", "cssText reflects to the style attribute");
+  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 42px", "cssText reads back the style attribute");
+  assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "style declaration reads the assigned color");
+  assert_equals(el.style.getPropertyValue("width"), "42px", "style declaration reads the assigned width");
+}, "cssText assignment reflects the style attribute");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "inline color wins over a normal author rule");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "42px", "inline width wins over a normal author rule");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "7px", "author !important still wins over normal inline style");
+}, "cssText assignment participates in computed style");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+  el.style.cssText = "";
+
+  assert_equals(el.getAttribute("style"), "", "empty cssText clears the style attribute text");
+  assert_equals(el.style.getPropertyValue("color"), "", "style declaration no longer has color");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed color falls back to author rule");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "11px", "computed width falls back to author rule");
+}, "empty cssText clears inline declarations and recomputes style");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "height: 19px !important; color: rgb(3, 4, 5) !important";
+
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "19px", "inline !important beats author !important");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(3, 4, 5)", "inline !important controls inherited paint style");
+}, "cssText preserves inline !important cascade priority");
+</script>
+</body>

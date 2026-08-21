@@ -25,6 +25,8 @@ import type {
   InputSlot,
   QueryDef,
   QueryDefInternal,
+  QueryTraceObserver,
+  TraceOptions,
 } from "./db.js";
 import { COMPUTE } from "./db.js";
 
@@ -73,6 +75,11 @@ export class NaiveDb implements Db {
   readonly #frames: Frame[] = [];
   /** How many times `compute` has run — proves "never cached" for tests. */
   #recomputeCount = 0;
+  readonly #onQuery: QueryTraceObserver | undefined;
+
+  constructor(options: TraceOptions = {}) {
+    this.#onQuery = options.onQuery;
+  }
 
   /** The current global revision (diagnostic; see design.md §7.1 algorithm). */
   get revision(): number {
@@ -133,8 +140,10 @@ export class NaiveDb implements Db {
   trace<K, V>(q: QueryDef<K, V>, key: K): TraceResult<V> {
     const frame: Frame = { deps: [] };
     this.#frames.push(frame);
+    const start = performance.now();
     try {
       const value = this.#runCompute(q, key);
+      this.#emit(q, key, start, frame.deps.length);
       return { value, dependencies: frame.deps };
     } finally {
       this.#frames.pop();
@@ -145,8 +154,11 @@ export class NaiveDb implements Db {
   #compute<K, V>(q: QueryDef<K, V>, key: K): V {
     const frame: Frame = { deps: [] };
     this.#frames.push(frame);
+    const start = performance.now();
     try {
-      return this.#runCompute(q, key);
+      const value = this.#runCompute(q, key);
+      this.#emit(q, key, start, frame.deps.length);
+      return value;
     } finally {
       // Naive backend: dependencies were recorded but are not memoised.
       this.#frames.pop();
@@ -167,5 +179,17 @@ export class NaiveDb implements Db {
     if (frame !== undefined) {
       frame.deps.push(dep);
     }
+  }
+
+  /** Emit a read-only query diagnostic, if the caller requested tracing. */
+  #emit<K, V>(q: QueryDef<K, V>, key: K, start: number, dependencyCount: number): void {
+    this.#onQuery?.({
+      query: q,
+      queryName: q.name,
+      key,
+      durationMs: performance.now() - start,
+      dependencyCount,
+      cacheStatus: "miss",
+    });
   }
 }

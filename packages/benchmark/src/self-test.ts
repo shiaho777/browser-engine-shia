@@ -108,7 +108,9 @@ export const BENCHMARK_SELF_TEST_SUBSET: WptSubset = [
   {
     id: "bench/css/line-height-number.html",
     capability: "css-line-height",
-    run: () => expect(parsed("line-height", "1.5") === 1.5, "line-height 1.5"),
+    // `line-height` is a free-form string property: the parser accepts the
+    // unitless multiplier and preserves it verbatim; layout interprets it.
+    run: () => expect(parsed("line-height", "1.5") === "1.5", "line-height 1.5"),
   },
   {
     id: "bench/css/text-align-keyword.html",

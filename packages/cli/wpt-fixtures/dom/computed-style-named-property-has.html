@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle named property has behavior</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    background-color: rgb(1, 2, 3);
+    float: left;
+    font-size: 21px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_true("background-color" in cs, "dashed CSS property names are supported named properties");
+  assert_true("backgroundColor" in cs, "camelCase CSSOM aliases are supported named properties");
+  assert_true("font-size" in cs, "another dashed property name is supported");
+  assert_true("fontSize" in cs, "another camelCase property alias is supported");
+}, "getComputedStyle has supported dashed and camelCase named properties");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_true("float" in cs, "float is a supported CSS property name");
+  assert_true("cssFloat" in cs, "cssFloat is a supported CSSOM compatibility alias");
+  assert_equals(cs.cssFloat, "left", "cssFloat reads the resolved float value");
+}, "getComputedStyle has the cssFloat compatibility named property");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_false("not-a-real-css-property" in cs, "unknown dashed names are not synthesized");
+  assert_false("notARealCssProperty" in cs, "unknown camelCase names are not synthesized");
+  assert_true("getPropertyValue" in cs, "ordinary CSSStyleDeclaration methods are still present");
+  assert_true("cssText" in cs, "ordinary CSSStyleDeclaration data properties are still present");
+}, "getComputedStyle has rejects unknown CSS named properties without hiding declaration members");
+</script>
+</body>

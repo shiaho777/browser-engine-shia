@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS cascade origin: author overrides UA regardless of specificity</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  /* Author rule with low specificity should override UA high-specificity rule.
+     The UA stylesheet (head { display: none }) has specificity [0,0,1].
+     This author rule #target has specificity [1,0,0] — even higher.
+     But even a tag selector (specificity [0,0,1]) in author origin should
+     override a UA tag selector. Test that the UA rule for head/script/etc.
+     keeps them display:none, while author rules freely style visible elements. */
+  #target {
+    display: block;
+    width: 100px;
+    height: 50px;
+    background-color: red;
+  }
+</style>
+<body>
+<div id="target"></div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+  var cs = getComputedStyle(el);
+  assert_equals(cs.getPropertyValue("display"), "block", "author display:block applies");
+  assert_not_equals(cs.getPropertyValue("display"), "none", "UA rules do not override author rules");
+}, "author origin overrides UA origin");
+
+test(function () {
+  var rect = document.getElementById("target").getBoundingClientRect();
+  assert_equals(rect.width, 100, "author width applies (not overridden by UA)");
+  assert_equals(rect.height, 50, "author height applies");
+}, "author styles take effect over UA defaults");
+
+test(function () {
+  // The UA stylesheet hides style/script/meta/link/base/title.
+  // A <style> element should have display: none from the UA sheet.
+  var styleEl = document.querySelector("style");
+  assert_not_equals(styleEl, null, "style element exists");
+  var cs = getComputedStyle(styleEl);
+  assert_equals(cs.getPropertyValue("display"), "none", "UA display:none on style is respected");
+}, "UA display:none on style is respected (no author override)");
+</script>
+</body>

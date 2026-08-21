@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle length, item, and indexed properties</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    background-color: rgb(1, 2, 3);
+    width: 37px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_true(cs.length > 0, "computed style exposes a non-empty resolved property list");
+  assert_equals(cs.item(0), "color", "item(0) follows the engine's generated CSS property order");
+  assert_equals(cs.item(1), "display", "item(1) follows the same generated order");
+  assert_equals(cs.item(-1), "", "negative item index is empty");
+  assert_equals(cs.item(cs.length), "", "out-of-range item index is empty");
+}, "getComputedStyle length and item expose resolved CSS property names");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_equals(cs[0], cs.item(0), "numeric index 0 mirrors item(0)");
+  assert_equals(cs[1], cs.item(1), "numeric index 1 mirrors item(1)");
+  assert_equals(cs[2], cs.item(2), "numeric index 2 mirrors item(2)");
+  assert_equals(cs[cs.length], "", "out-of-range numeric index is empty");
+}, "getComputedStyle numeric indexed reads mirror item");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+  var firstName = cs.item(0);
+  var secondName = cs.item(1);
+
+  assert_equals(cs[firstName], cs.getPropertyValue(firstName), "the first indexed property name reads its resolved value");
+  assert_equals(cs[secondName], cs.getPropertyValue(secondName), "the second indexed property name reads its resolved value");
+  assert_equals(cs["background-color"], "rgb(1, 2, 3)", "indexed CSSOM and dashed alias reads share the resolved declaration data");
+}, "getComputedStyle indexed names point back to resolved values");
+</script>
+</body>

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>querySelectorAll static snapshots</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<ul id="list"><li class="item" id="a">a</li><li class="item" id="b">b</li></ul>
+<script>
+test(function () {
+  var list = document.getElementById("list");
+  var snapshot = document.querySelectorAll(".item");
+  var made = document.createElement("li");
+  made.id = "c";
+  made.className = "item";
+  made.textContent = "c";
+  list.appendChild(made);
+
+  assert_equals(snapshot.length, 2, "old querySelectorAll result is not live");
+  assert_equals(snapshot[0].getAttribute("id"), "a");
+  assert_equals(snapshot[1].getAttribute("id"), "b");
+  assert_equals(document.querySelectorAll(".item").length, 3, "fresh query observes appended element");
+}, "Document.querySelectorAll returns a static snapshot across appendChild");
+
+test(function () {
+  var list = document.getElementById("list");
+  var snapshot = list.querySelectorAll(".item");
+  document.getElementById("b").remove();
+
+  assert_equals(snapshot.length, 3, "scoped old result keeps removed elements");
+  assert_equals(snapshot[1].getAttribute("id"), "b", "removed element remains in the old snapshot");
+  assert_equals(list.querySelectorAll(".item").length, 2, "fresh scoped query observes removal");
+}, "Element.querySelectorAll returns a static snapshot across remove");
+
+test(function () {
+  var snapshot = document.querySelectorAll("[data-late]");
+  var el = document.getElementById("a");
+  el.setAttribute("data-late", "yes");
+
+  assert_equals(snapshot.length, 0, "old attribute-selector result stays empty");
+  assert_equals(document.querySelectorAll("[data-late]").length, 1, "fresh query observes attribute mutation");
+}, "querySelectorAll snapshots do not update after attribute mutation");
+</script>
+</body>

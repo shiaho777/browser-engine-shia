@@ -82,7 +82,7 @@
  * injected `styleOf` callback rather than importing the cascade, and the
  * FragmentTree as a parameter rather than importing layout.
  */
-import { deepFreeze } from "@browser-engine/ir";
+import { px, deepFreeze } from "@browser-engine/ir";
 import type {
   BorderSide,
   Color,
@@ -118,29 +118,69 @@ export function paint(
   fragments: FragmentTree,
   styleOf: (node: NodeId) => ComputedStyle,
   imageOf?: (node: NodeId) => DecodedImage | undefined,
+  options?: {
+    readonly clipMaxY?: number;
+    readonly scrollY?: number;
+    /** Resolve a `background-image: url(...)` source to a decoded bitmap. */
+    readonly imageBySrc?: (src: string) => DecodedImage | undefined;
+  },
 ): DisplayList {
   const commands: PaintCmd[] = [];
+  const clipRadiusStack: number[] = [0];
+  const clipMaxY = options?.clipMaxY;
+  const scrollY = options?.scrollY ?? 0;
+  const imageBySrc = options?.imageBySrc;
 
-  /**
-   * Paint one fragment and its subtree in paint order: this fragment's
-   * background (behind everything it contains), then its border, then its text
-   * if it is a leaf, then each child in document order (so descendants and later
-   * siblings paint on top).
-   */
-  function paintFragment(id: FragmentId): void {
-    const fragment = fragments.fragments.get(id);
-    if (fragment === undefined) {
-      return; // a dangling child id (should not happen for a well-formed tree).
+  function shiftRect(rect: Rect, ox: number, oy: number): Rect {
+    if (ox === 0 && oy === 0) return rect;
+    return {
+      x: px(Number(rect.x) + ox),
+      y: px(Number(rect.y) + oy),
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function shiftFragment(fragment: Fragment, ox: number, oy: number): Fragment {
+    if (ox === 0 && oy === 0) return fragment;
+    const b = fragment.box;
+    return {
+      node: fragment.node,
+      children: fragment.children,
+      ...(fragment.text === undefined ? {} : { text: fragment.text }),
+      box: {
+        x: px(Number(b.x) + ox),
+        y: px(Number(b.y) + oy),
+        width: b.width,
+        height: b.height,
+        contentBox: shiftRect(b.contentBox, ox, oy),
+        paddingBox: shiftRect(b.paddingBox, ox, oy),
+        borderBox: shiftRect(b.borderBox, ox, oy),
+        marginBox: shiftRect(b.marginBox, ox, oy),
+      },
+    };
+  }
+
+  function paintFragment(id: FragmentId, originX: number, originY: number): void {
+    const raw = fragments.fragments.get(id);
+    if (raw === undefined) {
+      return;
+    }
+    const fragment = shiftFragment(raw, originX, originY);
+    if (clipMaxY !== undefined) {
+      const y = Number(fragment.box.borderBox.y);
+      const h = Number(fragment.box.borderBox.height);
+      if (y >= clipMaxY + 8 || y + h <= -8) {
+        const childOriginX = originX + Number(raw.box.marginBox.x);
+        const childOriginY = originY + Number(raw.box.marginBox.y);
+        for (const childId of raw.children) {
+          paintFragment(childId, childOriginX, childOriginY);
+        }
+        return;
+      }
     }
     const style = styleOf(fragment.node);
 
-    // Compositing layer (task 9.2; Requirement 17.2): a fragment whose style
-    // establishes a stacking layer — a non-default `opacity` or a `transform` —
-    // is wrapped in a push-layer / pop-layer pair so the backend composites its
-    // whole subtree as one layer. Read defensively off the open ComputedStyle
-    // index signature (these properties are not yet emitted by the generator;
-    // see the module doc), so a plain document emits no layer and the existing
-    // command stream is byte-for-byte unchanged.
     const layer = readLayer(style);
     if (layer !== null) {
       const transform = layer.transform === IDENTITY_MATRIX
@@ -153,52 +193,52 @@ export function paint(
       );
     }
 
-    // `visibility` (CSS Box, generated property) gates this fragment's OWN paint
-    // (background/border/text) but NOT its subtree: a `visibility:hidden` box
-    // can contain a `visibility:visible` descendant, so children are still
-    // walked below. `collapse` behaves like `hidden` for non-table boxes. A
-    // visible (or absent/initial) value paints normally, so a plain document's
-    // command stream is byte-for-byte unchanged.
     const selfVisible = readVisibility(style) === "visible";
 
     if (selfVisible) {
       emitBoxShadow(fragment, style, commands);
-      emitBackground(fragment, style, commands);
+      emitBackground(fragment, style, commands, imageBySrc);
       emitBorder(fragment, style, commands);
       emitOutline(fragment, style, commands);
+    }
 
-      // A replaced element (an `<img>` whose source decoded) paints its image in
-      // the content box. `imageOf` returns the decoded bitmap for such nodes and
-      // `undefined` for everything else, so paint needs no DOM/tag knowledge: a
-      // defined result means "this fragment is a painted replaced element".
+    const clips = readClips(style);
+    const ownRadius = readBorderRadius(
+      style,
+      Number(fragment.box.borderBox.width),
+      Number(fragment.box.borderBox.height),
+    );
+    if (clips) {
+      const clipRadius = ownRadius;
+      const clipCmd: PaintCmd = { op: "push-clip", rect: copyRect(fragment.box.paddingBox) };
+      if (clipRadius > 0) (clipCmd as { radius?: Px }).radius = clipRadius as Px;
+      commands.push(clipCmd);
+      clipRadiusStack.push(Math.max(clipRadiusStack[clipRadiusStack.length - 1] ?? 0, clipRadius));
+    } else if (ownRadius > 0) {
+      clipRadiusStack.push(Math.max(clipRadiusStack[clipRadiusStack.length - 1] ?? 0, ownRadius));
+    }
+
+    if (selfVisible) {
       const image = imageOf?.(fragment.node);
       if (image !== undefined) {
-        commands.push({ op: "image", rect: copyRect(fragment.box.contentBox), src: image });
+        emitImage(fragment, style, image, commands, clipRadiusStack[clipRadiusStack.length - 1] ?? 0);
       } else if (fragment.children.length === 0) {
-        // A childless, non-replaced fragment is a text-bearing leaf (module doc).
         emitText(fragment, style, commands);
+        emitTextDecoration(fragment, style, commands);
       }
     }
 
-    // `overflow` (CSS Box, generated property): a non-`visible` overflow clips
-    // this fragment's DESCENDANTS to its padding box (the CSS overflow clip
-    // rectangle). The box's own background/border already painted above and are
-    // NOT clipped; only the subtree below is. A `visible` (or absent/initial)
-    // overflow pushes no clip, so a plain document's command stream is
-    // byte-for-byte unchanged. The clip is balanced by a matching `pop-clip`.
-    const clips = readClips(style) && fragment.children.length > 0;
-    if (clips) {
-      commands.push({ op: "push-clip", rect: copyRect(fragment.box.paddingBox) });
-    }
-
-    // Children paint within the layer (if any), ordered by z-index then
-    // document order so a higher z-index sibling composites on top (Req 17.2).
-    for (const childId of paintOrderedChildren(fragment)) {
-      paintFragment(childId);
+    const childOriginX = originX + Number(raw.box.marginBox.x);
+    const childOriginY = originY + Number(raw.box.marginBox.y);
+    for (const childId of paintOrderedChildren(raw)) {
+      paintFragment(childId, childOriginX, childOriginY);
     }
 
     if (clips) {
       commands.push({ op: "pop-clip" });
+      clipRadiusStack.pop();
+    } else if (ownRadius > 0) {
+      clipRadiusStack.pop();
     }
 
     if (layer !== null) {
@@ -237,7 +277,7 @@ export function paint(
       .map((entry) => entry.childId);
   }
 
-  paintFragment(fragments.root);
+  paintFragment(fragments.root, 0, -scrollY);
 
   const list = { commands } as unknown as DisplayList;
   return deepFreeze(list);
@@ -253,12 +293,207 @@ export function paint(
  * not transparent (alpha > 0), filling its `borderBox`. A transparent (or
  * unreadable) background emits nothing.
  */
-function emitBackground(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): void {
+
+function maskBlocksBackground(style: ComputedStyle): boolean {
+  const mask = stringField(style["mask"], "none");
+  const maskImage = stringField(style["maskImage"], "none");
+  const webkit = stringField(style["webkitMaskImage"], stringField(style["WebkitMaskImage"], "none"));
+  const raw = `${mask} ${maskImage} ${webkit}`.toLowerCase();
+  if (raw.includes("linear-gradient") && raw.includes("transparent")) return true;
+  if (raw.includes("mask-image") && raw.includes("transparent")) return true;
+  return false;
+}
+
+function emitBackground(
+  fragment: Fragment,
+  style: ComputedStyle,
+  out: PaintCmd[],
+  imageBySrc?: (src: string) => DecodedImage | undefined,
+): void {
+  const radius = readBorderRadius(
+    style,
+    Number(fragment.box.borderBox.width),
+    Number(fragment.box.borderBox.height),
+  );
+  // 1. background-color (paints on the border box, behind any image).
   const fill = readColor(style["backgroundColor"]);
-  if (fill === null || fill.a <= 0) {
-    return; // transparent / absent background paints nothing.
+  if (fill !== null && fill.a > 0 && !maskBlocksBackground(style)) {
+    const cmd: PaintCmd = { op: "rect", rect: copyRect(fragment.box.borderBox), fill };
+    if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+    out.push(cmd);
   }
-  out.push({ op: "rect", rect: copyRect(fragment.box.borderBox), fill });
+  // 2. background-image: url(...). A `background-image` value may list several
+  //    comma-separated layers; we resolve the first decodable one and paint it
+  //    into the padding box (the default `background-origin`), honoring
+  //    `background-size: cover|contain` for simple crop/fit. `background-repeat`
+  //    is not yet honoured (the image is painted once, stretched to the box).
+  if (imageBySrc === undefined) {
+    return;
+  }
+  const bgImage = stringField(style["backgroundImage"], "none");
+  const src = firstUrl(bgImage);
+  if (src === null) {
+    return;
+  }
+  const decoded = imageBySrc(src);
+  if (decoded === undefined) {
+    return;
+  }
+  const destBox = style["backgroundClip"] === "content-box" ? fragment.box.contentBox : fragment.box.paddingBox;
+  const dest = copyRect(destBox);
+  const size = stringField(style["backgroundSize"], "auto");
+  const srcImg = backgroundImageWithSize(decoded, Number(dest.width), Number(dest.height), size);
+  const cmd: PaintCmd = { op: "image", rect: dest, src: srcImg };
+  if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+  out.push(cmd);
+}
+
+/**
+ * Extract the first `url("…" | '…' | …)` source from a `background-image`
+ * value. Returns the unquoted URL text, or `null` when there is no url() (e.g.
+ * `none`, a gradient, or empty).
+ */
+function firstUrl(value: string): string | null {
+  const idx = value.indexOf("url(");
+  if (idx === -1) {
+    return null;
+  }
+  let rest = value.slice(idx + 4).trim();
+  let quote = "";
+  if (rest.startsWith('"') || rest.startsWith("'")) {
+    quote = rest[0]!;
+    rest = rest.slice(1);
+    const end = rest.indexOf(quote);
+    if (end === -1) return null;
+    return rest.slice(0, end).trim();
+  }
+  const end = rest.indexOf(")");
+  if (end === -1) return null;
+  return rest.slice(0, end).trim();
+}
+
+/**
+ * Crop/fit a decoded background image for `background-size`: `cover` fills the
+ * box (cropping overflow), `contain` fits inside (letterboxing is implicit via
+ * the dest rect), and everything else is stretched to the box by the backend.
+ */
+function backgroundImageWithSize(src: DecodedImage, destW: number, destH: number, size: string): DecodedImage {
+  if (size !== "cover" && size !== "contain") {
+    return src;
+  }
+  if (!(destW > 0) || !(destH > 0) || !(src.width > 0) || !(src.height > 0)) {
+    return src;
+  }
+  const srcAspect = src.width / src.height;
+  const destAspect = destW / destH;
+  let cropW: number;
+  let cropH: number;
+  let cropX: number;
+  let cropY: number;
+  if ((size === "cover") === srcAspect > destAspect) {
+    // cover & src wider ⇒ crop width; contain & src taller ⇒ crop width.
+    cropH = src.height;
+    cropW = Math.max(1, Math.round(src.height * destAspect));
+    cropX = Math.max(0, Math.floor((src.width - cropW) / 2));
+    cropY = 0;
+  } else {
+    cropW = src.width;
+    cropH = Math.max(1, Math.round(src.width / destAspect));
+    cropX = 0;
+    cropY = Math.max(0, Math.floor((src.height - cropH) / 2));
+  }
+  if (cropX + cropW > src.width) cropW = src.width - cropX;
+  if (cropY + cropH > src.height) cropH = src.height - cropY;
+  if (!(cropW > 0) || !(cropH > 0)) return src;
+  const pixels = new Uint8ClampedArray(cropW * cropH * 4);
+  for (let y = 0; y < cropH; y += 1) {
+    const srcRow = ((cropY + y) * src.width + cropX) * 4;
+    pixels.set(src.pixels.subarray(srcRow, srcRow + cropW * 4), y * cropW * 4);
+  }
+  return { width: cropW, height: cropH, pixels };
+}
+
+function emitImage(
+  fragment: Fragment,
+  style: ComputedStyle,
+  image: DecodedImage,
+  out: PaintCmd[],
+  radiusHint = 0,
+): void {
+  const dest = fragment.box.contentBox;
+  const destW = Number(dest.width);
+  const destH = Number(dest.height);
+  const fit = stringField(style["objectFit"], "fill");
+  const radius = Math.max(
+    readBorderRadius(style, Number(fragment.box.borderBox.width), Number(fragment.box.borderBox.height)),
+    radiusHint,
+  );
+  // `object-fit: contain` letterboxes the image: the WHOLE source scales to fit
+  // inside the content box (preserving aspect), centered, with empty margins.
+  // `cover` crops the source (handled by imageWithObjectFit); `fill`/`none`/
+  // `scale-down` stretch the source into the full box.
+  if (fit === "contain" && destW > 0 && destH > 0 && image.width > 0 && image.height > 0) {
+    const srcAspect = image.width / image.height;
+    const destAspect = destW / destH;
+    let drawW: number;
+    let drawH: number;
+    if (srcAspect > destAspect) {
+      drawW = destW;
+      drawH = destW / srcAspect;
+    } else {
+      drawH = destH;
+      drawW = destH * srcAspect;
+    }
+    const drawX = Number(dest.x) + (destW - drawW) / 2;
+    const drawY = Number(dest.y) + (destH - drawH) / 2;
+    const cmd: PaintCmd = {
+      op: "image",
+      rect: { x: drawX as Px, y: drawY as Px, width: drawW as Px, height: drawH as Px },
+      src: image,
+    };
+    if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+    out.push(cmd);
+    return;
+  }
+  const src = imageWithObjectFit(image, destW, destH, fit);
+  const cmd: PaintCmd = { op: "image", rect: copyRect(dest), src };
+  if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+  out.push(cmd);
+}
+
+function imageWithObjectFit(src: DecodedImage, destW: number, destH: number, fit: string): DecodedImage {
+  if (fit !== "cover" || !(destW > 0) || !(destH > 0) || !(src.width > 0) || !(src.height > 0)) {
+    return src;
+  }
+  const srcAspect = src.width / src.height;
+  const destAspect = destW / destH;
+  let cropW: number;
+  let cropH: number;
+  let cropX: number;
+  let cropY: number;
+  if (srcAspect > destAspect) {
+    cropH = src.height;
+    cropW = Math.max(1, Math.round(src.height * destAspect));
+    cropX = Math.max(0, Math.floor((src.width - cropW) / 2));
+    cropY = 0;
+  } else {
+    cropW = src.width;
+    cropH = Math.max(1, Math.round(src.width / destAspect));
+    cropX = 0;
+    cropY = Math.max(0, Math.floor((src.height - cropH) / 2));
+  }
+  if (cropX === 0 && cropY === 0 && cropW === src.width && cropH === src.height) {
+    return src;
+  }
+  if (cropX + cropW > src.width) cropW = src.width - cropX;
+  if (cropY + cropH > src.height) cropH = src.height - cropY;
+  if (!(cropW > 0) || !(cropH > 0)) return src;
+  const pixels = new Uint8ClampedArray(cropW * cropH * 4);
+  for (let y = 0; y < cropH; y += 1) {
+    const srcRow = ((cropY + y) * src.width + cropX) * 4;
+    pixels.set(src.pixels.subarray(srcRow, srcRow + cropW * 4), y * cropW * 4);
+  }
+  return { width: cropW, height: cropH, pixels };
 }
 
 /**
@@ -274,16 +509,23 @@ function emitText(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): vo
   const origin = fragment.box.contentBox;
   const at: Point = { x: origin.x, y: origin.y };
   const run = fragment.text;
+  const weight = run?.fontWeight ?? (numberField(style["fontWeight"]) || 400);
   if (run === undefined) {
-    out.push({ op: "text", glyphs: [], at, fill: copyColor(style.color), fontSize: style.fontSize });
+    if (!(Number(origin.width) > 0 && Number(origin.height) > 0)) return;
+    const cmd: PaintCmd = { op: "text", glyphs: [], at, fill: copyColor(style.color), fontSize: style.fontSize };
+    if (weight >= 500) (cmd as { fontWeight?: number }).fontWeight = weight;
+    out.push(cmd);
     return;
   }
+  if (run.glyphs.length === 0) return;
   const glyphs: Glyph[] = run.glyphs.map((g) => ({
     glyphId: g.glyphId,
     advance: g.advance,
     offset: { x: g.x, y: g.y },
   }));
-  out.push({ op: "text", glyphs, at, fill: copyColor(style.color), fontSize: run.fontSize });
+  const cmd: PaintCmd = { op: "text", glyphs, at, fill: copyColor(style.color), fontSize: run.fontSize };
+  if (weight >= 500) (cmd as { fontWeight?: number }).fontWeight = weight;
+  out.push(cmd);
 }
 
 /**
@@ -308,7 +550,46 @@ function emitBorder(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): 
   if (edges === null) {
     return; // no (or all-`none`) border paints nothing.
   }
-  out.push({ op: "border", rect: copyRect(fragment.box.borderBox), edges });
+  const radius = readBorderRadius(
+    style,
+    Number(fragment.box.borderBox.width),
+    Number(fragment.box.borderBox.height),
+  );
+  const cmd: PaintCmd = { op: "border", rect: copyRect(fragment.box.borderBox), edges };
+  if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+  out.push(cmd);
+}
+
+/**
+ * Emit `text-decoration` as `line` commands (underline, overline, line-through).
+ * Each decoration line spans the content-box width at the appropriate y position.
+ * The decoration color defaults to the text `color`; the width is 1px (a simple
+ * single-pixel line — CSS allows `text-decoration-thickness` but the initial
+ * `auto` maps to 1px for our backend).
+ */
+function emitTextDecoration(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): void {
+  const line = stringField(style["textDecorationLine"], "none");
+  if (line === "none") return;
+
+  const cb = fragment.box.contentBox;
+  const fontSize = numberField(style["fontSize"]);
+  const fill = readColor(style["textDecorationColor"]) ?? readColor(style["color"]) ?? { r: 0, g: 0, b: 0, a: 1 };
+  const width = Math.max(1, fontSize / 16) as Px;
+  const x1 = Number(cb.x);
+  const x2 = Number(cb.x) + Number(cb.width);
+
+  if (line === "underline" || line.includes("underline")) {
+    const y = Number(cb.y) + fontSize * 0.9;
+    out.push({ op: "line", from: { x: x1 as Px, y: y as Px }, to: { x: x2 as Px, y: y as Px }, fill, width });
+  }
+  if (line === "overline" || line.includes("overline")) {
+    const y = Number(cb.y);
+    out.push({ op: "line", from: { x: x1 as Px, y: y as Px }, to: { x: x2 as Px, y: y as Px }, fill, width });
+  }
+  if (line === "line-through" || line.includes("line-through")) {
+    const y = Number(cb.y) + fontSize * 0.5;
+    out.push({ op: "line", from: { x: x1 as Px, y: y as Px }, to: { x: x2 as Px, y: y as Px }, fill, width });
+  }
 }
 
 /**
@@ -390,8 +671,30 @@ interface ShadowSpec {
  * `rgb()/rgba()` (else a default translucent black). The blur radius is parsed
  * but not used (no blur in the raster — documented approximation).
  */
+function firstShadowLayer(value: string): string {
+  let depth = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (ch === "," && depth === 0) return value.slice(0, i).trim();
+  }
+  return value.trim();
+}
+
 function parseShadow(value: string): ShadowSpec | null {
   const text = value.trim();
+  if (text === "" || text === "none") {
+    return null;
+  }
+  const layer = firstShadowLayer(text);
+  if (layer === "" || layer.includes("inset")) {
+    return null;
+  }
+  return parseShadowLayer(layer);
+}
+
+function parseShadowLayer(text: string): ShadowSpec | null {
   if (text === "" || text === "none" || text.includes("inset")) {
     return null;
   }
@@ -475,6 +778,39 @@ function numberField(value: unknown): number {
 /** Read a string ComputedStyle field, defaulting to `fallback`. */
 function stringField(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+/**
+ * Read the computed `border-radius` as a number of px (initial 0).
+ * Also checks per-corner radii (border-top-left-radius, etc.) and returns the
+ * maximum, since the current `rect`/`border` commands support a single uniform
+ * radius. A PERCENTAGE radius (`50%`, common for circular avatars/icons) is
+ * resolved against half the box's smaller dimension (matching CSS: `50%` ⇒ the
+ * radius is 50% of the corresponding dimension; for a uniform circle that is
+ * min(width, height) / 2).
+ *
+ * @param boxW/boxH the border-box dimensions, used only to resolve `%` radii.
+ */
+function readBorderRadius(style: ComputedStyle, boxW = 0, boxH = 0): number {
+  const resolve = (value: unknown): number => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    // Percentage specified-length ⇒ resolve against the box's smaller dimension.
+    if (typeof value === "object" && value !== null) {
+      const v = value as { kind?: unknown; unit?: unknown; value?: unknown };
+      if (v.kind === "specified-length" && v.unit === "%" && typeof v.value === "number") {
+        return (v.value * Math.min(boxW, boxH)) / 100;
+      }
+    }
+    return 0;
+  };
+  const r = resolve(style["borderRadius"]);
+  if (r > 0) return r;
+  // Check per-corner radii.
+  const tl = resolve(style["borderTopLeftRadius"]);
+  const tr = resolve(style["borderTopRightRadius"]);
+  const br = resolve(style["borderBottomRightRadius"]);
+  const bl = resolve(style["borderBottomLeftRadius"]);
+  return Math.max(tl, tr, br, bl);
 }
 
 // ---------------------------------------------------------------------------

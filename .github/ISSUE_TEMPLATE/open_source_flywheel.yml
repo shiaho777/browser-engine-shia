@@ -1,0 +1,50 @@
+name: Open-Source Flywheel
+description: Improve contributor velocity, evidence gates, docs, dashboards, or review workflow.
+title: "[flywheel] "
+labels: ["open-source", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What makes the project harder to trust, run, review, or contribute to?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Mechanism
+      description: Describe the workflow, tool, doc, template, or gate to add.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Proof It Works
+      description: What command, generated artifact, or reviewer behavior should prove the improvement?
+      placeholder: |
+        npm run evidence
+        git diff --exit-code -- BENCHMARK.md benchmark-evidence.json evidence-dashboard.html
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow_area
+    attributes:
+      label: Workflow Area
+      options:
+        - labels
+        - good-first-issues
+        - rfc-process
+        - evidence-dashboard
+        - ci-artifacts
+        - contributor-docs
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope Check
+      options:
+        - label: This improves external contributor speed or trust.
+        - label: This does not weaken architecture, WPT, or evidence gates.
+        - label: This has a clear maintainer review path.

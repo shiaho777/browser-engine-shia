@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS sibling combinators</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #adjacent-start + .target { color: rgb(1, 2, 3); }
+  #general-start ~ .later { background-color: rgb(4, 5, 6); }
+  #general-start ~ .deep .nested { width: 47px; }
+</style>
+<body>
+  <section id="scope">
+    <p id="adjacent-start">start</p>
+    <p id="adjacent-target" class="target">adjacent</p>
+    <p id="general-start">general start</p>
+    <p id="gap">gap</p>
+    <p id="general-target" class="later">later</p>
+    <div class="deep"><span id="nested" class="nested">nested</span></div>
+  </section>
+  <p id="before" class="target">before</p>
+<script>
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("adjacent-target")).getPropertyValue("color"),
+    "rgb(1, 2, 3)"
+  );
+  assert_equals(
+    getComputedStyle(document.getElementById("before")).getPropertyValue("color"),
+    "rgb(0, 0, 0)"
+  );
+}, "adjacent sibling combinator matches only the immediately following sibling");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("general-target")).getPropertyValue("background-color"),
+    "rgb(4, 5, 6)"
+  );
+  assert_equals(
+    getComputedStyle(document.getElementById("gap")).getPropertyValue("background-color"),
+    "rgba(0, 0, 0, 0)"
+  );
+}, "general sibling combinator matches following siblings after intervening elements");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("nested")).getPropertyValue("width"),
+    "47px"
+  );
+}, "sibling combinators compose with descendant selectors");
+</script>
+</body>

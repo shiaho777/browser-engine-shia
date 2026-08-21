@@ -1,0 +1,53 @@
+name: Performance / Incrementality
+description: Track measurable recomputation, resource, backend, or runtime performance work.
+title: "[perf] "
+labels: ["performance", "needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What should get faster, lighter, or more incremental?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - query-graph
+        - style-sharing
+        - layout-incrementality
+        - paint-invalidation
+        - resource-loading
+        - raster-backend
+        - guest-runtime
+        - benchmark-dashboard
+    validations:
+      required: true
+  - type: textarea
+    id: current_evidence
+    attributes:
+      label: Current Evidence
+      description: Paste trace counts, benchmark evidence, or a command that reproduces the cost.
+      placeholder: |
+        npm run wpt:subsets -- --trace
+        npm run benchmark
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Target Outcome
+      description: What proof would show that this is improved?
+      placeholder: Fewer recomputes for paint-only edits; stable cache hits increase; no WPT regression.
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: No wall-clock number should enter `BENCHMARK.md` unless it is from a controlled same-machine comparison suite.
+        - label: Query/resource evidence should stay deterministic.
+        - label: The kernel owns dependency tracking; no manual invalidation API.

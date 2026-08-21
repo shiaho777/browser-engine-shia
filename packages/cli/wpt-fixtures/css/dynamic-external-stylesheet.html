@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic external stylesheet support resources</title>
+  <script src="/resources/testharness.js"></script>
+  <script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<div id="dynamic-target">dynamic stylesheet</div>
+<script>
+var dynamicLink;
+
+test(function () {
+  dynamicLink = document.createElement("link");
+  dynamicLink.setAttribute("rel", "stylesheet");
+  dynamicLink.setAttribute("href", "support/dynamic-link-a.css");
+  document.querySelector("head").appendChild(dynamicLink);
+
+  var cs = getComputedStyle(document.getElementById("dynamic-target"));
+  assert_equals(cs.getPropertyValue("width"), "64px", "the appended stylesheet controls width");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "the appended stylesheet controls color");
+}, "dynamically appended stylesheet support resource participates in the cascade");
+
+test(function () {
+  dynamicLink.setAttribute("href", "support/dynamic-link-b.css");
+
+  var cs = getComputedStyle(document.getElementById("dynamic-target"));
+  assert_equals(cs.getPropertyValue("width"), "72px", "the changed href reloads stylesheet bytes");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(255, 0, 0)", "the replacement stylesheet controls background");
+}, "changing a dynamic stylesheet href refreshes the cascade");
+
+test(function () {
+  dynamicLink.remove();
+
+  var cs = getComputedStyle(document.getElementById("dynamic-target"));
+  assert_equals(cs.getPropertyValue("width"), "auto", "removing the link removes the external width declaration");
+  assert_equals(cs.getPropertyValue("background-color"), "rgba(0, 0, 0, 0)", "removed stylesheet no longer paints a background");
+}, "removing a dynamic stylesheet link removes its declarations");
+</script>
+</body>
+</html>

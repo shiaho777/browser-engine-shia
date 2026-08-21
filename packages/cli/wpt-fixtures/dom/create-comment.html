@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Document createComment</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="host"><span id="visible">V</span></section>
+<section id="clone-host"><span>visible</span></section>
+<script>
+test(function () {
+  var comment = document.createComment("secret");
+
+  assert_equals(comment.textContent, "secret", "created comment exposes its text data");
+  assert_equals(comment.parentNode, null, "created comment is detached");
+
+  comment.textContent = "updated";
+  assert_equals(comment.textContent, "updated", "comment textContent setter updates the comment data");
+}, "document.createComment creates detached readable comment nodes");
+
+test(function () {
+  var host = document.getElementById("host");
+  var visible = document.getElementById("visible");
+  var comment = document.createComment("hidden");
+
+  host.appendChild(comment);
+
+  assert_equals(comment.parentNode, host, "appended comment receives the host parent");
+  assert_equals(host.childNodes.length, 2, "comment participates in childNodes");
+  assert_equals(host.childNodes[1], comment, "comment lands at the appended child position");
+  assert_equals(host.children.length, 1, "comment is excluded from children");
+  assert_equals(host.children[0], visible, "element child order is unchanged");
+}, "appended comments are traversable through childNodes but not children");
+
+test(function () {
+  var host = document.getElementById("host");
+  var comment = host.childNodes[1];
+
+  assert_equals(host.textContent, "V", "comment text does not contribute to parent textContent");
+  assert_equals(host.querySelector("comment"), null, "comment nodes are not selector-matchable elements");
+  assert_equals(document.getElementsByTagName("comment").length, 0, "comment nodes are not tag-name elements");
+  assert_equals(comment.textContent, "hidden", "comment data remains readable through the childNodes view");
+}, "comments do not surface as element text or selector matches");
+
+test(function () {
+  var host = document.getElementById("clone-host");
+  var comment = document.createComment("copy-me");
+  host.appendChild(comment);
+
+  var clone = host.cloneNode(true);
+
+  assert_equals(clone.childNodes.length, 2, "deep clone preserves the comment child");
+  assert_equals(clone.childNodes[1].textContent, "copy-me", "deep clone preserves comment text");
+  assert_equals(clone.children.length, 1, "cloned comment stays out of children");
+  assert_equals(clone.textContent, "visible", "cloned comment does not contribute to textContent");
+}, "cloneNode(true) preserves comments without exposing them as element content");
+</script>
+</body>

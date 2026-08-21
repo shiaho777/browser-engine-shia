@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle named property enumeration</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    background-color: rgb(1, 2, 3);
+    float: left;
+    font-size: 21px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+function keys(object) {
+  return Object.keys(object);
+}
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+  var names = keys(cs);
+
+  assert_true(names.indexOf("0") >= 0, "numeric item 0 is enumerable");
+  assert_true(names.indexOf("background-color") >= 0, "dashed supported CSS property is enumerable");
+  assert_true(names.indexOf("backgroundColor") >= 0, "camelCase CSSOM alias is enumerable");
+  assert_true(names.indexOf("cssFloat") >= 0, "cssFloat compatibility alias is enumerable");
+  assert_true(names.indexOf("getPropertyValue") >= 0, "ordinary declaration method remains enumerable");
+  assert_true(names.indexOf("cssText") >= 0, "ordinary declaration data property remains enumerable");
+  assert_false(names.indexOf("not-a-real-css-property") >= 0, "unknown dashed names are not enumerable");
+  assert_false(names.indexOf("notARealCssProperty") >= 0, "unknown camelCase names are not enumerable");
+}, "getComputedStyle enumerates supported named properties without synthesizing unknown CSS names");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+  var descriptor = Object.getOwnPropertyDescriptor(cs, "background-color");
+  var cssFloatDescriptor = Object.getOwnPropertyDescriptor(cs, "cssFloat");
+  var indexDescriptor = Object.getOwnPropertyDescriptor(cs, "0");
+
+  assert_equals(descriptor.value, "rgb(1, 2, 3)", "descriptor exposes the resolved dashed property value");
+  assert_true(descriptor.enumerable, "supported CSS properties are enumerable");
+  assert_true(descriptor.configurable, "supported CSS property descriptors are configurable");
+  assert_false(descriptor.writable, "computed CSS property descriptors are read-only");
+  assert_equals(cssFloatDescriptor.value, "left", "cssFloat descriptor reads the float value");
+  assert_equals(indexDescriptor.value, cs.item(0), "numeric index descriptor mirrors item(0)");
+  assert_true(Object.prototype.propertyIsEnumerable.call(cs, "background-color"), "propertyIsEnumerable sees supported CSS names");
+  assert_equals(Object.getOwnPropertyDescriptor(cs, "not-a-real-css-property"), undefined, "unknown CSS names have no descriptor");
+}, "getComputedStyle descriptors reflect supported named properties");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+  var copy = Object.assign({}, cs);
+
+  assert_equals(copy["background-color"], "rgb(1, 2, 3)", "Object.assign copies dashed computed properties");
+  assert_equals(copy.backgroundColor, "rgb(1, 2, 3)", "Object.assign copies camelCase aliases");
+  assert_equals(copy.cssFloat, "left", "Object.assign copies cssFloat");
+  assert_equals(copy["not-a-real-css-property"], undefined, "Object.assign does not copy unknown CSS names");
+}, "getComputedStyle enumerable names copy as ordinary object properties");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  cs.expandoValue = "kept";
+
+  assert_true(keys(cs).indexOf("expandoValue") >= 0, "explicit expandos remain enumerable");
+  assert_equals(Object.getOwnPropertyDescriptor(cs, "expandoValue").value, "kept", "expando descriptor is ordinary data");
+  assert_equals(Object.assign({}, cs).expandoValue, "kept", "Object.assign copies explicit expandos");
+  assert_equals(cs["not-a-real-css-property"], undefined, "unknown CSS-like names remain absent after expando writes");
+}, "getComputedStyle enumeration preserves ordinary expando properties");
+</script>
+</body>

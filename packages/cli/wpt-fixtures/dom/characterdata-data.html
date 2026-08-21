@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM CharacterData data</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="host"><span id="visible">V</span></section>
+<script>
+test(function () {
+  var host = document.getElementById("host");
+  var text = document.createTextNode("alpha");
+
+  host.appendChild(text);
+  assert_equals(text.data, "alpha", "data reads the text node contents");
+  assert_equals(text.textContent, "alpha", "textContent shares the same text data");
+
+  text.data = "beta";
+  assert_equals(text.textContent, "beta", "textContent follows data writes");
+  text.textContent = "gamma";
+  assert_equals(text.data, "gamma", "data follows textContent writes");
+  assert_equals(host.textContent, "Vgamma", "text data contributes to parent textContent");
+}, "CharacterData.data reads and writes text nodes");
+
+test(function () {
+  var host = document.getElementById("host");
+  var comment = document.createComment("secret");
+
+  host.appendChild(comment);
+  assert_equals(comment.data, "secret", "data reads comment node contents");
+  assert_equals(comment.textContent, "secret", "comment textContent shares the same data");
+
+  comment.data = "hidden";
+  assert_equals(comment.textContent, "hidden", "comment textContent follows data writes");
+  comment.textContent = "quiet";
+  assert_equals(comment.data, "quiet", "comment data follows textContent writes");
+}, "CharacterData.data reads and writes comment nodes");
+
+test(function () {
+  var host = document.getElementById("host");
+  var comment = host.lastChild;
+
+  assert_equals(comment.data, "quiet", "precondition: comment data remains readable");
+  assert_equals(host.childNodes[2], comment, "comment remains traversable through childNodes");
+  assert_equals(host.textContent, "Vgamma", "comment data does not contribute to parent textContent");
+  assert_equals(host.children.length, 1, "comment nodes do not become element children");
+}, "Comment data remains traversable but non-rendering element text");
+</script>
+</body>

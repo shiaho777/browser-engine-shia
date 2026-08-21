@@ -4,9 +4,9 @@
 
 ## Headline — where we lead
 
-- **Hand-written surface (smaller = more readable): 24,826 lines** — Our hand-written surface is ~1,450× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
-- **compat-per-LOC (North Star): 0.0018 passes/line** — compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours.
-- **mechanism-density (features per 1k hand-written lines): 35.89 features/kloc** — 891 platform features (CSS properties + DOM members) over 24,826 hand-written lines = 35.89 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- **Hand-written surface (smaller = more readable): 46,620 lines** — Our hand-written surface is ~772× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
+- **compat-per-LOC (North Star): 0.0010 passes/line** — compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours.
+- **mechanism-density (features per 1k hand-written lines): 19.13 features/kloc** — 892 platform features (CSS properties + DOM members) over 46,620 hand-written lines = 19.13 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ## Overall
 
@@ -16,57 +16,947 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 | Dimension | Ours (live) | Chromium (cited) | Verdict |
 |---|---|---|---|
-| Hand-written surface (smaller = more readable) | 24,826 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
-| compat-per-LOC (North Star) | 0.0018 passes/line | _needs-source_ | 🟢 WIN |
-| mechanism-density (features per 1k hand-written lines) | 35.89 features/kloc | — | 🟢 WIN |
-| CSS-property coverage (raw count) | 339 properties | 600 properties _(CSS specifications (order-of-magnitude))_ | 🟡 GAP |
-| Raw WPT / Interop pass rate | 100% of our curated self-test subset | 95% _(WebKit blog — The success of Interop 2024)_ | 🟡 GAP |
+| Hand-written surface (smaller = more readable) | 46,620 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
+| compat-per-LOC (North Star) | 0.0010 passes/line | _needs-source_ | 🟢 WIN |
+| mechanism-density (features per 1k hand-written lines) | 19.13 features/kloc | — | 🟢 WIN |
+| CSS-property coverage (raw count) | 340 properties | 600 properties _(CSS specifications (order-of-magnitude))_ | 🟡 GAP |
+| Raw WPT / Interop pass rate | 100% of maintained WPT subsets (318/318 curated subtests) | 95% _(WebKit blog — The success of Interop 2024)_ | 🟡 GAP |
 | Runtime performance (Speedometer-class) | not measured | _needs-source_ | ⚪ N/C |
 
 ## Our live metrics (re-computed every run)
 
-- Hand-written product lines: **24,826**
-- Generated lines: 5,430
-- Test lines: 16,249
-- Total system size: 46,505
-- CSS properties (data table): **339**
+- Hand-written product lines: **46,620**
+- Generated lines: 5,439
+- Test lines: 25,790
+- Total system size: 77,849
+- CSS properties (data table): **340**
 - DOM interface members (IDL table): **552**
-- Platform features total: 891
-- WPT self-test subset passes: 45
-- **compat-per-LOC: 0.0018 passes/line**
-- **mechanism-density: 35.89 features/kloc**
+- Platform features total: 892
+- Benchmark self-test numerator: 45 passing checks
+- **compat-per-LOC: 0.0010 passes/line**
+- **mechanism-density: 19.13 features/kloc**
+
+## Execution evidence (maintained WPT subset trace)
+
+- Maintained subsets traced: 3
+- WPT files/subtests: 90 files, 318 subtests
+- WPT outcomes: 318 passed, 0 failed, 0 errored
+- Query calls: 11106
+- Recomputation events: 3884
+- Cache hits: 7222
+- Verified cache hits: 23
+- Dependency reads: 121506
+- Traced stages: qFineComputed, qFineLayout, qFineLayoutStyle, qFinePaint, qFineRuleIndex, qFineSheets
+
+## Incremental edit-sequence evidence
+
+- Scenario: 40 sibling boxes; paint-only class edit, layout-affecting class edit, no-mutation render
+- Document nodes: 86
+- Edited node: #n20
+- Paint-only edit reused layout: yes
+- Layout-affecting edit recomputed layout: yes
+- No-mutation render recomputes: 0
+- Query calls: 1905
+- Recomputation events: 183
+- Cache hits: 1722
+- Verified cache hits: 333
+- Dependency reads: 28367
+- Traced stages: qFineComputed, qFineLayout, qFineLayoutStyle, qFinePaint, qFineRuleIndex, qFineSheets
+
+| Step | Calls | Recomputes | Cache hits | Verified hits | Dependency reads |
+|---|---:|---:|---:|---:|---:|
+| prime | 588 | 172 | 416 | 0 | 8856 |
+| paint-only-edit | 592 | 5 | 587 | 167 | 9520 |
+| layout-affecting-edit | 724 | 6 | 718 | 166 | 9652 |
+| no-mutation-render | 1 | 0 | 1 | 0 | 339 |
+
+## Script-driven DOM mutation evidence
+
+- Scenario: real V8 script uses classList.add, document.createElement, id/className setters, and appendChild
+- Document nodes: 8 → 9
+- Script DOM mutations: 6
+- Paint-only script edit reused layout: yes
+- Layout-affecting script edit recomputed layout: yes
+- appendChild increased nodes: yes
+- Appended node painted: yes
+- Query calls: 207
+- Recomputation events: 35
+- Cache hits: 172
+- Verified cache hits: 31
+- Dependency reads: 2095
+- Traced stages: qFineComputed, qFineLayout, qFineLayoutStyle, qFinePaint, qFineRuleIndex, qFineSheets
+
+| Step | Mutations | Calls | Recomputes | Cache hits | Verified hits | Dependency reads |
+|---|---:|---:|---:|---:|---:|---:|
+| prime | 0 | 42 | 16 | 26 | 0 | 432 |
+| script-paint-only | 1 | 46 | 5 | 41 | 11 | 511 |
+| script-layout-edit | 1 | 58 | 6 | 52 | 10 | 537 |
+| script-append-child | 4 | 61 | 8 | 53 | 10 | 615 |
+
+## Resource-loaded page evidence
+
+- URL: https://benchmark.test/index.html
+- Root HTML bytes: 124
+- External resources: 3 discovered, 2 loaded, 1 missing
+- Loaded resource bytes: 106
+- Stylesheets: 2
+- Decoded images: 1
+- Display commands: 2
+- Paint ops: image, text
+- PNG output: 800x600
+- Missing-image-only URL: https://benchmark.test/missing-image.html
+- Missing-image-only resources: 1 discovered, 0 loaded, 1 missing
+- Missing-image-only decoded images: 0
+- Missing-image-only painted image: no
+- Missing-image-only paint ops: text
+- Invalid-image-only URL: https://benchmark.test/invalid-image.html
+- Invalid-image-only resources: 1 discovered, 1 loaded, 0 missing
+- Invalid-image-only loaded bytes: 9
+- Invalid-image-only decoded images: 0
+- Invalid-image-only painted image: no
+- Invalid-image-only paint ops: text
+- Duplicate-resource URL: https://benchmark.test/duplicate-resource.html
+- Duplicate-resource fetch calls: 2
+- Duplicate-resource shared fetches: 1
+- Duplicate-resource resources: 1 discovered, 1 loaded, 0 missing
+- Duplicate-resource loaded bytes: 73
+- Duplicate-resource decoded images: 2
+- Duplicate-resource painted images: 2
+- Duplicate-resource paint ops: image
+- Duplicate-stylesheet URL: https://benchmark.test/duplicate-stylesheet.html
+- Duplicate-stylesheet fetch calls: 2
+- Duplicate-stylesheet shared fetches: 1
+- Duplicate-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Duplicate-stylesheet loaded bytes: 67
+- Duplicate-stylesheet stylesheets: 4
+- Duplicate-stylesheet author stylesheets: 3
+- Duplicate-stylesheet author rules: 3
+- Duplicate-stylesheet author declarations: 9
+- Duplicate-stylesheet decoded images: 0
+- Duplicate-stylesheet painted background: yes
+- Duplicate-stylesheet duplicate link won source order: yes
+- Duplicate-stylesheet paint ops: rect, text
+- Data-url-only URL: https://benchmark.test/data-url-resource.html
+- Data-url-only fetch calls: 1
+- Data-url-only external resources: 0 discovered, 0 loaded, 0 missing
+- Data-url-only loaded bytes: 0
+- Data-url-only stylesheets: 2
+- Data-url-only decoded images: 1
+- Data-url-only painted images: 1
+- Data-url-only painted background: yes
+- Data-url-only paint ops: image, rect, text
+- Data-url-charset percent URL: https://benchmark.test/data-url-charset-percent-stylesheet.html
+- Data-url-charset percent metadata: text/css;charset=utf-8
+- Data-url-charset percent fetch calls: 1
+- Data-url-charset percent data URL fetch calls: 0
+- Data-url-charset percent external resources: 0 discovered, 0 loaded, 0 missing
+- Data-url-charset percent stylesheets: 2
+- Data-url-charset percent author stylesheets: 1
+- Data-url-charset percent author declarations: 3
+- Data-url-charset percent painted background: yes
+- Data-url-charset base64 URL: https://benchmark.test/data-url-charset-base64-stylesheet.html
+- Data-url-charset base64 metadata: text/css;charset=utf-8;base64
+- Data-url-charset base64 fetch calls: 1
+- Data-url-charset base64 data URL fetch calls: 0
+- Data-url-charset base64 external resources: 0 discovered, 0 loaded, 0 missing
+- Data-url-charset base64 stylesheets: 2
+- Data-url-charset base64 author stylesheets: 1
+- Data-url-charset base64 author declarations: 3
+- Data-url-charset base64 painted background: yes
+- Data-url-charset unsupported URL: https://benchmark.test/data-url-charset-unsupported-stylesheet.html
+- Data-url-charset unsupported metadata: text/css;charset=iso-8859-1
+- Data-url-charset unsupported fetch calls: 1
+- Data-url-charset unsupported data URL fetch calls: 0
+- Data-url-charset unsupported external resources: 0 discovered, 0 loaded, 0 missing
+- Data-url-charset unsupported stylesheets: 1
+- Data-url-charset unsupported author stylesheets: 0
+- Data-url-charset unsupported author declarations: 0
+- Data-url-charset unsupported painted background: no
+- Data-url-stylesheet external-after URL: https://benchmark.test/data-url-before-external-stylesheet.html
+- Data-url-stylesheet external-after external URL: https://benchmark.test/late.css
+- Data-url-stylesheet external-after fetch calls: 2
+- Data-url-stylesheet external-after data URL fetch calls: 0
+- Data-url-stylesheet external-after external fetches: 1
+- Data-url-stylesheet external-after external resources: 1 discovered, 1 loaded, 0 missing
+- Data-url-stylesheet external-after loaded bytes: 40
+- Data-url-stylesheet external-after stylesheets: 3
+- Data-url-stylesheet external-after author stylesheets: 2
+- Data-url-stylesheet external-after author rules: 2
+- Data-url-stylesheet external-after author declarations: 4
+- Data-url-stylesheet external-after decoded images: 0
+- Data-url-stylesheet external-after painted background: yes
+- Data-url-stylesheet external-after source-order winner blue: yes
+- Data-url-stylesheet external-after paint ops: rect, text
+- Data-url-stylesheet data-after URL: https://benchmark.test/external-before-data-url-stylesheet.html
+- Data-url-stylesheet data-after external URL: https://benchmark.test/early.css
+- Data-url-stylesheet data-after fetch calls: 2
+- Data-url-stylesheet data-after data URL fetch calls: 0
+- Data-url-stylesheet data-after external fetches: 1
+- Data-url-stylesheet data-after external resources: 1 discovered, 1 loaded, 0 missing
+- Data-url-stylesheet data-after loaded bytes: 67
+- Data-url-stylesheet data-after stylesheets: 3
+- Data-url-stylesheet data-after author stylesheets: 2
+- Data-url-stylesheet data-after author rules: 2
+- Data-url-stylesheet data-after author declarations: 4
+- Data-url-stylesheet data-after decoded images: 0
+- Data-url-stylesheet data-after painted background: yes
+- Data-url-stylesheet data-after source-order winner blue: yes
+- Data-url-stylesheet data-after paint ops: rect, text
+- External-inline-stylesheet inline-after URL: https://benchmark.test/external-before-inline-stylesheet.html
+- External-inline-stylesheet inline-after external URL: https://benchmark.test/early.css
+- External-inline-stylesheet inline-after fetch calls: 2
+- External-inline-stylesheet inline-after external fetches: 1
+- External-inline-stylesheet inline-after external resources: 1 discovered, 1 loaded, 0 missing
+- External-inline-stylesheet inline-after loaded bytes: 67
+- External-inline-stylesheet inline-after stylesheets: 3
+- External-inline-stylesheet inline-after author stylesheets: 2
+- External-inline-stylesheet inline-after author rules: 2
+- External-inline-stylesheet inline-after author declarations: 4
+- External-inline-stylesheet inline-after decoded images: 0
+- External-inline-stylesheet inline-after painted background: yes
+- External-inline-stylesheet inline-after source-order winner blue: yes
+- External-inline-stylesheet inline-after paint ops: rect, text
+- External-inline-stylesheet external-after URL: https://benchmark.test/inline-before-external-stylesheet.html
+- External-inline-stylesheet external-after external URL: https://benchmark.test/late.css
+- External-inline-stylesheet external-after fetch calls: 2
+- External-inline-stylesheet external-after external fetches: 1
+- External-inline-stylesheet external-after external resources: 1 discovered, 1 loaded, 0 missing
+- External-inline-stylesheet external-after loaded bytes: 40
+- External-inline-stylesheet external-after stylesheets: 3
+- External-inline-stylesheet external-after author stylesheets: 2
+- External-inline-stylesheet external-after author rules: 2
+- External-inline-stylesheet external-after author declarations: 4
+- External-inline-stylesheet external-after decoded images: 0
+- External-inline-stylesheet external-after painted background: yes
+- External-inline-stylesheet external-after source-order winner blue: yes
+- External-inline-stylesheet external-after paint ops: rect, text
+- Invalid-data-image URL: https://benchmark.test/invalid-data-image.html
+- Invalid-data-image fetch calls: 1
+- Invalid-data-image external resources: 0 discovered, 0 loaded, 0 missing
+- Invalid-data-image loaded bytes: 0
+- Invalid-data-image decoded images: 0
+- Invalid-data-image painted images: 0
+- Invalid-data-image painted background: yes
+- Invalid-data-image paint ops: rect, text
+- Invalid-data-stylesheet URL: https://benchmark.test/invalid-data-stylesheet.html
+- Invalid-data-stylesheet fetch calls: 1
+- Invalid-data-stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Invalid-data-stylesheet loaded bytes: 0
+- Invalid-data-stylesheet stylesheets: 2
+- Invalid-data-stylesheet author stylesheets: 1
+- Invalid-data-stylesheet author rules: 1
+- Invalid-data-stylesheet author declarations: 0
+- Invalid-data-stylesheet decoded images: 0
+- Invalid-data-stylesheet painted background: no
+- Invalid-data-stylesheet paint ops: text
+- Non-css-data-stylesheet URL: https://benchmark.test/non-css-data-stylesheet.html
+- Non-css-data-stylesheet fetch calls: 1
+- Non-css-data-stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Non-css-data-stylesheet loaded bytes: 0
+- Non-css-data-stylesheet stylesheets: 1
+- Non-css-data-stylesheet author stylesheets: 0
+- Non-css-data-stylesheet author rules: 0
+- Non-css-data-stylesheet author declarations: 0
+- Non-css-data-stylesheet decoded images: 0
+- Non-css-data-stylesheet painted background: no
+- Non-css-data-stylesheet paint ops: text
+- No-href-stylesheet URL: https://benchmark.test/no-href-stylesheet.html
+- No-href-stylesheet fetch calls: 2
+- No-href-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- No-href-stylesheet loaded bytes: 67
+- No-href-stylesheet stylesheets: 2
+- No-href-stylesheet author stylesheets: 1
+- No-href-stylesheet author rules: 1
+- No-href-stylesheet author declarations: 3
+- No-href-stylesheet decoded images: 0
+- No-href-stylesheet painted background: yes
+- No-href-stylesheet paint ops: rect, text
+- Empty-href-stylesheet URL: https://benchmark.test/empty-href-stylesheet.html
+- Empty-href-stylesheet fetch calls: 2
+- Empty-href-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Empty-href-stylesheet loaded bytes: 86
+- Empty-href-stylesheet stylesheets: 2
+- Empty-href-stylesheet author stylesheets: 1
+- Empty-href-stylesheet author rules: 0
+- Empty-href-stylesheet author declarations: 0
+- Empty-href-stylesheet decoded images: 0
+- Empty-href-stylesheet painted background: no
+- Empty-href-stylesheet paint ops: text
+- Fragment-href-stylesheet URL: https://benchmark.test/fragment-href-stylesheet.html
+- Fragment-href-stylesheet fetch calls: 2
+- Fragment-href-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Fragment-href-stylesheet loaded bytes: 92
+- Fragment-href-stylesheet stylesheets: 2
+- Fragment-href-stylesheet author stylesheets: 1
+- Fragment-href-stylesheet author rules: 0
+- Fragment-href-stylesheet author declarations: 0
+- Fragment-href-stylesheet decoded images: 0
+- Fragment-href-stylesheet painted background: no
+- Fragment-href-stylesheet paint ops: text
+- Query-href-stylesheet URL: https://benchmark.test/query-href-stylesheet.html?old=1#frag
+- Query-href-stylesheet fetch calls: 2
+- Query-href-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Query-href-stylesheet loaded bytes: 92
+- Query-href-stylesheet stylesheets: 2
+- Query-href-stylesheet author stylesheets: 1
+- Query-href-stylesheet author rules: 0
+- Query-href-stylesheet author declarations: 0
+- Query-href-stylesheet decoded images: 0
+- Query-href-stylesheet painted background: no
+- Query-href-stylesheet paint ops: text
+- Protocol-relative-stylesheet URL: https://benchmark.test/protocol-relative-stylesheet.html
+- Protocol-relative-stylesheet fetch calls: 2
+- Protocol-relative-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Protocol-relative-stylesheet loaded bytes: 67
+- Protocol-relative-stylesheet stylesheets: 2
+- Protocol-relative-stylesheet author stylesheets: 1
+- Protocol-relative-stylesheet author rules: 1
+- Protocol-relative-stylesheet author declarations: 3
+- Protocol-relative-stylesheet decoded images: 0
+- Protocol-relative-stylesheet painted background: yes
+- Protocol-relative-stylesheet paint ops: rect, text
+- Whitespace-rel-stylesheet URL: https://benchmark.test/whitespace-rel-stylesheet.html
+- Whitespace-rel-stylesheet fetch calls: 3
+- Whitespace-rel-stylesheet external resources: 2 discovered, 2 loaded, 0 missing
+- Whitespace-rel-stylesheet loaded bytes: 107
+- Whitespace-rel-stylesheet stylesheets: 3
+- Whitespace-rel-stylesheet author stylesheets: 2
+- Whitespace-rel-stylesheet author rules: 2
+- Whitespace-rel-stylesheet author declarations: 4
+- Whitespace-rel-stylesheet decoded images: 0
+- Whitespace-rel-stylesheet painted background: yes
+- Whitespace-rel-stylesheet source-order winner blue: yes
+- Whitespace-rel alternate fetch calls: 1
+- Whitespace-rel alternate external resources: 0 discovered, 0 loaded
+- Whitespace-rel alternate author stylesheets: 0
+- Whitespace-rel alternate painted background: no
+- Whitespace-rel-stylesheet paint ops: rect, text
+- Duplicate-rel-stylesheet URL: https://benchmark.test/duplicate-rel-stylesheet.html
+- Duplicate-rel-stylesheet fetch calls: 3
+- Duplicate-rel-stylesheet external resources: 2 discovered, 2 loaded, 0 missing
+- Duplicate-rel-stylesheet loaded bytes: 107
+- Duplicate-rel-stylesheet stylesheets: 3
+- Duplicate-rel-stylesheet author stylesheets: 2
+- Duplicate-rel-stylesheet author rules: 2
+- Duplicate-rel-stylesheet author declarations: 4
+- Duplicate-rel-stylesheet decoded images: 0
+- Duplicate-rel-stylesheet painted background: yes
+- Duplicate-rel-stylesheet source-order winner blue: yes
+- Duplicate-rel alternate fetch calls: 1
+- Duplicate-rel alternate external resources: 0 discovered, 0 loaded
+- Duplicate-rel alternate author stylesheets: 0
+- Duplicate-rel alternate painted background: no
+- Duplicate-rel-stylesheet paint ops: rect, text
+- Whitespace-href-stylesheet URL: https://benchmark.test/whitespace-href-stylesheet.html
+- Whitespace-href-stylesheet raw href: " /early.css "
+- Whitespace-href-stylesheet resolved href: https://benchmark.test/early.css
+- Whitespace-href-stylesheet loaded resource URL: https://benchmark.test/early.css
+- Whitespace-href-stylesheet fetch calls: 3
+- Whitespace-href-stylesheet external resources: 2 discovered, 2 loaded, 0 missing
+- Whitespace-href-stylesheet loaded bytes: 107
+- Whitespace-href-stylesheet stylesheets: 3
+- Whitespace-href-stylesheet author stylesheets: 2
+- Whitespace-href-stylesheet author rules: 2
+- Whitespace-href-stylesheet author declarations: 4
+- Whitespace-href-stylesheet decoded images: 0
+- Whitespace-href-stylesheet painted background: yes
+- Whitespace-href-stylesheet source-order winner blue: yes
+- Whitespace-href-stylesheet paint ops: rect, text
+- Control-character-href-stylesheet URL: https://benchmark.test/control-character-href-stylesheet.html
+- Control-character-href-stylesheet raw href JSON: "\n\t/early.css\f"
+- Control-character-href-stylesheet resolved href: https://benchmark.test/early.css
+- Control-character-href-stylesheet loaded resource URL: https://benchmark.test/early.css
+- Control-character-href-stylesheet fetch calls: 3
+- Control-character-href-stylesheet external resources: 2 discovered, 2 loaded, 0 missing
+- Control-character-href-stylesheet loaded bytes: 107
+- Control-character-href-stylesheet stylesheets: 3
+- Control-character-href-stylesheet author stylesheets: 2
+- Control-character-href-stylesheet author rules: 2
+- Control-character-href-stylesheet author declarations: 4
+- Control-character-href-stylesheet decoded images: 0
+- Control-character-href-stylesheet painted background: yes
+- Control-character-href-stylesheet source-order winner blue: yes
+- Control-character-href-stylesheet paint ops: rect, text
+- Base-href-subresource URL: https://benchmark.test/pages/base-href-subresource.html
+- Base-href-subresource raw base href: https://cdn.benchmark.test/assets/
+- Base-href-subresource resolved base href: https://cdn.benchmark.test/assets/
+- Base-href-subresource stylesheet href: css/theme.css
+- Base-href-subresource image src: img/pic.png
+- Base-href-subresource loaded stylesheet URL: https://cdn.benchmark.test/assets/css/theme.css
+- Base-href-subresource loaded image URL: https://cdn.benchmark.test/assets/img/pic.png
+- Base-href-subresource fetch calls: 3
+- Base-href-subresource stylesheet fetches: 1
+- Base-href-subresource image fetches: 1
+- Base-href-subresource external resources: 2 discovered, 2 loaded, 0 missing
+- Base-href-subresource loaded bytes: 174
+- Base-href-subresource stylesheets: 2
+- Base-href-subresource author stylesheets: 1
+- Base-href-subresource author rules: 2
+- Base-href-subresource author declarations: 5
+- Base-href-subresource decoded images: 1
+- Base-href-subresource painted background: yes
+- Base-href-subresource painted images: 1
+- Base-href-subresource painted background red: yes
+- Base-href-subresource painted image blue: yes
+- Base-href-subresource paint ops: image, rect, text
+- Invalid-url-stylesheet URL: https://benchmark.test/invalid-url-stylesheet.html
+- Invalid-url-stylesheet fetch calls: 2
+- Invalid-url-stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Invalid-url-stylesheet loaded bytes: 40
+- Invalid-url-stylesheet stylesheets: 3
+- Invalid-url-stylesheet author stylesheets: 2
+- Invalid-url-stylesheet author rules: 2
+- Invalid-url-stylesheet author declarations: 4
+- Invalid-url-stylesheet decoded images: 0
+- Invalid-url-stylesheet painted background: yes
+- Invalid-url-stylesheet source-order winner blue: yes
+- Invalid-url-only stylesheet fetch calls: 1
+- Invalid-url-only stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Invalid-url-only stylesheet author stylesheets: 0
+- Invalid-url-only stylesheet painted background: no
+- Invalid-url-stylesheet paint ops: rect, text
+- Alternate-stylesheet URL: https://benchmark.test/alternate-stylesheet.html
+- Alternate-stylesheet fetch calls: 1
+- Alternate-stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Alternate-stylesheet loaded bytes: 0
+- Alternate-stylesheet stylesheets: 1
+- Alternate-stylesheet author stylesheets: 0
+- Alternate-stylesheet author rules: 0
+- Alternate-stylesheet author declarations: 0
+- Alternate-stylesheet decoded images: 0
+- Alternate-stylesheet painted background: no
+- Alternate-stylesheet paint ops: text
+- Disabled-stylesheet URL: https://benchmark.test/disabled-stylesheet.html
+- Disabled-stylesheet fetch calls: 1
+- Disabled-stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Disabled-stylesheet loaded bytes: 0
+- Disabled-stylesheet stylesheets: 1
+- Disabled-stylesheet author stylesheets: 0
+- Disabled-stylesheet author rules: 0
+- Disabled-stylesheet author declarations: 0
+- Disabled-stylesheet decoded images: 0
+- Disabled-stylesheet painted background: no
+- Disabled-stylesheet paint ops: text
+- Print-media-stylesheet URL: https://benchmark.test/print-media-stylesheet.html
+- Print-media-stylesheet fetch calls: 1
+- Print-media-stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Print-media-stylesheet loaded bytes: 0
+- Print-media-stylesheet stylesheets: 1
+- Print-media-stylesheet author stylesheets: 0
+- Print-media-stylesheet author rules: 0
+- Print-media-stylesheet author declarations: 0
+- Print-media-stylesheet decoded images: 0
+- Print-media-stylesheet painted background: no
+- Print-media-stylesheet paint ops: text
+- Empty media stylesheet media length: 0
+- Empty media stylesheet fetch calls: 2
+- Empty media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Empty media stylesheet loaded bytes: 67
+- Empty media stylesheet author stylesheets: 1
+- Empty media stylesheet author rules: 1
+- Empty media stylesheet author declarations: 3
+- Empty media stylesheet painted background: yes
+- Whitespace-only media stylesheet media length: 3
+- Whitespace-only media stylesheet fetch calls: 2
+- Whitespace-only media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Whitespace-only media stylesheet loaded bytes: 67
+- Whitespace-only media stylesheet author stylesheets: 1
+- Whitespace-only media stylesheet author rules: 1
+- Whitespace-only media stylesheet author declarations: 3
+- Whitespace-only media stylesheet painted background: yes
+- Media-list stylesheet media: print, screen
+- Media-list stylesheet fetch calls: 2
+- Media-list stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-list stylesheet loaded bytes: 67
+- Media-list stylesheet author stylesheets: 1
+- Media-list stylesheet author rules: 1
+- Media-list stylesheet author declarations: 3
+- Media-list stylesheet painted background: yes
+- Spaced media-list stylesheet media: " print , screen "
+- Spaced media-list stylesheet fetch calls: 2
+- Spaced media-list stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Spaced media-list stylesheet loaded bytes: 67
+- Spaced media-list stylesheet author stylesheets: 1
+- Spaced media-list stylesheet author rules: 1
+- Spaced media-list stylesheet author declarations: 3
+- Spaced media-list stylesheet painted background: yes
+- Empty item before screen media stylesheet media: , screen
+- Empty item before screen media stylesheet fetch calls: 2
+- Empty item before screen media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Empty item before screen media stylesheet loaded bytes: 67
+- Empty item before screen media stylesheet author stylesheets: 1
+- Empty item before screen media stylesheet author rules: 1
+- Empty item before screen media stylesheet author declarations: 3
+- Empty item before screen media stylesheet painted background: yes
+- Empty item after screen media stylesheet media: screen,
+- Empty item after screen media stylesheet fetch calls: 2
+- Empty item after screen media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Empty item after screen media stylesheet loaded bytes: 67
+- Empty item after screen media stylesheet author stylesheets: 1
+- Empty item after screen media stylesheet author rules: 1
+- Empty item after screen media stylesheet author declarations: 3
+- Empty item after screen media stylesheet painted background: yes
+- Empty-only media list stylesheet media: ,
+- Empty-only media list stylesheet fetch calls: 1
+- Empty-only media list stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Empty-only media list stylesheet loaded bytes: 0
+- Empty-only media list stylesheet author stylesheets: 0
+- Empty-only media list stylesheet author rules: 0
+- Empty-only media list stylesheet author declarations: 0
+- Empty-only media list stylesheet painted background: no
+- Unsupported media-list then screen stylesheet media: (dynamic-range: high), screen
+- Unsupported media-list then screen stylesheet fetch calls: 2
+- Unsupported media-list then screen stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Unsupported media-list then screen stylesheet loaded bytes: 67
+- Unsupported media-list then screen stylesheet author stylesheets: 1
+- Unsupported media-list then screen stylesheet author rules: 1
+- Unsupported media-list then screen stylesheet author declarations: 3
+- Unsupported media-list then screen stylesheet painted background: yes
+- Unsupported media-list only stylesheet media: (dynamic-range: high)
+- Unsupported media-list only stylesheet fetch calls: 1
+- Unsupported media-list only stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unsupported media-list only stylesheet loaded bytes: 0
+- Unsupported media-list only stylesheet author stylesheets: 0
+- Unsupported media-list only stylesheet author rules: 0
+- Unsupported media-list only stylesheet author declarations: 0
+- Unsupported media-list only stylesheet painted background: no
+- Unknown media type then screen stylesheet media: projection, screen
+- Unknown media type then screen stylesheet fetch calls: 2
+- Unknown media type then screen stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Unknown media type then screen stylesheet loaded bytes: 67
+- Unknown media type then screen stylesheet author stylesheets: 1
+- Unknown media type then screen stylesheet author rules: 1
+- Unknown media type then screen stylesheet author declarations: 3
+- Unknown media type then screen stylesheet painted background: yes
+- Unknown media type only stylesheet media: projection
+- Unknown media type only stylesheet fetch calls: 1
+- Unknown media type only stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unknown media type only stylesheet loaded bytes: 0
+- Unknown media type only stylesheet author stylesheets: 0
+- Unknown media type only stylesheet author rules: 0
+- Unknown media type only stylesheet author declarations: 0
+- Unknown media type only stylesheet painted background: no
+- Uppercase screen media stylesheet media: SCREEN
+- Uppercase screen media stylesheet fetch calls: 2
+- Uppercase screen media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Uppercase screen media stylesheet loaded bytes: 67
+- Uppercase screen media stylesheet author stylesheets: 1
+- Uppercase screen media stylesheet author rules: 1
+- Uppercase screen media stylesheet author declarations: 3
+- Uppercase screen media stylesheet painted background: yes
+- Mixed-case only-screen media stylesheet media: Only Screen
+- Mixed-case only-screen media stylesheet fetch calls: 2
+- Mixed-case only-screen media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Mixed-case only-screen media stylesheet loaded bytes: 67
+- Mixed-case only-screen media stylesheet author stylesheets: 1
+- Mixed-case only-screen media stylesheet author rules: 1
+- Mixed-case only-screen media stylesheet author declarations: 3
+- Mixed-case only-screen media stylesheet painted background: yes
+- Spaced only-screen media stylesheet media: only   screen
+- Spaced only-screen media stylesheet fetch calls: 2
+- Spaced only-screen media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Spaced only-screen media stylesheet loaded bytes: 67
+- Spaced only-screen media stylesheet author stylesheets: 1
+- Spaced only-screen media stylesheet author rules: 1
+- Spaced only-screen media stylesheet author declarations: 3
+- Spaced only-screen media stylesheet painted background: yes
+- Uppercase print media stylesheet media: PRINT
+- Uppercase print media stylesheet fetch calls: 1
+- Uppercase print media stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Uppercase print media stylesheet loaded bytes: 0
+- Uppercase print media stylesheet author stylesheets: 0
+- Uppercase print media stylesheet author rules: 0
+- Uppercase print media stylesheet author declarations: 0
+- Uppercase print media stylesheet painted background: no
+- Not-print stylesheet media: not print
+- Not-print stylesheet fetch calls: 2
+- Not-print stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Not-print stylesheet loaded bytes: 67
+- Not-print stylesheet author stylesheets: 1
+- Not-print stylesheet author rules: 1
+- Not-print stylesheet author declarations: 3
+- Not-print stylesheet painted background: yes
+- Spaced not-print stylesheet media: not   print
+- Spaced not-print stylesheet fetch calls: 2
+- Spaced not-print stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Spaced not-print stylesheet loaded bytes: 67
+- Spaced not-print stylesheet author stylesheets: 1
+- Spaced not-print stylesheet author rules: 1
+- Spaced not-print stylesheet author declarations: 3
+- Spaced not-print stylesheet painted background: yes
+- Only-print stylesheet media: only print
+- Only-print stylesheet fetch calls: 1
+- Only-print stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Only-print stylesheet loaded bytes: 0
+- Only-print stylesheet author stylesheets: 0
+- Only-print stylesheet author rules: 0
+- Only-print stylesheet author declarations: 0
+- Only-print stylesheet painted background: no
+- Spaced only-print stylesheet media: only   print
+- Spaced only-print stylesheet fetch calls: 1
+- Spaced only-print stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Spaced only-print stylesheet loaded bytes: 0
+- Spaced only-print stylesheet author stylesheets: 0
+- Spaced only-print stylesheet author rules: 0
+- Spaced only-print stylesheet author declarations: 0
+- Spaced only-print stylesheet painted background: no
+- All media stylesheet media: all
+- All media stylesheet fetch calls: 2
+- All media stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- All media stylesheet loaded bytes: 67
+- All media stylesheet author stylesheets: 1
+- All media stylesheet author rules: 1
+- All media stylesheet author declarations: 3
+- All media stylesheet painted background: yes
+- Only-all stylesheet media: only all
+- Only-all stylesheet fetch calls: 2
+- Only-all stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Only-all stylesheet loaded bytes: 67
+- Only-all stylesheet author stylesheets: 1
+- Only-all stylesheet author rules: 1
+- Only-all stylesheet author declarations: 3
+- Only-all stylesheet painted background: yes
+- Not-all stylesheet media: not all
+- Not-all stylesheet fetch calls: 1
+- Not-all stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Not-all stylesheet loaded bytes: 0
+- Not-all stylesheet author stylesheets: 0
+- Not-all stylesheet author rules: 0
+- Not-all stylesheet author declarations: 0
+- Not-all stylesheet painted background: no
+- Spaced not-all stylesheet media: not   all
+- Spaced not-all stylesheet fetch calls: 1
+- Spaced not-all stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Spaced not-all stylesheet loaded bytes: 0
+- Spaced not-all stylesheet author stylesheets: 0
+- Spaced not-all stylesheet author rules: 0
+- Spaced not-all stylesheet author declarations: 0
+- Spaced not-all stylesheet painted background: no
+- Media-feature min-width stylesheet media: screen and (min-width: 1px)
+- Media-feature min-width stylesheet fetch calls: 2
+- Media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature min-width stylesheet loaded bytes: 67
+- Media-feature min-width stylesheet author stylesheets: 1
+- Media-feature min-width stylesheet author rules: 1
+- Media-feature min-width stylesheet author declarations: 3
+- Media-feature min-width stylesheet painted background: yes
+- Uppercase media-feature min-width stylesheet media: screen and (MIN-WIDTH: 1px)
+- Uppercase media-feature min-width stylesheet fetch calls: 2
+- Uppercase media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Uppercase media-feature min-width stylesheet loaded bytes: 67
+- Uppercase media-feature min-width stylesheet author stylesheets: 1
+- Uppercase media-feature min-width stylesheet author rules: 1
+- Uppercase media-feature min-width stylesheet author declarations: 3
+- Uppercase media-feature min-width stylesheet painted background: yes
+- Decimal media-feature min-width stylesheet media: screen and (min-width: 799.5px)
+- Decimal media-feature min-width stylesheet fetch calls: 2
+- Decimal media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Decimal media-feature min-width stylesheet loaded bytes: 67
+- Decimal media-feature min-width stylesheet author stylesheets: 1
+- Decimal media-feature min-width stylesheet author rules: 1
+- Decimal media-feature min-width stylesheet author declarations: 3
+- Decimal media-feature min-width stylesheet painted background: yes
+- Spaced media-feature min-width stylesheet media: screen  and  ( min-width : 1px )
+- Spaced media-feature min-width stylesheet fetch calls: 2
+- Spaced media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Spaced media-feature min-width stylesheet loaded bytes: 67
+- Spaced media-feature min-width stylesheet author stylesheets: 1
+- Spaced media-feature min-width stylesheet author rules: 1
+- Spaced media-feature min-width stylesheet author declarations: 3
+- Spaced media-feature min-width stylesheet painted background: yes
+- Media-feature bare-min-width stylesheet media: (min-width: 1px)
+- Media-feature bare-min-width stylesheet fetch calls: 2
+- Media-feature bare-min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature bare-min-width stylesheet loaded bytes: 67
+- Media-feature bare-min-width stylesheet author stylesheets: 1
+- Media-feature bare-min-width stylesheet author rules: 1
+- Media-feature bare-min-width stylesheet author declarations: 3
+- Media-feature bare-min-width stylesheet painted background: yes
+- All-and media-feature min-width stylesheet media: all and (min-width: 1px)
+- All-and media-feature min-width stylesheet fetch calls: 2
+- All-and media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- All-and media-feature min-width stylesheet loaded bytes: 67
+- All-and media-feature min-width stylesheet author stylesheets: 1
+- All-and media-feature min-width stylesheet author rules: 1
+- All-and media-feature min-width stylesheet author declarations: 3
+- All-and media-feature min-width stylesheet painted background: yes
+- All-and media-feature max-width stylesheet media: all and (max-width: 1px)
+- All-and media-feature max-width stylesheet fetch calls: 1
+- All-and media-feature max-width stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- All-and media-feature max-width stylesheet loaded bytes: 0
+- All-and media-feature max-width stylesheet author stylesheets: 0
+- All-and media-feature max-width stylesheet author rules: 0
+- All-and media-feature max-width stylesheet author declarations: 0
+- All-and media-feature max-width stylesheet painted background: no
+- Only-all-and media-feature min-width stylesheet media: only all and (min-width: 1px)
+- Only-all-and media-feature min-width stylesheet fetch calls: 2
+- Only-all-and media-feature min-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Only-all-and media-feature min-width stylesheet loaded bytes: 67
+- Only-all-and media-feature min-width stylesheet author stylesheets: 1
+- Only-all-and media-feature min-width stylesheet author rules: 1
+- Only-all-and media-feature min-width stylesheet author declarations: 3
+- Only-all-and media-feature min-width stylesheet painted background: yes
+- Unsupported range media-feature stylesheet media: screen and (width >= 1px)
+- Unsupported range media-feature stylesheet fetch calls: 1
+- Unsupported range media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unsupported range media-feature stylesheet loaded bytes: 0
+- Unsupported range media-feature stylesheet author stylesheets: 0
+- Unsupported range media-feature stylesheet author rules: 0
+- Unsupported range media-feature stylesheet author declarations: 0
+- Unsupported range media-feature stylesheet painted background: no
+- Unsupported range then screen stylesheet media: (width >= 1px), screen
+- Unsupported range then screen stylesheet fetch calls: 2
+- Unsupported range then screen stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Unsupported range then screen stylesheet loaded bytes: 67
+- Unsupported range then screen stylesheet author stylesheets: 1
+- Unsupported range then screen stylesheet author rules: 1
+- Unsupported range then screen stylesheet author declarations: 3
+- Unsupported range then screen stylesheet painted background: yes
+- Unsupported calc media-feature stylesheet media: screen and (min-width: calc(1px))
+- Unsupported calc media-feature stylesheet fetch calls: 1
+- Unsupported calc media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unsupported calc media-feature stylesheet loaded bytes: 0
+- Unsupported calc media-feature stylesheet author stylesheets: 0
+- Unsupported calc media-feature stylesheet author rules: 0
+- Unsupported calc media-feature stylesheet author declarations: 0
+- Unsupported calc media-feature stylesheet painted background: no
+- Unsupported hover media-feature stylesheet media: screen and (hover: hover)
+- Unsupported hover media-feature stylesheet fetch calls: 1
+- Unsupported hover media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unsupported hover media-feature stylesheet loaded bytes: 0
+- Unsupported hover media-feature stylesheet author stylesheets: 0
+- Unsupported hover media-feature stylesheet author rules: 0
+- Unsupported hover media-feature stylesheet author declarations: 0
+- Unsupported hover media-feature stylesheet painted background: no
+- Invalid empty media-feature stylesheet media: screen and ()
+- Invalid empty media-feature stylesheet fetch calls: 1
+- Invalid empty media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Invalid empty media-feature stylesheet loaded bytes: 0
+- Invalid empty media-feature stylesheet author stylesheets: 0
+- Invalid empty media-feature stylesheet author rules: 0
+- Invalid empty media-feature stylesheet author declarations: 0
+- Invalid empty media-feature stylesheet painted background: no
+- Unsupported boolean width media-feature stylesheet media: screen and (width)
+- Unsupported boolean width media-feature stylesheet fetch calls: 1
+- Unsupported boolean width media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unsupported boolean width media-feature stylesheet loaded bytes: 0
+- Unsupported boolean width media-feature stylesheet author stylesheets: 0
+- Unsupported boolean width media-feature stylesheet author rules: 0
+- Unsupported boolean width media-feature stylesheet author declarations: 0
+- Unsupported boolean width media-feature stylesheet painted background: no
+- Unknown media-feature stylesheet media: screen and (unknown-feature)
+- Unknown media-feature stylesheet fetch calls: 1
+- Unknown media-feature stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Unknown media-feature stylesheet loaded bytes: 0
+- Unknown media-feature stylesheet author stylesheets: 0
+- Unknown media-feature stylesheet author rules: 0
+- Unknown media-feature stylesheet author declarations: 0
+- Unknown media-feature stylesheet painted background: no
+- Invalid empty feature then screen stylesheet media: screen and (), screen
+- Invalid empty feature then screen stylesheet fetch calls: 2
+- Invalid empty feature then screen stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Invalid empty feature then screen stylesheet loaded bytes: 67
+- Invalid empty feature then screen stylesheet author stylesheets: 1
+- Invalid empty feature then screen stylesheet author rules: 1
+- Invalid empty feature then screen stylesheet author declarations: 3
+- Invalid empty feature then screen stylesheet painted background: yes
+- Media-feature max-width stylesheet media: screen and (max-width: 1px)
+- Media-feature max-width stylesheet fetch calls: 1
+- Media-feature max-width stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Media-feature max-width stylesheet loaded bytes: 0
+- Media-feature max-width stylesheet author stylesheets: 0
+- Media-feature max-width stylesheet author rules: 0
+- Media-feature max-width stylesheet author declarations: 0
+- Media-feature max-width stylesheet painted background: no
+- Decimal media-feature max-width stylesheet media: screen and (max-width: 799.5px)
+- Decimal media-feature max-width stylesheet fetch calls: 1
+- Decimal media-feature max-width stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Decimal media-feature max-width stylesheet loaded bytes: 0
+- Decimal media-feature max-width stylesheet author stylesheets: 0
+- Decimal media-feature max-width stylesheet author rules: 0
+- Decimal media-feature max-width stylesheet author declarations: 0
+- Decimal media-feature max-width stylesheet painted background: no
+- Spaced media-feature max-width stylesheet media: screen  and  ( max-width : 1px )
+- Spaced media-feature max-width stylesheet fetch calls: 1
+- Spaced media-feature max-width stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Spaced media-feature max-width stylesheet loaded bytes: 0
+- Spaced media-feature max-width stylesheet author stylesheets: 0
+- Spaced media-feature max-width stylesheet author rules: 0
+- Spaced media-feature max-width stylesheet author declarations: 0
+- Spaced media-feature max-width stylesheet painted background: no
+- Media-feature min-height stylesheet media: screen and (min-height: 1px)
+- Media-feature min-height stylesheet fetch calls: 2
+- Media-feature min-height stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature min-height stylesheet loaded bytes: 67
+- Media-feature min-height stylesheet author stylesheets: 1
+- Media-feature min-height stylesheet author rules: 1
+- Media-feature min-height stylesheet author declarations: 3
+- Media-feature min-height stylesheet painted background: yes
+- Media-feature max-height stylesheet media: screen and (max-height: 1px)
+- Media-feature max-height stylesheet fetch calls: 1
+- Media-feature max-height stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Media-feature max-height stylesheet loaded bytes: 0
+- Media-feature max-height stylesheet author stylesheets: 0
+- Media-feature max-height stylesheet author rules: 0
+- Media-feature max-height stylesheet author declarations: 0
+- Media-feature max-height stylesheet painted background: no
+- Media-feature exact-width stylesheet media: screen and (width: 800px)
+- Media-feature exact-width stylesheet fetch calls: 2
+- Media-feature exact-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature exact-width stylesheet loaded bytes: 67
+- Media-feature exact-width stylesheet author stylesheets: 1
+- Media-feature exact-width stylesheet author rules: 1
+- Media-feature exact-width stylesheet author declarations: 3
+- Media-feature exact-width stylesheet painted background: yes
+- Decimal media-feature exact-width stylesheet media: screen and (width: 800.0px)
+- Decimal media-feature exact-width stylesheet fetch calls: 2
+- Decimal media-feature exact-width stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Decimal media-feature exact-width stylesheet loaded bytes: 67
+- Decimal media-feature exact-width stylesheet author stylesheets: 1
+- Decimal media-feature exact-width stylesheet author rules: 1
+- Decimal media-feature exact-width stylesheet author declarations: 3
+- Decimal media-feature exact-width stylesheet painted background: yes
+- Media-feature exact-height stylesheet media: screen and (height: 600px)
+- Media-feature exact-height stylesheet fetch calls: 2
+- Media-feature exact-height stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature exact-height stylesheet loaded bytes: 67
+- Media-feature exact-height stylesheet author stylesheets: 1
+- Media-feature exact-height stylesheet author rules: 1
+- Media-feature exact-height stylesheet author declarations: 3
+- Media-feature exact-height stylesheet painted background: yes
+- Media-feature exact-height miss stylesheet media: screen and (height: 1px)
+- Media-feature exact-height miss stylesheet fetch calls: 1
+- Media-feature exact-height miss stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Media-feature exact-height miss stylesheet loaded bytes: 0
+- Media-feature exact-height miss stylesheet author stylesheets: 0
+- Media-feature exact-height miss stylesheet author rules: 0
+- Media-feature exact-height miss stylesheet author declarations: 0
+- Media-feature exact-height miss stylesheet painted background: no
+- Media-feature negated matching stylesheet media: not screen and (min-width: 1px)
+- Media-feature negated matching stylesheet fetch calls: 1
+- Media-feature negated matching stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Media-feature negated matching stylesheet loaded bytes: 0
+- Media-feature negated matching stylesheet author stylesheets: 0
+- Media-feature negated matching stylesheet author rules: 0
+- Media-feature negated matching stylesheet author declarations: 0
+- Media-feature negated matching stylesheet painted background: no
+- Media-feature negated missing stylesheet media: not screen and (max-width: 1px)
+- Media-feature negated missing stylesheet fetch calls: 2
+- Media-feature negated missing stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Media-feature negated missing stylesheet loaded bytes: 67
+- Media-feature negated missing stylesheet author stylesheets: 1
+- Media-feature negated missing stylesheet author rules: 1
+- Media-feature negated missing stylesheet author declarations: 3
+- Media-feature negated missing stylesheet painted background: yes
+- Orientation landscape stylesheet media: screen and (orientation: landscape)
+- Orientation landscape stylesheet fetch calls: 2
+- Orientation landscape stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Orientation landscape stylesheet loaded bytes: 67
+- Orientation landscape stylesheet author stylesheets: 1
+- Orientation landscape stylesheet author rules: 1
+- Orientation landscape stylesheet author declarations: 3
+- Orientation landscape stylesheet painted background: yes
+- Uppercase orientation landscape stylesheet media: screen and (ORIENTATION: LANDSCAPE)
+- Uppercase orientation landscape stylesheet fetch calls: 2
+- Uppercase orientation landscape stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Uppercase orientation landscape stylesheet loaded bytes: 67
+- Uppercase orientation landscape stylesheet author stylesheets: 1
+- Uppercase orientation landscape stylesheet author rules: 1
+- Uppercase orientation landscape stylesheet author declarations: 3
+- Uppercase orientation landscape stylesheet painted background: yes
+- Orientation portrait stylesheet media: screen and (orientation: portrait)
+- Orientation portrait stylesheet fetch calls: 1
+- Orientation portrait stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Orientation portrait stylesheet loaded bytes: 0
+- Orientation portrait stylesheet author stylesheets: 0
+- Orientation portrait stylesheet author rules: 0
+- Orientation portrait stylesheet author declarations: 0
+- Orientation portrait stylesheet painted background: no
+- Uppercase orientation portrait stylesheet media: screen and (ORIENTATION: PORTRAIT)
+- Uppercase orientation portrait stylesheet fetch calls: 1
+- Uppercase orientation portrait stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Uppercase orientation portrait stylesheet loaded bytes: 0
+- Uppercase orientation portrait stylesheet author stylesheets: 0
+- Uppercase orientation portrait stylesheet author rules: 0
+- Uppercase orientation portrait stylesheet author declarations: 0
+- Uppercase orientation portrait stylesheet painted background: no
+- Combined media-feature stylesheet media: screen and (min-width: 1px) and (orientation: landscape)
+- Combined media-feature stylesheet fetch calls: 2
+- Combined media-feature stylesheet external resources: 1 discovered, 1 loaded, 0 missing
+- Combined media-feature stylesheet loaded bytes: 67
+- Combined media-feature stylesheet author stylesheets: 1
+- Combined media-feature stylesheet author rules: 1
+- Combined media-feature stylesheet author declarations: 3
+- Combined media-feature stylesheet painted background: yes
+- Combined media-feature miss stylesheet media: screen and (min-width: 1px) and (orientation: portrait)
+- Combined media-feature miss stylesheet fetch calls: 1
+- Combined media-feature miss stylesheet external resources: 0 discovered, 0 loaded, 0 missing
+- Combined media-feature miss stylesheet loaded bytes: 0
+- Combined media-feature miss stylesheet author stylesheets: 0
+- Combined media-feature miss stylesheet author rules: 0
+- Combined media-feature miss stylesheet author declarations: 0
+- Combined media-feature miss stylesheet painted background: no
+- Invalid-external-stylesheet URL: https://benchmark.test/invalid-external-stylesheet.html
+- Invalid-external-stylesheet resources: 1 discovered, 1 loaded, 0 missing
+- Invalid-external-stylesheet loaded bytes: 76
+- Invalid-external-stylesheet stylesheets: 2
+- Invalid-external-stylesheet author stylesheets: 1
+- Invalid-external-stylesheet author rules: 1
+- Invalid-external-stylesheet author declarations: 0
+- Invalid-external-stylesheet decoded images: 0
+- Invalid-external-stylesheet painted background: no
+- Invalid-external-stylesheet paint ops: text
+- Missing-stylesheet-only URL: https://benchmark.test/missing-stylesheet.html
+- Missing-stylesheet-only resources: 1 discovered, 0 loaded, 1 missing
+- Missing-stylesheet-only stylesheets: 1
+- Missing-stylesheet-only author stylesheets: 0
+- Missing-stylesheet-only author rules: 0
+- Missing-stylesheet-only author declarations: 0
+- Missing-stylesheet-only painted background: no
+- Missing-stylesheet-only paint ops: text
+
+## Real-site smoke evidence
+
+- Smoke scenarios: 2
+- Smoke outcomes: 2 passed, 0 failed
+- Covered capabilities: event-loop-microtask, fetch, font-face, v8-guest-execution
+
+| Scenario | Capabilities | Result |
+|---|---|---|
+| smoke/fetch-json-roundtrip | event-loop-microtask, fetch, v8-guest-execution | PASS |
+| smoke/web-font-applied | fetch, font-face | PASS |
 
 ## Dimension details
 
 ### Hand-written surface (smaller = more readable) — 🟢 WIN
 
-- Ours (live): 24,826 lines
+- Ours (live): 46,620 lines
 - Chromium (cited): 36,000,000 lines _(Wikipedia — Chromium (web browser))_
-- Our hand-written surface is ~1,450× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
+- Our hand-written surface is ~772× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
 
 ### compat-per-LOC (North Star) — 🟢 WIN
 
-- Ours (live): 0.0018 passes/line
+- Ours (live): 0.0010 passes/line
 - Chromium (cited): _needs-source_
 - compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours.
 
 ### mechanism-density (features per 1k hand-written lines) — 🟢 WIN
 
-- Ours (live): 35.89 features/kloc
+- Ours (live): 19.13 features/kloc
 - Chromium (cited): —
-- 891 platform features (CSS properties + DOM members) over 24,826 hand-written lines = 35.89 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- 892 platform features (CSS properties + DOM members) over 46,620 hand-written lines = 19.13 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ### CSS-property coverage (raw count) — 🟡 GAP
 
-- Ours (live): 339 properties
+- Ours (live): 340 properties
 - Chromium (cited): 600 properties _(CSS specifications (order-of-magnitude))_
-- We implement 339 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each.
+- We implement 340 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each.
 
 ### Raw WPT / Interop pass rate — 🟡 GAP
 
-- Ours (live): 100% of our curated self-test subset
+- Ours (live): 100% of maintained WPT subsets (318/318 curated subtests)
 - Chromium (cited): 95% _(WebKit blog — The success of Interop 2024)_
-- Our subset passes ~100%, but it is a small curated set — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers.
+- Our maintained subset passes, but it is curated — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers.
 
 ### Runtime performance (Speedometer-class) — ⚪ N/C
 

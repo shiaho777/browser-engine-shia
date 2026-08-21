@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS nth selectors</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #list > li:nth-child(2) { color: rgb(1, 2, 3); }
+  #list > li:nth-child(odd) { background-color: rgb(4, 5, 6); }
+  #list > li:nth-last-child(1) { width: 31px; }
+  #mixed > p:nth-of-type(2) { height: 17px; }
+  #mixed > p:nth-last-of-type(1) { color: rgb(7, 8, 9); }
+</style>
+<body>
+<ul id="list"><li id="one">one</li><li id="two">two</li><li id="three">three</li></ul>
+<section id="mixed"><p id="p1">p1</p><span id="s1">span</span><p id="p2">p2</p><p id="p3">p3</p></section>
+<script>
+test(function () {
+  assert_equals(getComputedStyle(document.getElementById("two")).getPropertyValue("color"), "rgb(1, 2, 3)");
+  assert_equals(getComputedStyle(document.getElementById("one")).getPropertyValue("color"), "rgb(0, 0, 0)");
+}, ":nth-child(n) matches the requested element index");
+
+test(function () {
+  assert_equals(getComputedStyle(document.getElementById("one")).getPropertyValue("background-color"), "rgb(4, 5, 6)");
+  assert_equals(getComputedStyle(document.getElementById("three")).getPropertyValue("background-color"), "rgb(4, 5, 6)");
+  assert_equals(getComputedStyle(document.getElementById("three")).getPropertyValue("width"), "31px");
+}, ":nth-child(odd) and :nth-last-child() match from the correct edge");
+
+test(function () {
+  assert_equals(getComputedStyle(document.getElementById("p2")).getPropertyValue("height"), "17px");
+  assert_equals(getComputedStyle(document.getElementById("p3")).getPropertyValue("color"), "rgb(7, 8, 9)");
+  assert_equals(getComputedStyle(document.getElementById("s1")).getPropertyValue("height"), "auto");
+}, ":nth-of-type() and :nth-last-of-type() count same-tag siblings only");
+</script>
+</body>

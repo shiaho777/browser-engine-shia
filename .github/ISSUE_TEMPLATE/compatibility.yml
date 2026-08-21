@@ -1,0 +1,83 @@
+name: Compatibility Gap
+description: Track a real web-platform compatibility gap with an evidence path.
+title: "[compat] "
+labels: ["compatibility", "needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What web behavior is missing or wrong?
+    validations:
+      required: true
+  - type: dropdown
+    id: owner
+    attributes:
+      label: Owning Stage
+      options:
+        - parser-gap
+        - cascade-gap
+        - layout-gap
+        - paint-gap
+        - backend-gap
+        - guest-gap
+        - network-gap
+        - harness-gap
+        - engine-bug
+    validations:
+      required: true
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - phase:1-wpt-war-room
+        - phase:2-css-mechanisms
+        - phase:3-layout
+        - phase:5-runtime
+        - phase:8-performance
+        - phase:9-open-source
+    validations:
+      required: true
+  - type: dropdown
+    id: subset
+    attributes:
+      label: WPT Subset
+      options:
+        - none-yet
+        - subset:dom-core
+        - subset:css-cascade
+        - proposed-new-subset
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Link or paste the smallest WPT, fixture, trace, screenshot, or command output that proves the gap.
+      placeholder: |
+        npm run wpt -- /path/to/web-platform-tests/dom --limit 20 --trace
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Browser Behavior
+      description: What should a conforming engine do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Current Engine Behavior
+      description: What does this engine do today?
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribution_path
+    attributes:
+      label: Contribution Path
+      options:
+        - label: This can be proven with official WPT or a WPT-format fixture.
+        - label: This may affect public evidence artifacts.
+        - label: This needs an architecture/RFC discussion before implementation.

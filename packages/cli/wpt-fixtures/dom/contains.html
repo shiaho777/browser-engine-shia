@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Node.contains</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="contains-root">
+  <section id="branch"><span id="leaf">leaf</span></section>
+  <aside id="outside"></aside>
+</main>
+<script>
+test(function () {
+  var root = document.getElementById("contains-root");
+  var branch = document.getElementById("branch");
+  var leaf = document.getElementById("leaf");
+  var outside = document.getElementById("outside");
+  var detached = document.createElement("span");
+
+  assert_true(root.contains(root), "contains is inclusive for the same node");
+  assert_true(root.contains(branch), "contains sees direct descendants");
+  assert_true(root.contains(leaf), "contains sees nested descendants");
+  assert_false(branch.contains(root), "descendants do not contain ancestors");
+  assert_false(leaf.contains(outside), "siblings are not contained");
+  assert_false(root.contains(null), "null is not contained");
+  assert_false(root.contains(detached), "detached nodes are not contained by live parents");
+  assert_true(detached.contains(detached), "detached nodes still contain themselves");
+}, "contains reports inclusive containment and non-containment");
+
+test(function () {
+  var root = document.getElementById("contains-root");
+  var parent = document.createElement("section");
+  var child = document.createElement("span");
+
+  assert_false(parent.contains(child), "a detached parent does not contain an unparented child");
+
+  parent.appendChild(child);
+  root.appendChild(parent);
+
+  assert_true(parent.contains(child), "appendChild makes the child contained by its parent");
+  assert_true(root.contains(child), "appendChild makes the child contained by ancestors");
+
+  parent.removeChild(child);
+
+  assert_false(parent.contains(child), "removeChild removes parent containment");
+  assert_false(root.contains(child), "removeChild removes ancestor containment");
+  assert_true(child.contains(child), "removed child remains self-containing");
+}, "contains follows appendChild and removeChild");
+
+test(function () {
+  var root = document.getElementById("contains-root");
+  var parent = document.createElement("section");
+  var oldChild = document.createElement("span");
+  var replacement = document.createElement("span");
+
+  parent.appendChild(oldChild);
+  root.appendChild(parent);
+
+  assert_true(parent.contains(oldChild), "precondition: parent contains old child");
+
+  parent.replaceChild(replacement, oldChild);
+
+  assert_false(parent.contains(oldChild), "replaceChild detaches the old child from containment");
+  assert_false(root.contains(oldChild), "replaceChild detaches the old child from ancestors");
+  assert_true(parent.contains(replacement), "replaceChild contains the replacement");
+  assert_true(root.contains(replacement), "replaceChild connects the replacement to ancestors");
+}, "contains follows replaceChild detach and attach");
+
+test(function () {
+  var root = document.getElementById("contains-root");
+  var oldParent = document.createElement("section");
+  var newParent = document.createElement("section");
+  var moved = document.createElement("span");
+  var ref = document.createElement("span");
+
+  oldParent.appendChild(moved);
+  newParent.appendChild(ref);
+  root.appendChild(oldParent);
+  root.appendChild(newParent);
+
+  assert_true(oldParent.contains(moved), "precondition: old parent contains moved child");
+  assert_false(newParent.contains(moved), "precondition: new parent does not contain moved child");
+
+  newParent.insertBefore(moved, ref);
+
+  assert_false(oldParent.contains(moved), "insertBefore reparent removes old parent containment");
+  assert_true(newParent.contains(moved), "insertBefore reparent adds new parent containment");
+  assert_true(root.contains(moved), "reparented child remains contained by a document ancestor");
+  assert_equals(newParent.firstChild, moved, "the moved node occupies the reference slot");
+}, "contains follows insertBefore reparenting");
+</script>
+</body>

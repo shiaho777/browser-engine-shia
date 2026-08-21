@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>@supports conditional rules</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  @supports (display: flex) {
+    #s1 { color: red; }
+  }
+  @supports not (display: flex) {
+    #s1 { color: blue; }
+  }
+  @supports (display: flex) and (gap: 0px) {
+    #s2 { color: green; }
+  }
+  @supports (display: flex) or (display: grid) {
+    #s3 { color: red; }
+  }
+  @supports (-vendor-unknown-feature: 1px) {
+    #s4 { color: pink; }
+  }
+</style>
+<body>
+<div id="s1">supports flex</div>
+<div id="s2">supports flex and gap</div>
+<div id="s3">supports flex or grid</div>
+<div id="s4">unknown feature</div>
+<script>
+test(function () {
+  // @supports (display: flex) is true → #s1 gets color: red
+  var cs = getComputedStyle(document.getElementById("s1"));
+  assert_equals(cs.color, "rgb(255, 0, 0)", "@supports (display:flex) applies rule");
+}, "@supports (property: value) evaluates true for known properties");
+
+test(function () {
+  // @supports (display: flex) and (gap: 0px) → both true → green
+  var cs = getComputedStyle(document.getElementById("s2"));
+  assert_equals(cs.color, "rgb(0, 128, 0)", "and conjunction evaluates true");
+}, "@supports a and b evaluates true when both are true");
+
+test(function () {
+  // @supports (display: flex) or (display: grid) → true → purple
+  var cs = getComputedStyle(document.getElementById("s3"));
+  assert_equals(cs.color, "rgb(255, 0, 0)", "or disjunction evaluates true");
+}, "@supports a or b evaluates true when either is true");
+
+test(function () {
+  // @supports (-vendor-unknown-feature: 1px) → false → no rule applied → black
+  var cs = getComputedStyle(document.getElementById("s4"));
+  assert_equals(cs.color, "rgb(0, 0, 0)", "unknown feature evaluates to false");
+}, "@supports with unknown property evaluates to false");
+</script>
+</body>

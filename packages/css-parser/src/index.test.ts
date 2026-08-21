@@ -218,10 +218,30 @@ void test("margin shorthand (1–4 lengths) is accepted by the generated parser"
 });
 
 // ---------------------------------------------------------------------------
-// At-rules are an unimplemented capability — they must fail loudly (Req 5.1).
+// At-rules: @media is now implemented; other at-rules still fail loudly (Req 5.1).
 // ---------------------------------------------------------------------------
-void test("at-rules throw NotImplemented rather than being silently dropped", () => {
-  assert.throws(() => parse("@media screen { div { color: red } }"), /NotImplemented/);
+void test("@media screen with matching condition includes inner rules", () => {
+  const sheet = parse("@media screen { div { color: red } }");
+  assert.equal(sheet.rules.length, 1);
+  assert.equal(sheet.rules[0]!.selector[0]!.text, "div");
+});
+
+void test("@media print with non-matching condition excludes inner rules", () => {
+  const sheet = parse("@media print { div { color: red } }");
+  assert.equal(sheet.rules.length, 0);
+});
+
+void test("unknown at-rules are gracefully skipped (error recovery)", () => {
+  // Unknown at-rules should be skipped (CSS error recovery), not throw.
+  // @import is now implemented (parsed but the loader handles fetching).
+  const sheet1 = parse("@import 'missing.css';");
+  assert.equal(sheet1.rules.length, 0);
+  // Unknown at-rules (block form) are skipped.
+  const sheet2 = parse("@unknown-at-rule { div { color: red } }");
+  assert.equal(sheet2.rules.length, 0);
+  // Unknown at-rules (declaration form) are skipped.
+  const sheet3 = parse("@unknown-decl foo bar;");
+  assert.equal(sheet3.rules.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -268,4 +288,43 @@ void test("Req 2.7: parseCss is deterministic for identical input", () => {
       .join("||");
 
   assert.equal(serialize(parse(css)), serialize(parse(css)));
+});
+
+void test("custom property names preserve case", () => {
+  const sheet = parseCss(new TextEncoder().encode(":root { --Ga10: #18191C; --text1: var(--Ga10) }"));
+  const decls = sheet.rules[0]!.declarations;
+  assert.equal(decls.find((d) => d.property === "--Ga10")?.value, "#18191C");
+  assert.equal(decls.find((d) => d.property === "--text1")?.value, "var(--Ga10)");
+  assert.equal(decls.some((d) => d.property === "--ga10"), false);
+});
+
+void test("CSS-wide keywords are kept on known properties", () => {
+  const sheet = parseCss(new TextEncoder().encode("a { color: inherit; display: initial }"));
+  const decls = sheet.rules[0]!.declarations;
+  assert.equal(decls.find((d) => d.property === "color")?.value, "inherit");
+  assert.equal(decls.find((d) => d.property === "display")?.value, "initial");
+});
+
+void test("vendor-prefixed aliases of known properties normalize to the standard name", () => {
+  const sheet = parseCss(
+    new TextEncoder().encode(
+      "a { -webkit-box-shadow: 0 0 0 red; -moz-appearance: none; -webkit-transform: translateX(10px) }",
+    ),
+  );
+  const decls = sheet.rules[0]!.declarations;
+  assert.equal(decls.find((d) => d.property === "box-shadow")?.value, "0 0 0 red");
+  assert.equal(decls.find((d) => d.property === "appearance")?.value, "none");
+  assert.equal(decls.find((d) => d.property === "transform")?.value, "translateX(10px)");
+  // The original prefixed names must not survive alongside the normalized copy.
+  assert.equal(decls.some((d) => d.property === "-webkit-box-shadow"), false);
+  assert.equal(decls.some((d) => d.property === "-moz-appearance"), false);
+});
+
+void test("unknown vendor-prefixed properties are kept verbatim (forward-compatible recovery)", () => {
+  const sheet = parseCss(
+    new TextEncoder().encode("a { -webkit-tap-highlight-color: transparent; -webkit-font-smoothing: antialiased }"),
+  );
+  const decls = sheet.rules[0]!.declarations;
+  assert.equal(decls.find((d) => d.property === "-webkit-tap-highlight-color")?.value, "transparent");
+  assert.equal(decls.find((d) => d.property === "-webkit-font-smoothing")?.value, "antialiased");
 });

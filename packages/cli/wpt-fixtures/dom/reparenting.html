@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM insertBefore removeChild and reparenting</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="one"><span id="a">a</span><span id="c">c</span></main>
+<main id="two"><span id="b">b</span></main>
+<script>
+test(function () {
+  var one = document.getElementById("one");
+  var b = document.getElementById("b");
+  var c = document.getElementById("c");
+  one.insertBefore(b, c);
+  assert_equals(one.textContent, "abc", "insertBefore places the child before the reference");
+  assert_equals(b.parentElement, one, "insertBefore reparents a moved node");
+  assert_equals(document.getElementById("two").children.length, 0, "the old parent loses the moved child");
+}, "insertBefore moves an existing node and updates parent links");
+
+test(function () {
+  var one = document.getElementById("one");
+  var c = document.getElementById("c");
+  var moved = one.removeChild(c);
+  assert_equals(moved, c, "removeChild returns the removed node");
+  assert_equals(c.parentNode, null, "removed node has no parent");
+  assert_equals(one.textContent, "ab", "removed node no longer contributes text");
+}, "removeChild detaches a node from the tree");
+
+test(function () {
+  var one = document.getElementById("one");
+  var tail = document.createElement("span");
+  tail.id = "tail";
+  tail.appendChild(document.createTextNode("z"));
+  one.insertBefore(tail, null);
+  assert_equals(one.lastChild, tail, "null reference appends at the end");
+  assert_equals(one.textContent, "abz", "insertBefore(null) appends readable text");
+}, "insertBefore with a null reference appends");
+
+test(function () {
+  var one = document.getElementById("one");
+  var stranger = document.createElement("span");
+  stranger.id = "stranger";
+
+  assert_throws_js(Error, function () {
+    one.removeChild(stranger);
+  }, "removeChild rejects a node that is not this parent's child");
+  assert_equals(stranger.parentNode, null, "failed removeChild leaves the stranger detached");
+  assert_equals(one.textContent, "abz", "failed removeChild leaves the parent children unchanged");
+}, "removeChild rejects a node that is not owned by the parent");
+
+test(function () {
+  var one = document.getElementById("one");
+  var two = document.getElementById("two");
+  var ref = document.createElement("span");
+  ref.id = "foreign-ref";
+  two.appendChild(ref);
+  var child = document.createElement("span");
+  child.id = "blocked-insert";
+
+  assert_throws_js(Error, function () {
+    one.insertBefore(child, ref);
+  }, "insertBefore rejects a reference node owned by another parent");
+  assert_equals(child.parentNode, null, "failed insertBefore leaves the new child detached");
+  assert_equals(ref.parentElement, two, "failed insertBefore leaves the foreign reference in its parent");
+  assert_equals(document.getElementById("blocked-insert"), null, "failed insertBefore does not enter the document");
+}, "insertBefore rejects a foreign reference node");
+</script>
+</body>

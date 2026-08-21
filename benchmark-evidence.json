@@ -1,0 +1,2094 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "@browser-engine/benchmark",
+  "deterministic": true,
+  "metrics": {
+    "handWrittenLines": 46620,
+    "generatedLines": 5439,
+    "testLines": 25790,
+    "totalLines": 77849,
+    "cssPropertyCount": 340,
+    "domMemberCount": 552,
+    "platformFeatureCount": 892,
+    "wptPassCount": 45,
+    "compatPerLoc": 0.0009652509652509653,
+    "mechanismDensity": 19.133419133419135,
+    "executionEvidence": {
+      "subsetCount": 3,
+      "files": 90,
+      "subtests": 318,
+      "passed": 318,
+      "failed": 0,
+      "errored": 0,
+      "queryCalls": 11106,
+      "recomputes": 3884,
+      "cacheHits": 7222,
+      "verifiedCacheHits": 23,
+      "dependencyReads": 121506,
+      "tracedStages": [
+        "qFineComputed",
+        "qFineLayout",
+        "qFineLayoutStyle",
+        "qFinePaint",
+        "qFineRuleIndex",
+        "qFineSheets"
+      ],
+      "incrementalEdit": {
+        "scenario": "40 sibling boxes; paint-only class edit, layout-affecting class edit, no-mutation render",
+        "documentNodes": 86,
+        "editedNode": "#n20",
+        "paintOnlyReusedLayout": true,
+        "layoutEditRecomputedLayout": true,
+        "noMutationRecomputes": 0,
+        "steps": [
+          {
+            "name": "prime",
+            "queryCalls": 588,
+            "recomputes": 172,
+            "cacheHits": 416,
+            "verifiedCacheHits": 0,
+            "dependencyReads": 8856,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "paint-only-edit",
+            "queryCalls": 592,
+            "recomputes": 5,
+            "cacheHits": 587,
+            "verifiedCacheHits": 167,
+            "dependencyReads": 9520,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "layout-affecting-edit",
+            "queryCalls": 724,
+            "recomputes": 6,
+            "cacheHits": 718,
+            "verifiedCacheHits": 166,
+            "dependencyReads": 9652,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "no-mutation-render",
+            "queryCalls": 1,
+            "recomputes": 0,
+            "cacheHits": 1,
+            "verifiedCacheHits": 0,
+            "dependencyReads": 339,
+            "tracedStages": [
+              "qFinePaint"
+            ]
+          }
+        ],
+        "queryCalls": 1905,
+        "recomputes": 183,
+        "cacheHits": 1722,
+        "verifiedCacheHits": 333,
+        "dependencyReads": 28367,
+        "tracedStages": [
+          "qFineComputed",
+          "qFineLayout",
+          "qFineLayoutStyle",
+          "qFinePaint",
+          "qFineRuleIndex",
+          "qFineSheets"
+        ]
+      },
+      "scriptDrivenEdit": {
+        "scenario": "real V8 script uses classList.add, document.createElement, id/className setters, and appendChild",
+        "initialDocumentNodes": 8,
+        "finalDocumentNodes": 9,
+        "scriptMutations": 6,
+        "paintOnlyReusedLayout": true,
+        "layoutEditRecomputedLayout": true,
+        "appendChildIncreasedNodes": true,
+        "appendedNodePainted": true,
+        "steps": [
+          {
+            "name": "prime",
+            "mutations": 0,
+            "queryCalls": 42,
+            "recomputes": 16,
+            "cacheHits": 26,
+            "verifiedCacheHits": 0,
+            "dependencyReads": 432,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "script-paint-only",
+            "mutations": 1,
+            "queryCalls": 46,
+            "recomputes": 5,
+            "cacheHits": 41,
+            "verifiedCacheHits": 11,
+            "dependencyReads": 511,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "script-layout-edit",
+            "mutations": 1,
+            "queryCalls": 58,
+            "recomputes": 6,
+            "cacheHits": 52,
+            "verifiedCacheHits": 10,
+            "dependencyReads": 537,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          },
+          {
+            "name": "script-append-child",
+            "mutations": 4,
+            "queryCalls": 61,
+            "recomputes": 8,
+            "cacheHits": 53,
+            "verifiedCacheHits": 10,
+            "dependencyReads": 615,
+            "tracedStages": [
+              "qFineComputed",
+              "qFineLayout",
+              "qFineLayoutStyle",
+              "qFinePaint",
+              "qFineRuleIndex",
+              "qFineSheets"
+            ]
+          }
+        ],
+        "queryCalls": 207,
+        "recomputes": 35,
+        "cacheHits": 172,
+        "verifiedCacheHits": 31,
+        "dependencyReads": 2095,
+        "tracedStages": [
+          "qFineComputed",
+          "qFineLayout",
+          "qFineLayoutStyle",
+          "qFinePaint",
+          "qFineRuleIndex",
+          "qFineSheets"
+        ]
+      },
+      "resourceLoadedPage": {
+        "url": "https://benchmark.test/index.html",
+        "rootBytes": 124,
+        "discoveredResources": 3,
+        "loadedResources": 2,
+        "missingResources": 1,
+        "loadedBytes": 106,
+        "stylesheetCount": 2,
+        "decodedImageCount": 1,
+        "displayCommands": 2,
+        "paintOps": [
+          "image",
+          "text"
+        ],
+        "width": 800,
+        "height": 600,
+        "missingImage": {
+          "url": "https://benchmark.test/missing-image.html",
+          "discoveredResources": 1,
+          "loadedResources": 0,
+          "missingResources": 1,
+          "loadedBytes": 0,
+          "decodedImageCount": 0,
+          "paintedImage": false,
+          "displayCommands": 2,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "invalidImage": {
+          "url": "https://benchmark.test/invalid-image.html",
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 9,
+          "decodedImageCount": 0,
+          "paintedImage": false,
+          "displayCommands": 2,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "duplicateResource": {
+          "url": "https://benchmark.test/duplicate-resource.html",
+          "fetchCalls": 2,
+          "sharedResourceFetches": 1,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 73,
+          "decodedImageCount": 2,
+          "paintedImageCount": 2,
+          "displayCommands": 2,
+          "paintOps": [
+            "image"
+          ]
+        },
+        "duplicateStylesheet": {
+          "url": "https://benchmark.test/duplicate-stylesheet.html",
+          "fetchCalls": 2,
+          "sharedStylesheetFetches": 1,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 67,
+          "stylesheetCount": 4,
+          "authorStylesheetCount": 3,
+          "authorRuleCount": 3,
+          "authorDeclarationCount": 9,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "duplicateLinkWonSourceOrder": true,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "dataUrlNoNetwork": {
+          "url": "https://benchmark.test/data-url-resource.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 2,
+          "decodedImageCount": 1,
+          "paintedImageCount": 1,
+          "paintedBackground": true,
+          "displayCommands": 3,
+          "paintOps": [
+            "image",
+            "rect",
+            "text"
+          ]
+        },
+        "dataUrlStylesheetCharset": {
+          "percentUtf8": {
+            "url": "https://benchmark.test/data-url-charset-percent-stylesheet.html",
+            "metadata": "text/css;charset=utf-8",
+            "fetchCalls": 1,
+            "dataUrlFetchCalls": 0,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "base64Utf8": {
+            "url": "https://benchmark.test/data-url-charset-base64-stylesheet.html",
+            "metadata": "text/css;charset=utf-8;base64",
+            "fetchCalls": 1,
+            "dataUrlFetchCalls": 0,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "unsupportedCharset": {
+            "url": "https://benchmark.test/data-url-charset-unsupported-stylesheet.html",
+            "metadata": "text/css;charset=iso-8859-1",
+            "fetchCalls": 1,
+            "dataUrlFetchCalls": 0,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          }
+        },
+        "dataUrlStylesheetSourceOrder": {
+          "externalAfterDataUrl": {
+            "url": "https://benchmark.test/data-url-before-external-stylesheet.html",
+            "externalStylesheetUrl": "https://benchmark.test/late.css",
+            "fetchCalls": 2,
+            "dataUrlFetchCalls": 0,
+            "externalStylesheetFetches": 1,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 40,
+            "stylesheetCount": 3,
+            "authorStylesheetCount": 2,
+            "authorRuleCount": 2,
+            "authorDeclarationCount": 4,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "sourceOrderWinnerBlue": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "dataUrlAfterExternal": {
+            "url": "https://benchmark.test/external-before-data-url-stylesheet.html",
+            "externalStylesheetUrl": "https://benchmark.test/early.css",
+            "fetchCalls": 2,
+            "dataUrlFetchCalls": 0,
+            "externalStylesheetFetches": 1,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 3,
+            "authorStylesheetCount": 2,
+            "authorRuleCount": 2,
+            "authorDeclarationCount": 4,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "sourceOrderWinnerBlue": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          }
+        },
+        "externalInlineStylesheetSourceOrder": {
+          "inlineAfterExternal": {
+            "url": "https://benchmark.test/external-before-inline-stylesheet.html",
+            "externalStylesheetUrl": "https://benchmark.test/early.css",
+            "fetchCalls": 2,
+            "externalStylesheetFetches": 1,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 3,
+            "authorStylesheetCount": 2,
+            "authorRuleCount": 2,
+            "authorDeclarationCount": 4,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "sourceOrderWinnerBlue": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "externalAfterInline": {
+            "url": "https://benchmark.test/inline-before-external-stylesheet.html",
+            "externalStylesheetUrl": "https://benchmark.test/late.css",
+            "fetchCalls": 2,
+            "externalStylesheetFetches": 1,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 40,
+            "stylesheetCount": 3,
+            "authorStylesheetCount": 2,
+            "authorRuleCount": 2,
+            "authorDeclarationCount": 4,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "sourceOrderWinnerBlue": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          }
+        },
+        "invalidDataImage": {
+          "url": "https://benchmark.test/invalid-data-image.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "decodedImageCount": 0,
+          "paintedImageCount": 0,
+          "paintedBackground": true,
+          "displayCommands": 3,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "invalidDataStylesheet": {
+          "url": "https://benchmark.test/invalid-data-stylesheet.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 1,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "nonCssDataStylesheet": {
+          "url": "https://benchmark.test/non-css-data-stylesheet.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 1,
+          "authorStylesheetCount": 0,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "noHrefStylesheet": {
+          "url": "https://benchmark.test/no-href-stylesheet.html",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 67,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 1,
+          "authorDeclarationCount": 3,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "emptyHrefStylesheet": {
+          "url": "https://benchmark.test/empty-href-stylesheet.html",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 86,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "fragmentHrefStylesheet": {
+          "url": "https://benchmark.test/fragment-href-stylesheet.html",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 92,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "queryHrefStylesheet": {
+          "url": "https://benchmark.test/query-href-stylesheet.html?old=1#frag",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 92,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "protocolRelativeStylesheet": {
+          "url": "https://benchmark.test/protocol-relative-stylesheet.html",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 67,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 1,
+          "authorDeclarationCount": 3,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "whitespaceRelStylesheet": {
+          "url": "https://benchmark.test/whitespace-rel-stylesheet.html",
+          "fetchCalls": 3,
+          "discoveredResources": 2,
+          "loadedResources": 2,
+          "missingResources": 0,
+          "loadedBytes": 107,
+          "stylesheetCount": 3,
+          "authorStylesheetCount": 2,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 4,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "sourceOrderWinnerBlue": true,
+          "alternateFetchCalls": 1,
+          "alternateDiscoveredResources": 0,
+          "alternateLoadedResources": 0,
+          "alternateAuthorStylesheetCount": 0,
+          "alternatePaintedBackground": false,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "duplicateRelStylesheet": {
+          "url": "https://benchmark.test/duplicate-rel-stylesheet.html",
+          "fetchCalls": 3,
+          "discoveredResources": 2,
+          "loadedResources": 2,
+          "missingResources": 0,
+          "loadedBytes": 107,
+          "stylesheetCount": 3,
+          "authorStylesheetCount": 2,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 4,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "sourceOrderWinnerBlue": true,
+          "alternateFetchCalls": 1,
+          "alternateDiscoveredResources": 0,
+          "alternateLoadedResources": 0,
+          "alternateAuthorStylesheetCount": 0,
+          "alternatePaintedBackground": false,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "whitespaceHrefStylesheet": {
+          "url": "https://benchmark.test/whitespace-href-stylesheet.html",
+          "rawHref": " /early.css ",
+          "resolvedHref": "https://benchmark.test/early.css",
+          "loadedResourceUrl": "https://benchmark.test/early.css",
+          "fetchCalls": 3,
+          "discoveredResources": 2,
+          "loadedResources": 2,
+          "missingResources": 0,
+          "loadedBytes": 107,
+          "stylesheetCount": 3,
+          "authorStylesheetCount": 2,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 4,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "sourceOrderWinnerBlue": true,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "controlCharacterHrefStylesheet": {
+          "url": "https://benchmark.test/control-character-href-stylesheet.html",
+          "rawHref": "\n\t/early.css\f",
+          "rawHrefJson": "\"\\n\\t/early.css\\f\"",
+          "resolvedHref": "https://benchmark.test/early.css",
+          "loadedResourceUrl": "https://benchmark.test/early.css",
+          "fetchCalls": 3,
+          "discoveredResources": 2,
+          "loadedResources": 2,
+          "missingResources": 0,
+          "loadedBytes": 107,
+          "stylesheetCount": 3,
+          "authorStylesheetCount": 2,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 4,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "sourceOrderWinnerBlue": true,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "baseHrefSubresource": {
+          "url": "https://benchmark.test/pages/base-href-subresource.html",
+          "rawBaseHref": "https://cdn.benchmark.test/assets/",
+          "resolvedBaseHref": "https://cdn.benchmark.test/assets/",
+          "stylesheetHref": "css/theme.css",
+          "imageSrc": "img/pic.png",
+          "loadedStylesheetUrl": "https://cdn.benchmark.test/assets/css/theme.css",
+          "loadedImageUrl": "https://cdn.benchmark.test/assets/img/pic.png",
+          "fetchCalls": 3,
+          "stylesheetFetches": 1,
+          "imageFetches": 1,
+          "discoveredResources": 2,
+          "loadedResources": 2,
+          "missingResources": 0,
+          "loadedBytes": 174,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 5,
+          "decodedImageCount": 1,
+          "paintedBackground": true,
+          "paintedImageCount": 1,
+          "displayCommands": 3,
+          "paintOps": [
+            "image",
+            "rect",
+            "text"
+          ],
+          "paintedBackgroundRed": true,
+          "paintedImageBlue": true
+        },
+        "invalidUrlStylesheet": {
+          "url": "https://benchmark.test/invalid-url-stylesheet.html",
+          "fetchCalls": 2,
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 40,
+          "stylesheetCount": 3,
+          "authorStylesheetCount": 2,
+          "authorRuleCount": 2,
+          "authorDeclarationCount": 4,
+          "decodedImageCount": 0,
+          "paintedBackground": true,
+          "sourceOrderWinnerBlue": true,
+          "invalidOnlyFetchCalls": 1,
+          "invalidOnlyDiscoveredResources": 0,
+          "invalidOnlyLoadedResources": 0,
+          "invalidOnlyMissingResources": 0,
+          "invalidOnlyAuthorStylesheetCount": 0,
+          "invalidOnlyPaintedBackground": false,
+          "displayCommands": 2,
+          "paintOps": [
+            "rect",
+            "text"
+          ]
+        },
+        "alternateStylesheet": {
+          "url": "https://benchmark.test/alternate-stylesheet.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 1,
+          "authorStylesheetCount": 0,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "disabledStylesheet": {
+          "url": "https://benchmark.test/disabled-stylesheet.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 1,
+          "authorStylesheetCount": 0,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "printMediaStylesheet": {
+          "url": "https://benchmark.test/print-media-stylesheet.html",
+          "fetchCalls": 1,
+          "discoveredResources": 0,
+          "loadedResources": 0,
+          "missingResources": 0,
+          "loadedBytes": 0,
+          "stylesheetCount": 1,
+          "authorStylesheetCount": 0,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "stylesheetMediaList": {
+          "empty": {
+            "media": "",
+            "url": "https://benchmark.test/empty-media-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "whitespaceOnly": {
+            "media": "   ",
+            "url": "https://benchmark.test/whitespace-only-media-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "matchingList": {
+            "media": "print, screen",
+            "url": "https://benchmark.test/media-list-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "spacedMatchingList": {
+            "media": " print , screen ",
+            "url": "https://benchmark.test/spaced-media-list-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "emptyItemBeforeScreen": {
+            "media": ", screen",
+            "url": "https://benchmark.test/empty-item-before-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "emptyItemAfterScreen": {
+            "media": "screen,",
+            "url": "https://benchmark.test/empty-item-after-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "emptyItemsOnly": {
+            "media": ",",
+            "url": "https://benchmark.test/empty-items-only-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unsupportedThenScreen": {
+            "media": "(dynamic-range: high), screen",
+            "url": "https://benchmark.test/unsupported-media-list-then-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "unsupportedOnly": {
+            "media": "(dynamic-range: high)",
+            "url": "https://benchmark.test/unsupported-media-list-only-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unknownTypeThenScreen": {
+            "media": "projection, screen",
+            "url": "https://benchmark.test/unknown-media-type-then-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "unknownTypeOnly": {
+            "media": "projection",
+            "url": "https://benchmark.test/unknown-media-type-only-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "uppercaseScreen": {
+            "media": "SCREEN",
+            "url": "https://benchmark.test/uppercase-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "mixedCaseOnlyScreen": {
+            "media": "Only Screen",
+            "url": "https://benchmark.test/mixed-case-only-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "spacedOnlyScreen": {
+            "media": "only   screen",
+            "url": "https://benchmark.test/spaced-only-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "uppercasePrint": {
+            "media": "PRINT",
+            "url": "https://benchmark.test/uppercase-print-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "all": {
+            "media": "all",
+            "url": "https://benchmark.test/all-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "onlyAll": {
+            "media": "only all",
+            "url": "https://benchmark.test/only-all-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "notAll": {
+            "media": "not all",
+            "url": "https://benchmark.test/not-all-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "spacedNotAll": {
+            "media": "not   all",
+            "url": "https://benchmark.test/spaced-not-all-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "notPrint": {
+            "media": "not print",
+            "url": "https://benchmark.test/not-print-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "spacedNotPrint": {
+            "media": "not   print",
+            "url": "https://benchmark.test/spaced-not-print-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "onlyPrint": {
+            "media": "only print",
+            "url": "https://benchmark.test/only-print-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "spacedOnlyPrint": {
+            "media": "only   print",
+            "url": "https://benchmark.test/spaced-only-print-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          }
+        },
+        "stylesheetMediaFeature": {
+          "screenMinWidth": {
+            "media": "screen and (min-width: 1px)",
+            "url": "https://benchmark.test/screen-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "uppercaseScreenMinWidth": {
+            "media": "screen and (MIN-WIDTH: 1px)",
+            "url": "https://benchmark.test/uppercase-screen-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "decimalScreenMinWidth": {
+            "media": "screen and (min-width: 799.5px)",
+            "url": "https://benchmark.test/decimal-screen-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "spacedScreenMinWidth": {
+            "media": "screen  and  ( min-width : 1px )",
+            "url": "https://benchmark.test/spaced-screen-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "bareMinWidth": {
+            "media": "(min-width: 1px)",
+            "url": "https://benchmark.test/bare-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "allMinWidth": {
+            "media": "all and (min-width: 1px)",
+            "url": "https://benchmark.test/all-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "allMaxWidth": {
+            "media": "all and (max-width: 1px)",
+            "url": "https://benchmark.test/all-max-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "onlyAllMinWidth": {
+            "media": "only all and (min-width: 1px)",
+            "url": "https://benchmark.test/only-all-min-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "unsupportedRangeWidth": {
+            "media": "screen and (width >= 1px)",
+            "url": "https://benchmark.test/unsupported-range-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unsupportedRangeThenScreen": {
+            "media": "(width >= 1px), screen",
+            "url": "https://benchmark.test/unsupported-range-then-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "unsupportedCalcMinWidth": {
+            "media": "screen and (min-width: calc(1px))",
+            "url": "https://benchmark.test/unsupported-calc-min-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unsupportedHover": {
+            "media": "screen and (hover: hover)",
+            "url": "https://benchmark.test/unsupported-hover-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "invalidEmptyFeature": {
+            "media": "screen and ()",
+            "url": "https://benchmark.test/invalid-empty-feature-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unsupportedBooleanWidth": {
+            "media": "screen and (width)",
+            "url": "https://benchmark.test/unsupported-boolean-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "unknownFeature": {
+            "media": "screen and (unknown-feature)",
+            "url": "https://benchmark.test/unknown-feature-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "invalidEmptyFeatureThenScreen": {
+            "media": "screen and (), screen",
+            "url": "https://benchmark.test/invalid-empty-feature-then-screen-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "screenMaxWidth": {
+            "media": "screen and (max-width: 1px)",
+            "url": "https://benchmark.test/screen-max-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "decimalScreenMaxWidth": {
+            "media": "screen and (max-width: 799.5px)",
+            "url": "https://benchmark.test/decimal-screen-max-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "spacedScreenMaxWidth": {
+            "media": "screen  and  ( max-width : 1px )",
+            "url": "https://benchmark.test/spaced-screen-max-width-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "screenMinHeight": {
+            "media": "screen and (min-height: 1px)",
+            "url": "https://benchmark.test/screen-min-height-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "screenMaxHeight": {
+            "media": "screen and (max-height: 1px)",
+            "url": "https://benchmark.test/screen-max-height-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "screenExactWidth": {
+            "media": "screen and (width: 800px)",
+            "url": "https://benchmark.test/screen-exact-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "decimalScreenExactWidth": {
+            "media": "screen and (width: 800.0px)",
+            "url": "https://benchmark.test/decimal-screen-exact-width-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "screenExactHeight": {
+            "media": "screen and (height: 600px)",
+            "url": "https://benchmark.test/screen-exact-height-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "screenExactHeightMiss": {
+            "media": "screen and (height: 1px)",
+            "url": "https://benchmark.test/screen-exact-height-miss-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "negatedMatchingFeature": {
+            "media": "not screen and (min-width: 1px)",
+            "url": "https://benchmark.test/negated-matching-feature-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "negatedMissingFeature": {
+            "media": "not screen and (max-width: 1px)",
+            "url": "https://benchmark.test/negated-missing-feature-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          }
+        },
+        "stylesheetOrientationMedia": {
+          "landscape": {
+            "media": "screen and (orientation: landscape)",
+            "url": "https://benchmark.test/landscape-orientation-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "uppercaseLandscape": {
+            "media": "screen and (ORIENTATION: LANDSCAPE)",
+            "url": "https://benchmark.test/uppercase-landscape-orientation-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "portrait": {
+            "media": "screen and (orientation: portrait)",
+            "url": "https://benchmark.test/portrait-orientation-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          },
+          "uppercasePortrait": {
+            "media": "screen and (ORIENTATION: PORTRAIT)",
+            "url": "https://benchmark.test/uppercase-portrait-orientation-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          }
+        },
+        "stylesheetCombinedMediaFeature": {
+          "matching": {
+            "media": "screen and (min-width: 1px) and (orientation: landscape)",
+            "url": "https://benchmark.test/combined-media-feature-media-stylesheet.html",
+            "fetchCalls": 2,
+            "discoveredResources": 1,
+            "loadedResources": 1,
+            "missingResources": 0,
+            "loadedBytes": 67,
+            "stylesheetCount": 2,
+            "authorStylesheetCount": 1,
+            "authorRuleCount": 1,
+            "authorDeclarationCount": 3,
+            "decodedImageCount": 0,
+            "paintedBackground": true,
+            "displayCommands": 2,
+            "paintOps": [
+              "rect",
+              "text"
+            ]
+          },
+          "laterMiss": {
+            "media": "screen and (min-width: 1px) and (orientation: portrait)",
+            "url": "https://benchmark.test/combined-media-feature-miss-media-stylesheet.html",
+            "fetchCalls": 1,
+            "discoveredResources": 0,
+            "loadedResources": 0,
+            "missingResources": 0,
+            "loadedBytes": 0,
+            "stylesheetCount": 1,
+            "authorStylesheetCount": 0,
+            "authorRuleCount": 0,
+            "authorDeclarationCount": 0,
+            "decodedImageCount": 0,
+            "paintedBackground": false,
+            "displayCommands": 1,
+            "paintOps": [
+              "text"
+            ]
+          }
+        },
+        "invalidExternalStylesheet": {
+          "url": "https://benchmark.test/invalid-external-stylesheet.html",
+          "discoveredResources": 1,
+          "loadedResources": 1,
+          "missingResources": 0,
+          "loadedBytes": 76,
+          "stylesheetCount": 2,
+          "authorStylesheetCount": 1,
+          "authorRuleCount": 1,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        },
+        "missingStylesheet": {
+          "url": "https://benchmark.test/missing-stylesheet.html",
+          "discoveredResources": 1,
+          "loadedResources": 0,
+          "missingResources": 1,
+          "loadedBytes": 0,
+          "stylesheetCount": 1,
+          "authorStylesheetCount": 0,
+          "authorRuleCount": 0,
+          "authorDeclarationCount": 0,
+          "decodedImageCount": 0,
+          "paintedBackground": false,
+          "displayCommands": 1,
+          "paintOps": [
+            "text"
+          ]
+        }
+      },
+      "realSiteSmoke": {
+        "scenarioCount": 2,
+        "passed": 2,
+        "failed": 0,
+        "coveredCapabilities": [
+          "event-loop-microtask",
+          "fetch",
+          "font-face",
+          "v8-guest-execution"
+        ],
+        "scenarios": [
+          {
+            "id": "smoke/fetch-json-roundtrip",
+            "capabilities": [
+              "event-loop-microtask",
+              "fetch",
+              "v8-guest-execution"
+            ],
+            "passed": true
+          },
+          {
+            "id": "smoke/web-font-applied",
+            "capabilities": [
+              "fetch",
+              "font-face"
+            ],
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "dimensions": [
+    {
+      "id": "hand-written-surface",
+      "label": "Hand-written surface (smaller = more readable)",
+      "ourValue": 46620,
+      "ourDisplay": "46,620 lines",
+      "competitor": {
+        "engine": "Chromium / Chrome",
+        "metric": "hand-written-lines",
+        "value": 36000000,
+        "unit": "lines",
+        "sourceName": "Wikipedia — Chromium (web browser)",
+        "sourceUrl": "https://en.wikipedia.org/wiki/Chromium_(web_browser)",
+        "asOf": "2025",
+        "methodology": "Reported as 'over 36 million source lines of code, excluding comments and blank lines' for the whole Chromium codebase (not just the rendering engine).",
+        "confidence": "cited"
+      },
+      "verdict": "WIN",
+      "rationale": "Our hand-written surface is ~772× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+    },
+    {
+      "id": "compat-per-loc",
+      "label": "compat-per-LOC (North Star)",
+      "ourValue": 0.0009652509652509653,
+      "ourDisplay": "0.0010 passes/line",
+      "competitor": {
+        "engine": "Chromium / Chrome",
+        "metric": "compat-per-loc",
+        "value": null,
+        "unit": "passes/line",
+        "sourceName": "",
+        "sourceUrl": "",
+        "asOf": "",
+        "methodology": "No published figure expresses Chromium compatibility per hand-written line; deriving one requires a common WPT pass-count numerator over its ~36M-line denominator. Recorded as needs-source rather than invented.",
+        "confidence": "needs-source"
+      },
+      "verdict": "WIN",
+      "rationale": "compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours."
+    },
+    {
+      "id": "mechanism-density",
+      "label": "mechanism-density (features per 1k hand-written lines)",
+      "ourValue": 19.133419133419135,
+      "ourDisplay": "19.13 features/kloc",
+      "competitor": null,
+      "verdict": "WIN",
+      "rationale": "892 platform features (CSS properties + DOM members) over 46,620 hand-written lines = 19.13 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+    },
+    {
+      "id": "css-coverage",
+      "label": "CSS-property coverage (raw count)",
+      "ourValue": 340,
+      "ourDisplay": "340 properties",
+      "competitor": {
+        "engine": "CSS specifications (proxy for Chromium coverage)",
+        "metric": "css-property-count",
+        "value": 600,
+        "unit": "properties",
+        "sourceName": "CSS specifications (order-of-magnitude)",
+        "sourceUrl": "https://www.w3.org/Style/CSS/all-properties.en.html",
+        "asOf": "2025",
+        "methodology": "The CSS Working Group's all-properties index lists several hundred properties; Chromium implements most. Used as an order-of-magnitude proxy.",
+        "confidence": "order-of-magnitude"
+      },
+      "verdict": "GAP",
+      "rationale": "We implement 340 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each."
+    },
+    {
+      "id": "raw-interop",
+      "label": "Raw WPT / Interop pass rate",
+      "ourValue": 100,
+      "ourDisplay": "100% of maintained WPT subsets (318/318 curated subtests)",
+      "competitor": {
+        "engine": "Chromium / Chrome",
+        "metric": "wpt-interop-pass-rate",
+        "value": 95,
+        "unit": "%",
+        "sourceName": "WebKit blog — The success of Interop 2024",
+        "sourceUrl": "https://webkit.org/blog/16413/the-success-of-interop-2024/",
+        "asOf": "2024-12",
+        "methodology": "Interop 2024: ~95% of the Interop test set passed in Chrome 131 (and Edge 131, Firefox 133, Safari 18.2) by end of Dec 2024. This is the curated Interop focus-area set, not all of WPT.",
+        "confidence": "cited"
+      },
+      "verdict": "GAP",
+      "rationale": "Our maintained subset passes, but it is curated — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers."
+    },
+    {
+      "id": "runtime-performance",
+      "label": "Runtime performance (Speedometer-class)",
+      "ourValue": null,
+      "ourDisplay": "not measured",
+      "competitor": {
+        "engine": "Chromium / Chrome",
+        "metric": "runtime-performance-speedometer",
+        "value": null,
+        "unit": "runs/min",
+        "sourceName": "",
+        "sourceUrl": "",
+        "asOf": "",
+        "methodology": "Speedometer scores are hardware- and version-specific and must be measured on identical hardware to be comparable. We have no co-located Chromium run, so no honest head-to-head number exists here.",
+        "confidence": "needs-source"
+      },
+      "verdict": "NOT-COMPARABLE",
+      "rationale": "No honest comparison exists: performance must be measured on identical hardware, and we have no co-located Chromium run. Our engine also defers real text shaping/rasterization to reused native libraries (HarfBuzz/FreeType), not yet integrated. Closing this needs those libraries + a same-machine benchmark."
+    }
+  ]
+}

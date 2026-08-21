@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM ChildNode replaceWith</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .made {
+    width: 47px;
+    height: 31px;
+    background-color: rgb(1, 2, 3);
+  }
+</style>
+<body>
+<section id="replace-host"><span id="replace-left">L</span><span id="replace-target">T</span><span id="replace-right">R</span></section>
+<section id="move-old"><b id="moved">X</b></section>
+<section id="move-new"><span id="move-target">T</span><span id="move-tail">R</span></section>
+<section id="remove-host"><span id="remove-target">gone</span></section>
+<section id="style-host"><span id="style-target">T</span></section>
+<script>
+test(function () {
+  var host = document.getElementById("replace-host");
+  var target = document.getElementById("replace-target");
+  var node = document.createElement("i");
+  node.id = "replace-node";
+  node.textContent = "N";
+
+  target.replaceWith("A", node, "B");
+
+  assert_equals(host.textContent, "LANBR", "replaceWith inserts arguments at the receiver's old position");
+  assert_equals(host.children[1], node, "element argument lands in the replacement slot");
+  assert_equals(target.parentNode, null, "receiver is detached after replacement");
+  assert_equals(document.getElementById("replace-target"), null, "detached receiver is no longer found by id");
+  assert_equals(document.getElementById("replace-node"), node, "inserted node is queryable");
+}, "Element.replaceWith replaces the receiver with string and node arguments");
+
+test(function () {
+  var oldParent = document.getElementById("move-old");
+  var newParent = document.getElementById("move-new");
+  var target = document.getElementById("move-target");
+  var moved = document.getElementById("moved");
+
+  target.replaceWith(moved, "Q");
+
+  assert_equals(oldParent.textContent, "", "old parent loses the moved node");
+  assert_equals(newParent.textContent, "XQR", "reparented node and string occupy the receiver's old position");
+  assert_equals(moved.parentElement, newParent, "moved node parent is updated");
+  assert_equals(target.parentNode, null, "receiver is detached when replaced by a moved node");
+  assert_equals(newParent.querySelector("#moved"), moved, "fresh scoped query observes the moved node");
+}, "Element.replaceWith reparents existing connected nodes without stale copies");
+
+test(function () {
+  var host = document.getElementById("remove-host");
+  var target = document.getElementById("remove-target");
+
+  target.replaceWith();
+
+  assert_equals(target.parentNode, null, "empty replaceWith detaches the receiver");
+  assert_equals(host.textContent, "", "empty replaceWith removes the receiver's text contribution");
+  assert_equals(document.getElementById("remove-target"), null, "fresh id lookup no longer sees the receiver");
+}, "Element.replaceWith with no arguments removes the receiver");
+
+test(function () {
+  var detached = document.createElement("p");
+
+  detached.replaceWith("ignored");
+
+  assert_equals(detached.textContent, "", "detached receiver remains unchanged");
+  assert_equals(document.querySelector("p"), null, "detached receiver does not enter the document");
+}, "Element.replaceWith is a no-op for detached receivers");
+
+test(function () {
+  var host = document.getElementById("style-host");
+  var target = document.getElementById("style-target");
+  var made = document.createElement("article");
+  made.id = "styled-replacement";
+  made.className = "made";
+  made.textContent = "styled";
+
+  target.replaceWith("before", made);
+
+  assert_equals(host.querySelector("#styled-replacement.made"), made, "selector matching observes replacement content");
+  assert_equals(host.textContent, "beforestyled", "textContent observes replacement string and node");
+  assert_equals(target.parentNode, null, "styled receiver is detached after replacement");
+  assert_equals(getComputedStyle(made).getPropertyValue("width"), "47px", "computed width applies after replaceWith");
+  assert_equals(getComputedStyle(made).getPropertyValue("height"), "31px", "computed height applies after replaceWith");
+  assert_equals(getComputedStyle(made).getPropertyValue("background-color"), "rgb(1, 2, 3)", "paint style applies after replaceWith");
+}, "Element.replaceWith content participates in selector matching and computed style");
+</script>
+</body>

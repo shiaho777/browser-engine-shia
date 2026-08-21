@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element matches and closest</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section class="card"><div id="inner" class="body"><span id="leaf">x</span></div></section>
+<script>
+test(function () {
+  var inner = document.getElementById("inner");
+  assert_true(inner.matches(".body"), "class selector matches the element");
+  assert_true(inner.matches("div.body"), "compound selector matches the element");
+  assert_false(inner.matches(".card"), "ancestor selector does not match the element itself");
+}, "Element.matches reuses the selector engine");
+
+test(function () {
+  var leaf = document.getElementById("leaf");
+  assert_equals(leaf.closest(".card").tagName, "SECTION", "closest walks to an ancestor");
+  assert_equals(leaf.closest("#inner").getAttribute("id"), "inner", "closest returns the nearest matching ancestor");
+  assert_equals(leaf.closest("span"), leaf, "closest checks the element itself first");
+  assert_equals(leaf.closest(".missing"), null, "closest returns null when no ancestor matches");
+}, "Element.closest walks ancestors with selector matching");
+</script>
+</body>

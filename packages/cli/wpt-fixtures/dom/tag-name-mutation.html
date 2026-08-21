@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getElementsByTagName after DOM mutation</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="append-tags"></main>
+<section id="scoped-tags"></section>
+<section id="tag-old-parent"><span id="moved-tag">move</span></section>
+<section id="tag-new-parent"></section>
+<section id="remove-tags"><em id="removed-tag">remove</em></section>
+<section id="wildcard-tags"><strong id="kept-tag">keep</strong></section>
+<script>
+function ids(list) {
+  return list.map(function (el) { return el.getAttribute("id"); });
+}
+
+test(function () {
+  var root = document.getElementById("append-tags");
+  var made = document.createElement("ArTiClE");
+  made.id = "made-article";
+
+  assert_array_equals(ids(document.getElementsByTagName("article")), [], "detached created element is not in document results");
+  assert_array_equals(ids(document.getElementsByTagName("ARTICLE")), [], "mixed-case query also ignores detached elements");
+
+  root.appendChild(made);
+
+  assert_array_equals(ids(document.getElementsByTagName("article")), ["made-article"], "fresh document query sees appended element");
+  assert_array_equals(ids(document.getElementsByTagName("ARTICLE")), ["made-article"], "tag-name argument is ASCII case-insensitive");
+}, "Document.getElementsByTagName observes append and ignores detached created nodes");
+
+test(function () {
+  var scope = document.getElementById("scoped-tags");
+  var child = document.createElement("span");
+  child.id = "scoped-span";
+
+  assert_array_equals(ids(scope.getElementsByTagName("span")), [], "precondition: scope has no matching descendants");
+  scope.appendChild(child);
+
+  assert_array_equals(ids(scope.getElementsByTagName("span")), ["scoped-span"], "scoped query sees appended descendant");
+  assert_array_equals(ids(child.getElementsByTagName("span")), [], "element query excludes the scope root itself");
+}, "Element.getElementsByTagName observes appended descendants without matching self");
+
+test(function () {
+  var oldParent = document.getElementById("tag-old-parent");
+  var newParent = document.getElementById("tag-new-parent");
+  var moved = document.getElementById("moved-tag");
+
+  assert_array_equals(ids(oldParent.getElementsByTagName("span")), ["moved-tag"], "precondition: old parent sees moved element");
+  assert_array_equals(ids(newParent.getElementsByTagName("span")), [], "precondition: new parent is empty");
+
+  newParent.appendChild(moved);
+
+  assert_array_equals(ids(oldParent.getElementsByTagName("span")), [], "fresh old-parent query drops reparented element");
+  assert_array_equals(ids(newParent.getElementsByTagName("span")), ["moved-tag"], "fresh new-parent query sees reparented element");
+}, "getElementsByTagName observes reparenting");
+
+test(function () {
+  var root = document.getElementById("remove-tags");
+  var removed = document.getElementById("removed-tag");
+
+  assert_array_equals(ids(document.getElementsByTagName("em")), ["removed-tag"], "precondition: document sees removable element");
+  removed.remove();
+
+  assert_array_equals(ids(root.getElementsByTagName("em")), [], "scoped query no longer sees removed element");
+  assert_array_equals(ids(document.getElementsByTagName("em")), [], "document query no longer sees detached element");
+}, "Document.getElementsByTagName observes Element.remove");
+
+test(function () {
+  var root = document.getElementById("wildcard-tags");
+  var detached = document.createElement("strong");
+  detached.id = "detached-strong";
+
+  assert_array_equals(ids(root.getElementsByTagName("*")), ["kept-tag"], "wildcard scoped query sees connected descendants");
+  assert_equals(document.getElementById("detached-strong"), null, "precondition: detached strong is not document-connected");
+  assert_array_equals(ids(document.getElementsByTagName("strong")), ["kept-tag"], "document tag query ignores detached same-tag nodes");
+}, "getElementsByTagName wildcard and tag queries ignore detached nodes");
+</script>
+</body>

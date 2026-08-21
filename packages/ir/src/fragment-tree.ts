@@ -28,6 +28,8 @@ export interface LaidGlyph {
 export interface TextRun {
   /** The computed `font-size` (cell height) the glyphs are sized to. */
   readonly fontSize: Px;
+  /** Computed font-weight (100–900); absent ⇒ 400. */
+  readonly fontWeight?: number;
   /** The positioned glyphs, relative to the fragment's content-box origin. */
   readonly glyphs: readonly LaidGlyph[];
 }

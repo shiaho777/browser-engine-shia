@@ -1,51 +1,109 @@
-/**
- * fonts.ts — the wiring layer's REAL FONT bridge.
- *
- * Loads the deterministic built-in TrueType font from `@browser-engine/font`
- * and adapts it to the two narrow seams the pipeline injects:
- *
- *   - {@link pipelineShaper} — a layout {@link TextShaper} whose advances come
- *     from the font's real `hmtx` metrics (via its `cmap`), so text width and
- *     line breaking match the glyphs that get drawn;
- *   - {@link pipelineGlyphSource} — the backend's glyph coverage source, which
- *     rasterizes the same font's real vector outlines (anti-aliased).
- *
- * Both are backed by the SAME {@link FontFace}, so metrics and rendering agree.
- * This is the cli's job (composing stages); the stages themselves only ever see
- * the injected interfaces, never the font package.
- */
 import { px } from "@browser-engine/ir";
 import {
+  advanceEmForCodePoint,
   builtinFont,
-  coverageSource,
+  fallbackCoverageSource,
+  loadPreferredSystemBoldFont,
+  loadPreferredSystemFont,
   type FontFace,
   type GlyphCoverageSource,
+  type GlyphRaster,
 } from "@browser-engine/font";
 import type { ShapedGlyph, ShapingFont, ShapedRun, TextShaper } from "@browser-engine/layout";
 
-/** The active font face for the pipeline (the deterministic built-in font). */
-const FACE: FontFace = builtinFont();
+function resolvePipelineFaces(): FontFace[] {
+  const faces: FontFace[] = [];
+  const system = loadPreferredSystemFont();
+  if (system !== null) faces.push(system);
+  faces.push(builtinFont());
+  return faces;
+}
 
-/** The backend glyph coverage source — real outline rasterization. */
-export const pipelineGlyphSource: GlyphCoverageSource = coverageSource(FACE);
+function resolveBoldFaces(regular: readonly FontFace[]): FontFace[] {
+  const faces: FontFace[] = [];
+  const bold = loadPreferredSystemBoldFont();
+  if (bold !== null) faces.push(bold);
+  for (const face of regular) faces.push(face);
+  return faces;
+}
 
-/**
- * A font-backed text shaper: per-glyph advance = `fontSize × advanceWidth /
- * unitsPerEm`, read from the font's real metrics through its `cmap`. Still a
- * metrics shaper (no kerning/ligatures/complex-script shaping — that is the
- * HarfBuzz seam), but the advances are a real font's, not a fixed ratio.
- */
+const FACES: readonly FontFace[] = resolvePipelineFaces();
+const BOLD_FACES: readonly FontFace[] = resolveBoldFaces(FACES);
+
+export const pipelineFaces: readonly FontFace[] = FACES;
+
+function emboldenRaster(r: GlyphRaster): GlyphRaster {
+  if (r.width <= 0 || r.height <= 0) return r;
+  const w = r.width + 1;
+  const h = r.height;
+  const coverage = new Float64Array(w * h);
+  for (let y = 0; y < r.height; y += 1) {
+    for (let x = 0; x < r.width; x += 1) {
+      const v = r.coverage[y * r.width + x] ?? 0;
+      if (v <= 0) continue;
+      const i0 = y * w + x;
+      coverage[i0] = Math.max(coverage[i0] ?? 0, v);
+      coverage[i0 + 1] = Math.max(coverage[i0 + 1] ?? 0, v);
+    }
+  }
+  return { width: w, height: h, coverage, left: r.left, top: r.top };
+}
+
+function weightedCoverageSource(
+  regular: GlyphCoverageSource,
+  bold: GlyphCoverageSource,
+): GlyphCoverageSource & { withWeight(weight: number): GlyphCoverageSource } {
+  const cache = new Map<number, GlyphCoverageSource>();
+  const make = (weight: number): GlyphCoverageSource => {
+    const useBoldFace = weight >= 600;
+    const base = useBoldFace ? bold : regular;
+    if (weight < 500) return base;
+    return {
+      glyphId: (cp) => base.glyphId(cp),
+      advanceEm: (gid) => base.advanceEm(gid),
+      ascentEm: base.ascentEm,
+      raster: (gid, fontSizePx) => {
+        const r = base.raster(gid, fontSizePx);
+        return weight >= 500 ? emboldenRaster(r) : r;
+      },
+    };
+  };
+  const defaultSource = make(400);
+  return Object.assign(defaultSource, {
+    withWeight(weight: number): GlyphCoverageSource {
+      const key = weight >= 700 ? 700 : weight >= 600 ? 600 : weight >= 500 ? 500 : 400;
+      let hit = cache.get(key);
+      if (hit === undefined) {
+        hit = make(key);
+        cache.set(key, hit);
+      }
+      return hit;
+    },
+  });
+}
+
+const regularSource = fallbackCoverageSource(FACES);
+const boldSource = fallbackCoverageSource(BOLD_FACES);
+export const pipelineGlyphSource: GlyphCoverageSource & {
+  withWeight?(weight: number): GlyphCoverageSource;
+} = weightedCoverageSource(regularSource, boldSource);
+
 export const pipelineShaper: TextShaper = {
   shapeLine(text: string, font: ShapingFont): ShapedRun {
     const glyphs: ShapedGlyph[] = [];
     let total = 0;
+    const weight = font.fontWeight ?? 400;
+    const faces = weight >= 600 ? BOLD_FACES : FACES;
     for (const ch of text) {
-      const gid = FACE.glyphIdForCodePoint(ch.codePointAt(0)!);
-      const adv = font.fontSize * (FACE.metricsOf(gid).advanceWidth / FACE.unitsPerEm);
-      // One slot per UTF-16 unit; the cluster advance lands on its first unit.
+      const cp = ch.codePointAt(0)!;
+      const adv = font.fontSize * advanceEmForCodePoint(faces, cp);
       for (let u = 0; u < ch.length; u += 1) glyphs.push({ advance: px(u === 0 ? adv : 0) });
       total += adv;
     }
     return { advance: px(total), glyphs };
   },
 };
+
+export function pipelinePrimaryFontName(): string {
+  return FACES.length > 1 ? "system+builtin" : "builtin";
+}

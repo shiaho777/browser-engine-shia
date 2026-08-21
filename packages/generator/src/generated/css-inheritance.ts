@@ -99,6 +99,7 @@ export const INHERITED_PROPERTIES: Readonly<Record<string, boolean>> = {
   "user-select": false,
   resize: false,
   "object-fit": false,
+  "line-clamp": false,
   "background-attachment": false,
   "background-clip": false,
   "background-origin": false,

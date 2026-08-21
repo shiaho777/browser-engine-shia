@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Node compareDocumentPosition</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="host"><article id="a"><span id="a-child"></span></article><article id="b"></article><article id="c"></article></section>
+<script>
+var D = Node.DOCUMENT_POSITION_DISCONNECTED;
+var P = Node.DOCUMENT_POSITION_PRECEDING;
+var F = Node.DOCUMENT_POSITION_FOLLOWING;
+var C = Node.DOCUMENT_POSITION_CONTAINS;
+var CB = Node.DOCUMENT_POSITION_CONTAINED_BY;
+var I = Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+
+test(function () {
+  assert_equals(document.compareDocumentPosition(document), 0, "document compares to itself as zero");
+
+  var a = document.getElementById("a");
+
+  assert_equals(a.compareDocumentPosition(a), 0, "same node compares as zero");
+  assert_equals(a.DOCUMENT_POSITION_FOLLOWING, F, "node wrappers expose Node constants");
+  assert_equals(document.DOCUMENT_POSITION_FOLLOWING, F, "document wrapper exposes Node constants");
+}, "compareDocumentPosition reports equality and exposes constants");
+
+test(function () {
+  var a = document.getElementById("a");
+  var b = document.getElementById("b");
+
+  assert_equals(a.compareDocumentPosition(b), F, "following sibling is reported as following");
+  assert_equals(b.compareDocumentPosition(a), P, "preceding sibling is reported as preceding");
+}, "compareDocumentPosition reports sibling order");
+
+test(function () {
+  var host = document.getElementById("host");
+  var child = document.getElementById("a-child");
+
+  assert_equals(document.compareDocumentPosition(host), CB | F, "document contains document-element descendants");
+  assert_equals(host.compareDocumentPosition(child), CB | F, "descendant includes contained-by and following");
+  assert_equals(child.compareDocumentPosition(host), C | P, "ancestor includes contains and preceding");
+}, "compareDocumentPosition reports containment flags");
+
+test(function () {
+  var a = document.getElementById("a");
+  var b = document.getElementById("b");
+  var detached = document.createElement("aside");
+
+  b.remove();
+
+  var removed = b.compareDocumentPosition(a);
+  var fresh = detached.compareDocumentPosition(a);
+  assert_true((removed & D) !== 0, "removed node reports disconnected");
+  assert_true((removed & I) !== 0, "removed node reports implementation-specific ordering");
+  assert_true((fresh & D) !== 0, "fresh node reports disconnected");
+  assert_true((fresh & I) !== 0, "fresh node reports implementation-specific ordering");
+}, "compareDocumentPosition reports disconnected created and removed nodes");
+
+test(function () {
+  var host = document.getElementById("host");
+  var a = document.getElementById("a");
+  var c = document.getElementById("c");
+
+  assert_equals(a.compareDocumentPosition(c), F, "precondition: c follows a");
+  host.insertBefore(c, a);
+  assert_equals(c.compareDocumentPosition(a), F, "moved c now precedes a in the live tree");
+  assert_equals(a.compareDocumentPosition(c), P, "a now follows moved c in the live tree");
+}, "compareDocumentPosition updates after reparenting without cached traversal state");
+</script>
+</body>

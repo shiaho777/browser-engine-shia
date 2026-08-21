@@ -88,7 +88,7 @@
  * exports {@link stylesheetsEquivalent} as the shared structural-equality oracle
  * so the parser and the property test agree on one definition of "equivalent".
  */
-import { deepFreeze, notImplemented } from "@browser-engine/ir";
+import { deepFreeze } from "@browser-engine/ir";
 import type {
   Declaration,
   Selector,
@@ -97,6 +97,10 @@ import type {
   StyleSheet,
 } from "@browser-engine/ir";
 import { PROPERTY_PARSERS, parsePropertyValue } from "@browser-engine/generator";
+import { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches } from "./media-query.js";
+import type { MediaEnvironment } from "./media-query.js";
+export type { MediaEnvironment };
+export { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches };
 
 export const PACKAGE_NAME = "@browser-engine/css-parser" as const;
 
@@ -113,10 +117,12 @@ export const PACKAGE_NAME = "@browser-engine/css-parser" as const;
  * @param source raw CSS bytes, decoded as UTF-8.
  * @returns a frozen, branded {@link StyleSheet}.
  */
-export function parseCss(source: Uint8Array): StyleSheet {
+export function parseCss(source: Uint8Array, env: MediaEnvironment = DEFAULT_MEDIA_ENVIRONMENT): StyleSheet {
   const css = new TextDecoder("utf-8").decode(source);
-  const rules = parseRules(stripComments(css));
-  const sheet = { rules } as unknown as StyleSheet;
+  const { rules, layerOrder } = parseRulesWithLayers(stripComments(css), env);
+  const sheet = layerOrder.length > 0
+    ? { rules, layerOrder } as unknown as StyleSheet
+    : { rules } as unknown as StyleSheet;
   return deepFreeze(sheet);
 }
 
@@ -236,74 +242,469 @@ export function stylesheetsEquivalent(a: StyleSheet, b: StyleSheet): boolean {
 // source, alternating between a selector prelude and a `{ … }` block.
 // ---------------------------------------------------------------------------
 
-function parseRules(input: string): StyleRule[] {
-  const rules: StyleRule[] = [];
-  const len = input.length;
-  let i = 0;
+/** Parse result: rules + declared layer order. */
+interface ParseResult {
+  readonly rules: StyleRule[];
+  readonly layerOrder: (readonly string[])[];
+}
+
+/**
+ * Top-level parse: collects rules and @layer declarations. Layer declarations
+ * (`@layer a, b;`) populate `layerOrder`; layer blocks (`@layer a { ... }`)
+ * annotate their inner rules with the layer path.
+ */
+function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult {
+  const layerOrder: (readonly string[])[] = [];
   let order = 0;
 
-  while (i < len) {
-    // Skip inter-rule whitespace and stray top-level semicolons.
-    const ch = input[i];
+  const parse = (text: string, env2: MediaEnvironment, layerPath: readonly string[], depth: number): StyleRule[] => {
+    const rules: StyleRule[] = [];
+    const len = text.length;
+    let i = 0;
+
+    while (i < len) {
+      const ch = text[i];
+      if (ch === undefined) break;
+      if (isSpace(ch) || ch === ";") {
+        i += 1;
+        continue;
+      }
+
+      if (ch === "@") {
+        let j = i + 1;
+        while (j < len && isIdentChar(text[j])) j += 1;
+        const name = text.slice(i + 1, j).toLowerCase();
+
+        if (name === "media") {
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const condition = text.slice(j, braceOpen).trim();
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          const blockEnd = braceClose === -1 ? len : braceClose;
+          const block = text.slice(braceOpen + 1, blockEnd);
+          i = braceClose === -1 ? len : braceClose + 1;
+          if (depth >= 2) continue;
+          if (mediaQueryListMatches(condition, env2)) {
+            const innerRules = parse(block, env2, layerPath, depth + 1);
+            for (const inner of innerRules) {
+              rules.push({
+                selector: inner.selector,
+                declarations: inner.declarations,
+                specificity: inner.specificity,
+                order: order++,
+                layer: inner.layer,
+              });
+            }
+          }
+          continue;
+        }
+
+        if (name === "layer") {
+          // Two forms: @layer name { ... } (block) or @layer a, b; (declaration).
+          // First check if there's a block.
+          const braceOpen = findBlockStart(text, j);
+          const semiIdx = findTopLevelSemicolon(text, j);
+
+          if (braceOpen !== -1 && (semiIdx === -1 || braceOpen < semiIdx)) {
+            // @layer <name> { <rules> }
+            const layerName = text.slice(j, braceOpen).trim();
+            const braceClose = findBlockEnd(text, braceOpen + 1);
+            const blockEnd = braceClose === -1 ? len : braceClose;
+            const block = text.slice(braceOpen + 1, blockEnd);
+            i = braceClose === -1 ? len : braceClose + 1;
+
+            // Parse the layer name (may be dotted: "outer.inner").
+            const innerLayerPath = layerName.length > 0
+              ? [...layerPath, ...layerName.split(".").map((s) => s.trim()).filter((s) => s.length > 0)]
+              : layerPath;
+
+            // Register the layer in the order list.
+            if (innerLayerPath.length > 0 && !layerOrder.some((lp) => lp.join(".") === innerLayerPath.join("."))) {
+              layerOrder.push(innerLayerPath);
+            }
+
+            const innerRules = parse(block, env2, innerLayerPath, depth + 1);
+            for (const inner of innerRules) {
+              rules.push({
+                selector: inner.selector,
+                declarations: inner.declarations,
+                specificity: inner.specificity,
+                order: order++,
+                layer: inner.layer,
+              });
+            }
+            continue;
+          }
+
+          // @layer a, b, c; — declaration (no block). Register layer order.
+          if (semiIdx !== -1) {
+            const names = text.slice(j, semiIdx).trim();
+            i = semiIdx + 1;
+            if (names.length > 0) {
+              for (const part of names.split(",")) {
+                const trimmed = part.trim();
+                if (trimmed.length > 0) {
+                  const lp = [...layerPath, ...trimmed.split(".").map((s) => s.trim()).filter((s) => s.length > 0)];
+                  if (!layerOrder.some((existing) => existing.join(".") === lp.join("."))) {
+                    layerOrder.push(lp);
+                  }
+                }
+              }
+            }
+            continue;
+          }
+
+          // Malformed @layer — skip.
+          i = len;
+          continue;
+        }
+
+        if (name === "supports") {
+          // @supports <condition> { <rules> }
+          // We evaluate a simplified supports-condition: (prop: value) and
+          // not/and/or combinations. Unknown features evaluate to false.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const condition = text.slice(j, braceOpen).trim();
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          const blockEnd = braceClose === -1 ? len : braceClose;
+          const block = text.slice(braceOpen + 1, blockEnd);
+          i = braceClose === -1 ? len : braceClose + 1;
+          if (depth >= 2) continue;
+          if (supportsConditionMatches(condition)) {
+            const innerRules = parse(block, env2, layerPath, depth + 1);
+            for (const inner of innerRules) {
+              rules.push({
+                selector: inner.selector,
+                declarations: inner.declarations,
+                specificity: inner.specificity,
+                order: order++,
+                layer: inner.layer,
+              });
+            }
+          }
+          continue;
+        }
+
+        if (name === "import") {
+          // @import "url" | @import url("url") [media-query-list];
+          // Resolve the import eagerly — the caller (stylesheets.ts) handles
+          // external fetch. Here we just store the import directive by
+          // emitting it as a special rule that the pipeline can consume.
+          // For now, @import without a media condition is a no-op pass-through;
+          // with a media condition, we evaluate it like @media.
+          const semiIdx = findTopLevelSemicolon(text, j);
+          if (semiIdx === -1) { i = len; continue; }
+          const importArgs = text.slice(j, semiIdx).trim();
+          i = semiIdx + 1;
+
+          // Extract the URL and optional media query.
+          const urlMatch = importArgs.match(/^url\(\s*["']?([^"')]+)["']?\s*\)/) ?? importArgs.match(/^["']([^"']+)["']/);
+          if (urlMatch && urlMatch[1]) {
+            // The URL is consumed by the pipeline's stylesheet loader, not
+            // by the parser. Any trailing media condition is evaluated to
+            // decide whether the import is active, but since the loader
+            // handles actual fetching, we just skip the directive here.
+            // The media condition (if any) after the URL:
+            const mediaPart = importArgs.slice(urlMatch[0].length).trim();
+            if (mediaPart.length > 0 && !mediaQueryListMatches(mediaPart, env2)) {
+              continue; // Import not active for this media.
+            }
+            // Active import — the loader in stylesheets.ts picks it up.
+          }
+          continue;
+        }
+
+        if (name === "keyframes" || name === "-webkit-keyframes") {
+          // @keyframes <name> { <keyframe-rules> }
+          // Store the keyframes block for the animation system. The parser
+          // passes it through as-is; the cascade/paint stages consume it
+          // when animation-name references it. For now, skip the block
+          // (animations are not wired end-to-end yet).
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "font-face") {
+          // @font-face { <declarations> }
+          // Store the font-face declarations for the font system. The parser
+          // passes the block through; the font module consumes it when
+          // matching font-family. For now, skip the block.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "page") {
+          // @page [<name>][:<pseudo>] { <declarations> }
+          // Store page-level declarations for print media. Skip for now.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "charset") {
+          // @charset "UTF-8"; — encoding declaration, skip.
+          const semiIdx = findTopLevelSemicolon(text, j);
+          i = semiIdx === -1 ? len : semiIdx + 1;
+          continue;
+        }
+
+        if (name === "namespace") {
+          // @namespace prefix "url"; — XML namespace, skip.
+          const semiIdx = findTopLevelSemicolon(text, j);
+          i = semiIdx === -1 ? len : semiIdx + 1;
+          continue;
+        }
+
+        if (name === "viewport" || name === "-ms-viewport") {
+          // @viewport { <declarations> } — mobile viewport config, skip.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) { i = len; continue; }
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "counter-style") {
+          // @counter-style <name> { <declarations> } — custom counter, skip.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) { i = len; continue; }
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "property") {
+          // @property <name> { <declarations> } — CSS Houdini, skip.
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) { i = len; continue; }
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          i = braceClose === -1 ? len : braceClose + 1;
+          continue;
+        }
+
+        if (name === "container") {
+          // @container [<name>] (<condition>) { <rules> } — container queries.
+          // Evaluate a simplified condition (inline-size / block-size comparisons)
+          // and include rules if it matches. For now, always include (no
+          // container dimension tracking yet).
+          const braceOpen = findBlockStart(text, j);
+          if (braceOpen === -1) break;
+          const braceClose = findBlockEnd(text, braceOpen + 1);
+          const blockEnd = braceClose === -1 ? len : braceClose;
+          const block = text.slice(braceOpen + 1, blockEnd);
+          i = braceClose === -1 ? len : braceClose + 1;
+          if (depth >= 2) continue;
+          // Container queries: include rules (no container dimension tracking).
+          const innerRules = parse(block, env2, layerPath, depth + 1);
+          for (const inner of innerRules) {
+            rules.push({
+              selector: inner.selector,
+              declarations: inner.declarations,
+              specificity: inner.specificity,
+              order: order++,
+              layer: inner.layer,
+            });
+          }
+          continue;
+        }
+
+        // Unknown at-rules: skip blocks, skip declarations.
+        {
+          const braceOpen = findBlockStart(text, j);
+          const semiIdx = findTopLevelSemicolon(text, j);
+          if (braceOpen !== -1 && (semiIdx === -1 || braceOpen < semiIdx)) {
+            // Block form: @unknown <prelude> { ... } — skip.
+            const braceClose = findBlockEnd(text, braceOpen + 1);
+            i = braceClose === -1 ? len : braceClose + 1;
+          } else if (semiIdx !== -1) {
+            // Declaration form: @unknown ...; — skip.
+            i = semiIdx + 1;
+          } else {
+            i = len;
+          }
+          continue;
+        }
+      }
+
+      // A qualified rule.
+      const braceOpen = findBlockStart(text, i);
+      if (braceOpen === -1) {
+        break;
+      }
+      const prelude = text.slice(i, braceOpen);
+      const braceClose = findBlockEnd(text, braceOpen + 1);
+      const blockEnd = braceClose === -1 ? len : braceClose;
+      const block = text.slice(braceOpen + 1, blockEnd);
+      i = braceClose === -1 ? len : braceClose + 1;
+
+      const selectors = parseSelectorList(prelude);
+      if (selectors.length === 0) continue;
+      const declarations = parseDeclarations(block);
+      for (const { selector, specificity } of selectors) {
+        rules.push({
+          selector: [selector],
+          declarations,
+          specificity,
+          order: order++,
+          layer: layerPath.length > 0 ? layerPath : undefined,
+        });
+      }
+    }
+
+    return rules;
+  };
+
+  const rules = parse(input, env, [], 0);
+  return { rules, layerOrder };
+}
+
+/** Find the next top-level semicolon at or after `from`, or -1 if none. */
+function findTopLevelSemicolon(text: string, from: number): number {
+  const len = text.length;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = from; i < len; i += 1) {
+    const ch = text[i];
     if (ch === undefined) break;
-    if (isSpace(ch) || ch === ";") {
-      i += 1;
+    if (quote !== null) {
+      if (ch === "\\" && i + 1 < len) { i += 1; continue; }
+      if (ch === quote) quote = null;
       continue;
     }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "(" || ch === "[") { depth += 1; continue; }
+    if (ch === ")" || ch === "]") { if (depth > 0) depth -= 1; continue; }
+    if (ch === ";" && depth === 0) return i;
+  }
+  return -1;
+}
 
-    // At-rules (`@media`, `@import`, …) are a capability the Phase 1 minimal
-    // parser does not implement: fail loudly rather than silently drop them.
-    if (ch === "@") {
-      let j = i + 1;
-      while (j < len && isIdentChar(input[j])) j += 1;
-      const name = input.slice(i, j);
-      return notImplemented(`css-at-rule:${name}`, {
-        category: "other",
-        detail:
-          "at-rules are not implemented in the Phase 1 minimal CSS parser (task 3.3); the A-tier subset arrives in task 5.5",
-      });
-    }
+// ---------------------------------------------------------------------------
+// @supports condition evaluation (CSS Conditional Rules 3).
+// ---------------------------------------------------------------------------
 
-    // ---- a qualified rule: prelude up to '{', then the block up to '}' ----
-    // The block delimiters are located at the *top level* only (a string- and
-    // nesting-aware scan), so a `{`/`}` inside a string literal (`content: "}"`)
-    // or inside `(…)`/`[…]` (a functional value, an attribute selector) does
-    // not prematurely open or close a rule. This is the A-tier hardening over
-    // the Phase 1 `indexOf` scan (task 5.5), behaviourally identical on inputs
-    // free of such embedded braces.
-    const braceOpen = findBlockStart(input, i);
-    if (braceOpen === -1) {
-      // Trailing garbage with no block: nothing more to recover.
-      break;
-    }
-    const prelude = input.slice(i, braceOpen);
+/**
+ * Evaluate a simplified `@supports` condition. Supports:
+ *   - `(property: value)` — true if the property is known to the engine.
+ *   - `(property)` — feature query for custom properties (always true if it
+ *     starts with `--`).
+ *   - `not <condition>` — negation.
+ *   - `<cond> and <cond>` — conjunction.
+ *   - `<cond> or <cond>` — disjunction.
+ *   - `selector(<selector>)` — always true (selector matching is supported).
+ *   - `font-tech(...)`, `font-format(...)` — always false (no font system).
+ *
+ * Unknown properties evaluate to false (the engine doesn't support them).
+ */
+function supportsConditionMatches(condition: string): boolean {
+  return evalSupports(condition.trim());
+}
 
-    const braceClose = findBlockEnd(input, braceOpen + 1);
-    const blockEnd = braceClose === -1 ? len : braceClose;
-    const block = input.slice(braceOpen + 1, blockEnd);
-    i = braceClose === -1 ? len : braceClose + 1;
+/** Recursive supports-condition evaluator. */
+function evalSupports(cond: string): boolean {
+  // Strip outer parens (but not function-like parens).
+  const stripped = stripOuterParens(cond);
 
-    const selectors = parseSelectorList(prelude);
-    if (selectors.length === 0) {
-      // Empty / fully malformed selector prelude: skip the whole rule.
-      continue;
-    }
-
-    const declarations = parseDeclarations(block);
-
-    // Expand the selector list into one rule per selector (see parseCss doc):
-    // each carries its own specificity and a distinct source order.
-    for (const { selector, specificity } of selectors) {
-      rules.push({
-        selector: [selector],
-        declarations,
-        specificity,
-        order: order++,
-      });
-    }
+  // Check for top-level `or` (lowest precedence).
+  const orParts = splitTopLevelKeyword(stripped, "or");
+  if (orParts.length > 1) {
+    return orParts.some((p) => evalSupports(p));
   }
 
-  return rules;
+  // Check for top-level `and`.
+  const andParts = splitTopLevelKeyword(stripped, "and");
+  if (andParts.length > 1) {
+    return andParts.every((p) => evalSupports(p));
+  }
+
+  // Check for `not`.
+  if (stripped.toLowerCase().startsWith("not ")) {
+    return !evalSupports(stripped.slice(4).trim());
+  }
+
+  // A single condition: `(prop: value)`, `(prop)`, `selector(...)`, etc.
+  return evalSupportsFeature(stripped);
+}
+
+/** Evaluate a single supports feature. */
+function evalSupportsFeature(feature: string): boolean {
+  const trimmed = feature.trim();
+
+  // selector(<compound>) — always true (we support selector matching).
+  if (/^selector\(/i.test(trimmed)) {
+    return true;
+  }
+
+  // font-tech(...), font-format(...) — false (no font system).
+  if (/^font-tech\(/i.test(trimmed) || /^font-format\(/i.test(trimmed)) {
+    return false;
+  }
+
+  // (property: value) or (property) — parenthesized declaration.
+  let inner = trimmed;
+  if (inner.startsWith("(") && inner.endsWith(")")) {
+    inner = inner.slice(1, -1).trim();
+  }
+  const colonIdx = inner.indexOf(":");
+  if (colonIdx === -1) {
+    // (property) — only custom properties are valid feature queries.
+    return inner.startsWith("--");
+  }
+  const prop = inner.slice(0, colonIdx).trim().toLowerCase();
+  // Known property in the engine's property table = supported. A vendor-prefixed
+  // alias whose unprefixed core is known also counts as supported.
+  return Boolean(PROPERTY_PARSERS[prop] || (vendorPrefixToStandard(prop) !== null));
+}
+
+/** Remove one layer of surrounding parentheses if they wrap the entire string. */
+function stripOuterParens(s: string): string {
+  if (!s.startsWith("(") || !s.endsWith(")")) return s;
+  let depth = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0 && i < s.length - 1) return s; // Not outer.
+    }
+  }
+  return s.slice(1, -1).trim();
+}
+
+/** Split a string on a top-level keyword (case-insensitive, word-boundary). */
+function splitTopLevelKeyword(s: string, keyword: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let last = 0;
+  const lower = s.toLowerCase();
+  const kw = ` ${keyword} `;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === ")" || ch === "]") { if (depth > 0) depth -= 1; }
+    else if (depth === 0 && i > 0) {
+      // Check if this position starts ` keyword ` at word boundary.
+      const remaining = lower.slice(i - 1);
+      if (remaining.startsWith(kw)) {
+        parts.push(s.slice(last, i - 1).trim());
+        last = i - 1 + kw.length;
+        i = last - 1;
+      }
+    }
+  }
+  if (last < s.length) {
+    parts.push(s.slice(last).trim());
+  }
+  return parts;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,18 +779,30 @@ function computeSpecificity(selector: string): Specificity {
         // Pseudo-class (`:hover`): contributes to b.
         b += 1;
         i += 1;
+        const nameStart = i;
         consumeIdent();
-      }
-      // Skip any functional argument list, e.g. `:nth-child(2n + 1)`. The inner
-      // specificity of `:not()`/`:is()` is out of scope for the Phase 1 subset.
-      if (selector[i] === "(") {
-        let depth = 1;
-        i += 1;
-        while (i < len && depth > 0) {
-          const cc = selector[i];
-          if (cc === "(") depth += 1;
-          else if (cc === ")") depth -= 1;
+        const name = selector.slice(nameStart, i).toLowerCase();
+        // Skip any functional argument list, e.g. `:nth-child(2n + 1)`. For
+        // `:not()` and `:is()`, the CSS Selectors 4 spec says the specificity
+        // is the maximum of the argument's specificities. We compute that here.
+        if (selector[i] === "(") {
+          let depth = 1;
+          const argStart = i + 1;
           i += 1;
+          while (i < len && depth > 0) {
+            const cc = selector[i];
+            if (cc === "(") depth += 1;
+            else if (cc === ")") depth -= 1;
+            i += 1;
+          }
+          // For :not() and :is(), add the inner specificity.
+          if (name === "not" || name === "is") {
+            const arg = selector.slice(argStart, i - 1);
+            const innerSpec = computeSpecificity(arg);
+            a += innerSpec[0];
+            b += innerSpec[1];
+            c += innerSpec[2];
+          }
         }
       }
     } else if (ch === "*") {
@@ -434,11 +847,22 @@ function parseDeclarations(block: string): Declaration[] {
       continue;
     }
 
-    const property = text.slice(0, colon).trim().toLowerCase();
+    const rawProperty = text.slice(0, colon).trim();
+    const lowerProp = rawProperty.toLowerCase();
     let value = text.slice(colon + 1).trim();
-    if (property.length === 0 || value.length === 0) {
+    if (lowerProp.length === 0 || value.length === 0) {
       continue;
     }
+
+    // Vendor-prefix normalization: a prefixed property whose unprefixed core is a
+    // KNOWN engine property is treated as that property (`-webkit-box-shadow` →
+    // `box-shadow`, `-moz-appearance` → `appearance`). This lets real-world
+    // stylesheets that lead with vendor-prefixed copies actually take effect
+    // instead of being silently dropped by the cascade. Custom properties
+    // (`--foo`) and genuinely unknown prefixed properties are left untouched.
+    const property = rawProperty.startsWith("--")
+      ? rawProperty
+      : vendorPrefixToStandard(lowerProp) ?? lowerProp;
 
     // Detect a trailing `!important` (case-insensitive, optional whitespace).
     let important = false;
@@ -456,10 +880,24 @@ function parseDeclarations(block: string): Declaration[] {
     // (Req 18.2 "用生成的解析器"). Unknown properties have no generated parser
     // and are kept verbatim (forward-compatible recovery); calling the
     // generated parser for them would (by design) throw NotImplemented.
-    if (Object.prototype.hasOwnProperty.call(PROPERTY_PARSERS, property)) {
+    //
+    // A value containing `var()` is deferred to the cascade, which resolves
+    // the custom property reference first, then re-parses the substituted
+    // value. We skip parse-time validation for such values (they cannot be
+    // validated until var() is resolved at computed-value time).
+    const lowerValue = value.toLowerCase();
+    const isCssWideKeyword =
+      lowerValue === "inherit" ||
+      lowerValue === "initial" ||
+      lowerValue === "unset" ||
+      lowerValue === "revert";
+    if (
+      Object.prototype.hasOwnProperty.call(PROPERTY_PARSERS, property) &&
+      !lowerValue.includes("var(") &&
+      !isCssWideKeyword
+    ) {
       const result = parsePropertyValue(property, value);
       if (!result.ok) {
-        // A known property with an invalid value: skip (Requirement 18.6/13.1).
         continue;
       }
     }
@@ -477,6 +915,28 @@ function parseDeclarations(block: string): Declaration[] {
 /** CSS whitespace (Syntax §3): space, tab, LF, CR, FF. */
 function isSpace(ch: string): boolean {
   return ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f";
+}
+
+/**
+ * Map a vendor-prefixed property name to its standard equivalent when the
+ * unprefixed core is a KNOWN engine property, otherwise `null`. Recognized
+ * prefixes: `-webkit-`, `-moz-`, `-ms-`, `-o-`. This implements the common
+ * "the prefixed copy and the standard property mean the same thing" recovery
+ * that lets real-world stylesheets take effect.
+ *
+ * Returns `null` for non-prefixed names and for prefixed names whose core is
+ * not a known property (those are left untouched for forward compatibility).
+ */
+function vendorPrefixToStandard(name: string): string | null {
+  if (!name.startsWith("-")) {
+    return null;
+  }
+  const match = /^-(?:webkit|moz|ms|o)-(.+)$/.exec(name);
+  if (match === null || match[1] === undefined) {
+    return null;
+  }
+  const core = match[1];
+  return Object.prototype.hasOwnProperty.call(PROPERTY_PARSERS, core) ? core : null;
 }
 
 /** An identifier may start with an ASCII letter, `_`, an escape, or non-ASCII. */

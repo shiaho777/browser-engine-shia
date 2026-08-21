@@ -20,9 +20,10 @@ const FIXTURE_MANIFEST: WptSubsetManifest = {
   files: [
     "dom/getelementbyid.html",
     "dom/queryselector.html",
+    "dom/textcontent.html",
     "dom/attributes.window.js",
   ],
-  baselinePassCount: 8,
+  baselinePassCount: 12,
 };
 
 void test("loadWptSubsetManifest validates the JSON manifest shape", () => {
@@ -48,17 +49,26 @@ void test("collectWptSubsetManifestFiles returns sorted JSON manifest paths", ()
 void test("runWptSubsetManifest runs the listed files and passes the baseline gate", async () => {
   const run = await runWptSubsetManifest(FIXTURE_MANIFEST);
 
-  assert.equal(run.report.files, 3);
-  assert.equal(run.report.passed, 8);
-  assert.equal(run.regression.baseline, 8);
-  assert.equal(run.regression.candidate, 8);
+  assert.equal(run.report.files, 4);
+  assert.equal(run.report.passed, 12);
+  assert.equal(run.regression.baseline, 12);
+  assert.equal(run.regression.candidate, 12);
   assert.equal(run.passedGate, true);
 });
 
-void test("runWptSubsetManifest blocks when candidate pass count is below baseline", async () => {
-  const run = await runWptSubsetManifest({ ...FIXTURE_MANIFEST, baselinePassCount: 9 });
+void test("runWptSubsetManifest with trace attaches fine-grained query evidence", async () => {
+  const run = await runWptSubsetManifest(FIXTURE_MANIFEST, { trace: true });
 
-  assert.equal(run.report.passed, 8);
+  assert.equal(run.passedGate, true);
+  assert.ok(run.report.trace !== undefined);
+  assert.ok(run.report.trace.totalCalls > 0);
+  assert.ok(run.report.trace.summaries.some((summary) => summary.stage === "qFinePaint"));
+});
+
+void test("runWptSubsetManifest blocks when candidate pass count is below baseline", async () => {
+  const run = await runWptSubsetManifest({ ...FIXTURE_MANIFEST, baselinePassCount: 13 });
+
+  assert.equal(run.report.passed, 12);
   assert.equal(run.regression.blocked, true);
   assert.equal(run.passedGate, false);
 });
@@ -74,14 +84,15 @@ void test("runWptSubsetManifestDir aggregates manifests and formats the gate sum
   const text = formatWptSubsetSummary(summary);
   assert.match(text, /subsets: 1/);
   assert.match(text, /dom-core/);
-  assert.match(text, /baseline=8/);
+  assert.match(text, /baseline=12/);
   assert.match(text, /gate=PASS/);
 });
 
-void test("parseWptSubsetArgs accepts manifest dir, --wpt-root, and --json", () => {
-  const args = parseWptSubsetArgs(["/tmp/subsets", "--wpt-root", "/tmp/wpt", "--json"]);
+void test("parseWptSubsetArgs accepts manifest dir, --wpt-root, --json, and --trace", () => {
+  const args = parseWptSubsetArgs(["/tmp/subsets", "--wpt-root", "/tmp/wpt", "--json", "--trace"]);
 
   assert.equal(args.manifestDir, "/tmp/subsets");
   assert.equal(args.wptRootOverride, "/tmp/wpt");
   assert.equal(args.json, true);
+  assert.equal(args.trace, true);
 });

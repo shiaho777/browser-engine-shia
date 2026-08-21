@@ -23,6 +23,7 @@ import vm from "node:vm";
 
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
 import type { WptReport, WptSubtest } from "./wpt.js";
 
@@ -35,10 +36,25 @@ export interface WptSuiteReport {
   readonly errored: number;
   /** Per-file reports, keyed by the test's path relative to the suite root. */
   readonly byFile: ReadonlyMap<string, WptReport>;
+  /** Optional aggregate query trace across every WPT file in this suite run. */
+  readonly trace?: StageTrace;
 }
 
-/** How to resolve a `<script src>` include to its source text (or `undefined`). */
+/** Options for WPT suite execution. */
+export interface WptSuiteOptions {
+  /**
+   * Attach query-stage trace evidence. The trace observes the fine-grained
+   * session WPT actually uses, and performs one final render per file so
+   * qFinePaint/qFineLayout evidence is present even for pure DOM assertions.
+   */
+  readonly trace?: boolean;
+  /** Document URL used for URL/base resolution inside the engine. */
+  readonly documentUrl?: string;
+}
+
+/** How to resolve a support resource include to its source text (or `undefined`). */
 export type ResourceResolver = (src: string) => string | undefined;
+const encodeResource = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /** Resource paths that OUR harness supplies, so a real include of them is a no-op. */
 function isHarnessResource(src: string): boolean {
@@ -192,8 +208,23 @@ function documentHtml(html: string): string {
  * are resolved via `resolveResource` (read from the checkout). Returns the
  * per-subtest report.
  */
-export async function runWptHtml(html: string, resolveResource?: ResourceResolver): Promise<WptReport> {
-  const session = new FineSession(documentHtml(html));
+export async function runWptHtml(
+  html: string,
+  resolveResource?: ResourceResolver,
+  options: WptSuiteOptions = {},
+): Promise<WptReport> {
+  const collector = options.trace === true ? createStageTraceCollector() : undefined;
+  const session = new FineSession(
+    documentHtml(html),
+    options.documentUrl ?? "wpt://doc",
+    {
+      ...(collector === undefined ? {} : { onQuery: collector.onQuery }),
+      loadExternalSheet: (href) => {
+        const source = resolveResource?.(href);
+        return source === undefined ? undefined : encodeResource(source);
+      },
+    },
+  );
   const { document, globals } = buildDocumentApi(session);
   const harness = buildAsyncHarness();
   const sandbox: Record<string, unknown> = { document, ...globals, ...harness.globals };
@@ -217,14 +248,30 @@ export async function runWptHtml(html: string, resolveResource?: ResourceResolve
   } catch (error) {
     harnessError = error instanceof Error ? error.message : String(error);
   }
+  let traceError: string | undefined;
+  if (collector !== undefined) {
+    try {
+      session.render();
+    } catch (error) {
+      traceError = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   const passed = harness.subtests.filter((t) => t.status === "PASS").length;
   const failed = harness.subtests.length - passed;
-  return { subtests: harness.subtests, passed, failed, harnessError };
+  return collector === undefined
+    ? { subtests: harness.subtests, passed, failed, harnessError }
+    : traceError === undefined
+      ? { subtests: harness.subtests, passed, failed, harnessError, trace: collector.trace() }
+      : { subtests: harness.subtests, passed, failed, harnessError, trace: collector.trace(), traceError };
 }
 
 /** Run a `.window.js` / `.any.js` WPT test (JS body, implicit window/document). */
-export async function runWptScriptFile(source: string, resolveResource?: ResourceResolver): Promise<WptReport> {
+export async function runWptScriptFile(
+  source: string,
+  resolveResource?: ResourceResolver,
+  options: WptSuiteOptions = {},
+): Promise<WptReport> {
   // `// META: script=foo.js` headers pull in extra includes (resolved from disk).
   const metaIncludes = [...source.matchAll(/^\/\/\s*META:\s*script=(.+)$/gim)].map((m) => (m[1] ?? "").trim());
   const prelude = metaIncludes
@@ -233,7 +280,7 @@ export async function runWptScriptFile(source: string, resolveResource?: Resourc
     .join("\n");
   const html = "<html><head></head><body></body></html>";
   // Wrap as a single inline script so the HTML runner executes it.
-  return runWptHtml(`${documentHtml(html)}<script>${prelude}\n${source}</script>`, resolveResource);
+  return runWptHtml(`${documentHtml(html)}<script>${prelude}\n${source}</script>`, resolveResource, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,10 +332,19 @@ function isRunnableWptTest(file: string): boolean {
 }
 
 /** Run one WPT file under `root`, resolving support resources against the same checkout. */
-export async function runWptFile(root: string, file: string): Promise<readonly [string, WptReport]> {
+export async function runWptFile(
+  root: string,
+  file: string,
+  options: WptSuiteOptions = {},
+): Promise<readonly [string, WptReport]> {
   const full = path.isAbsolute(file) ? file : path.join(root, file);
   const resolve: ResourceResolver = (src) => {
-    const target = src.startsWith("/") ? path.join(root, src) : path.join(path.dirname(full), src);
+    const wptPath = pathFromWptDocumentUrl(src);
+    const target = wptPath !== null
+      ? path.join(root, wptPath)
+      : src.startsWith("/")
+        ? path.join(root, src)
+        : path.join(path.dirname(full), src);
     try {
       return readFileSync(target, "utf8");
     } catch {
@@ -296,14 +352,34 @@ export async function runWptFile(root: string, file: string): Promise<readonly [
     }
   };
   const source = readFileSync(full, "utf8");
+  const relative = path.relative(root, full).split(path.sep).join("/");
+  const documentUrl = `wpt://doc/${relative}`;
   const report = /\.(window|any)\.js$/.test(full)
-    ? await runWptScriptFile(source, resolve)
-    : await runWptHtml(source, resolve);
+    ? await runWptScriptFile(source, resolve, { ...options, documentUrl })
+    : await runWptHtml(source, resolve, { ...options, documentUrl });
   return [path.relative(root, full), report] as const;
 }
 
+/** Map the engine's synthetic WPT document URLs back to checkout-relative paths. */
+function pathFromWptDocumentUrl(src: string): string | null {
+  try {
+    const url = new URL(src);
+    if (url.protocol !== "wpt:" || url.hostname !== "doc") {
+      return null;
+    }
+    return decodeURIComponent(url.pathname).replace(/^\/+/, "");
+  } catch {
+    return null;
+  }
+}
+
 /** Run an explicit file list under `root`, scoring only those tests. */
-export async function runWptFiles(root: string, files: readonly string[]): Promise<WptSuiteReport> {
+export async function runWptFiles(
+  root: string,
+  files: readonly string[],
+  options: WptSuiteOptions = {},
+): Promise<WptSuiteReport> {
+  const collector = options.trace === true ? createStageTraceCollector() : undefined;
   const byFile = new Map<string, WptReport>();
   let subtests = 0;
   let passed = 0;
@@ -311,15 +387,24 @@ export async function runWptFiles(root: string, files: readonly string[]): Promi
   let errored = 0;
 
   for (const file of files) {
-    const [relative, report] = await runWptFile(root, file);
+    const [relative, report] = await runWptFile(
+      root,
+      file,
+      collector === undefined ? {} : { trace: true },
+    );
     byFile.set(relative, report);
+    if (collector !== undefined) {
+      replayTrace(report.trace, collector);
+    }
     subtests += report.subtests.length;
     passed += report.passed;
     failed += report.subtests.filter((t) => t.status === "FAIL").length;
     errored += report.subtests.filter((t) => t.status === "ERROR").length;
   }
 
-  return { files: files.length, subtests, passed, failed, errored, byFile };
+  return collector === undefined
+    ? { files: files.length, subtests, passed, failed, errored, byFile }
+    : { files: files.length, subtests, passed, failed, errored, byFile, trace: collector.trace() };
 }
 
 /**
@@ -328,7 +413,25 @@ export async function runWptFiles(root: string, files: readonly string[]): Promi
  * checkout. Returns the aggregate suite report. `limit` caps the number of
  * files (for sampling a huge tree).
  */
-export async function runWptDirectory(root: string, limit = Infinity): Promise<WptSuiteReport> {
+export async function runWptDirectory(
+  root: string,
+  limit = Infinity,
+  options: WptSuiteOptions = {},
+): Promise<WptSuiteReport> {
   const files = collectWptTests(root).slice(0, limit);
-  return runWptFiles(root, files);
+  return runWptFiles(root, files, options);
+}
+
+function replayTrace(trace: StageTrace | undefined, collector: ReturnType<typeof createStageTraceCollector>): void {
+  if (trace === undefined) return;
+  for (const event of trace.events) {
+    collector.onQuery({
+      query: { name: event.stage },
+      queryName: event.stage,
+      key: event.key,
+      durationMs: event.durationMs,
+      dependencyCount: event.dependencyCount,
+      cacheStatus: event.cacheStatus,
+    });
+  }
 }

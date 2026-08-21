@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration for-in enumeration order</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #computed {
+    background-color: rgb(1, 2, 3);
+    float: left;
+    font-size: 21px;
+  }
+</style>
+<body>
+<div id="inline" style="background-color: rgb(1, 2, 3); float: left; width: 42px">inline</div>
+<div id="dynamic">dynamic</div>
+<div id="computed">computed</div>
+<script>
+function forInKeys(object) {
+  var out = [];
+  for (var key in object) {
+    out.push(key);
+  }
+  return out;
+}
+
+function assert_contains(list, value, message) {
+  assert_true(list.indexOf(value) >= 0, message);
+}
+
+function assert_not_contains(list, value, message) {
+  assert_false(list.indexOf(value) >= 0, message);
+}
+
+function assert_before(list, first, second, message) {
+  assert_contains(list, first, first + " should be present");
+  assert_contains(list, second, second + " should be present");
+  assert_true(list.indexOf(first) < list.indexOf(second), message);
+}
+
+test(function () {
+  var style = document.getElementById("inline").style;
+
+  style.expandoValue = "kept";
+
+  var names = forInKeys(style);
+
+  assert_equals(names[0], "0", "for-in starts with numeric item 0");
+  assert_equals(names[1], "1", "for-in keeps numeric item 1 next");
+  assert_equals(names[2], "2", "for-in keeps numeric item 2 before CSS names");
+  assert_before(names, "2", "background-color", "numeric indexes precede declared CSS names");
+  assert_before(names, "background-color", "backgroundColor", "dashed names precede camelCase aliases");
+  assert_before(names, "float", "cssFloat", "float precedes the cssFloat compatibility alias");
+  assert_before(names, "backgroundColor", "getPropertyValue", "declaration methods follow CSS names");
+  assert_before(names, "getPropertyValue", "expandoValue", "explicit expandos follow declaration members");
+  assert_not_contains(names, "height", "known but undeclared CSS names are not visited");
+  assert_not_contains(names, "not-a-real-css-property", "unknown dashed names are not visited");
+}, "for-in over element.style follows numeric, declared CSS, method, and expando order");
+
+test(function () {
+  var style = document.getElementById("dynamic").style;
+
+  style.cssText = "width: 12px; height: 13px";
+  assert_contains(forInKeys(style), "height", "precondition: declared height is visited");
+
+  style.removeProperty("height");
+  style.notARealCssProperty = "12px";
+
+  var names = forInKeys(style);
+
+  assert_contains(names, "width", "remaining declarations stay visible");
+  assert_not_contains(names, "height", "removed declarations stop being visited");
+  assert_contains(names, "notARealCssProperty", "unknown camelCase writes are visited only as expandos");
+  assert_equals(style.getPropertyValue("not-a-real-css-property"), "", "unknown expandos do not synthesize declarations");
+}, "for-in over element.style updates after declaration removal and expando writes");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("computed"));
+
+  cs.expandoValue = "kept";
+
+  var names = forInKeys(cs);
+
+  assert_equals(names[0], "0", "computed style starts with numeric item 0");
+  assert_equals(names[1], "1", "computed style keeps numeric item 1 next");
+  assert_before(names, String(cs.length - 1), "color", "computed style numeric indexes precede CSS names");
+  assert_before(names, "background-color", "backgroundColor", "computed dashed names precede camelCase aliases");
+  assert_before(names, "float", "cssFloat", "computed float precedes cssFloat");
+  assert_before(names, "backgroundColor", "getPropertyValue", "computed declaration methods follow CSS names");
+  assert_before(names, "getPropertyValue", "expandoValue", "computed explicit expandos follow declaration members");
+  assert_not_contains(names, "not-a-real-css-property", "computed style does not visit unknown dashed names");
+  assert_not_contains(names, "notARealCssProperty", "computed style does not visit unknown camelCase names");
+}, "for-in over getComputedStyle follows numeric, CSS, method, and expando order");
+
+test(function () {
+  var style = document.getElementById("inline").style;
+  var computed = getComputedStyle(document.getElementById("computed"));
+  var styleCopy = {};
+  var computedCopy = {};
+
+  for (var styleKey in style) {
+    styleCopy[styleKey] = style[styleKey];
+  }
+  for (var computedKey in computed) {
+    computedCopy[computedKey] = computed[computedKey];
+  }
+
+  assert_equals(styleCopy["0"], style.item(0), "inline numeric for-in keys read through item()");
+  assert_equals(styleCopy.backgroundColor, "rgb(1, 2, 3)", "inline alias values copy through for-in");
+  assert_equals(styleCopy.cssFloat, "left", "inline cssFloat copies through for-in");
+  assert_equals(computedCopy["0"], computed.item(0), "computed numeric for-in keys read through item()");
+  assert_equals(computedCopy.backgroundColor, "rgb(1, 2, 3)", "computed alias values copy through for-in");
+  assert_equals(computedCopy.cssFloat, "left", "computed cssFloat copies through for-in");
+}, "for-in values align with CSSStyleDeclaration indexed and named property reads");
+</script>
+</body>

@@ -51,6 +51,7 @@
 import { deepFreeze, px } from "@browser-engine/ir";
 import type {
   ComputedStyle,
+  Declaration,
   DomNode,
   DomTree,
   NodeId,
@@ -58,11 +59,21 @@ import type {
   Specificity,
   StyleSheet,
 } from "@browser-engine/ir";
-import { CSS_PROPERTIES, PROPERTY_PARSERS, isSpecifiedLength } from "@browser-engine/generator";
-import type { ComputeCtx, SpecifiedLength } from "@browser-engine/generator";
+import { CSS_PROPERTIES, PROPERTY_PARSERS, isSpecifiedLength, isSpecifiedCalc, expandDeclarations } from "@browser-engine/generator";
+import type { ComputeCtx, SpecifiedLength, SpecifiedCalc, CalcNode } from "@browser-engine/generator";
 
-import { buildRuleIndex, matchRulesFor } from "./rule-index.js";
-import type { RuleIndex } from "./rule-index.js";
+import { buildRuleIndex, matchRulesForIndexed } from "./rule-index.js";
+import type { RuleIndex, CascadeOrigin } from "./rule-index.js";
+import { collectCustomProperties, substituteVars } from "./var-substitution.js";
+import type { CustomPropertyMap } from "./var-substitution.js";
+
+/**
+ * A Symbol key used to store the resolved custom property map on a
+ * ComputedStyle object. Using a Symbol (not a string key) ensures it does NOT
+ * appear in `Object.keys()` — the cascade's field-set invariant (every key is
+ * a data-table field) is preserved. The value is inherited by child nodes.
+ */
+const CUSTOM_PROPS: unique symbol = Symbol("__custom__");
 
 export const PACKAGE_NAME = "@browser-engine/cascade" as const;
 
@@ -73,11 +84,12 @@ export const PACKAGE_NAME = "@browser-engine/cascade" as const;
 export {
   buildRuleIndex,
   matchRulesFor,
+  matchRulesForIndexed,
   matchRulesByScan,
   candidateRulesFor,
   ruleMatches,
 } from "./rule-index.js";
-export type { RuleIndex, IndexedRule, SupportedPseudoClass } from "./rule-index.js";
+export type { RuleIndex, IndexedRule, SupportedPseudoClass, CascadeOrigin } from "./rule-index.js";
 
 // The CSS Transitions / Web Animations value-interpolation core (timing
 // functions + data-driven per-property interpolation), consuming the same
@@ -126,6 +138,10 @@ const DEFAULT_VIEWPORT: Viewport = { width: 800, height: 600 };
  * @param node the node whose computed style is requested.
  * @param viewport the viewport size for `vw`/`vh`/`vmin`/`vmax` (defaults to
  *   {@link DEFAULT_VIEWPORT}); pass the layout viewport to keep units in sync.
+ * @param origins optional per-sheet cascade origin labels (default: all
+ *   `"author"`). When provided, must be the same length as `sheets`. The first
+ *   sheet should typically be `"ua"` (the UA default stylesheet) so author
+ *   rules always override UA rules regardless of specificity.
  * @returns the node's frozen, geometry-free ComputedStyle (Requirements 3.3, 11.1).
  */
 export function cascade(
@@ -133,26 +149,64 @@ export function cascade(
   sheets: readonly StyleSheet[],
   node: NodeId,
   viewport: Viewport = DEFAULT_VIEWPORT,
+  origins?: readonly CascadeOrigin[],
+  layerOrder?: readonly (readonly string[])[],
 ): ComputedStyle {
-  // Selector matching routes through the RuleIndex as its SOLE entry point
-  // (design.md §8.3; Req 4.1, 4.2). Build it once and thread it through the
-  // parent recursion so every match request — this node's and every ancestor's
-  // — goes through the index, never an exhaustive scan.
-  const index = buildRuleIndex(sheets);
-  return cascadeWithIndex(dom, index, node, viewport);
+  const index = buildRuleIndex(sheets, origins, layerOrder);
+  return cascadeWithIndex(dom, index, node, viewport, layerOrder);
 }
 
-/** Cascade one node against a prebuilt {@link RuleIndex} (the recursion core). */
-function cascadeWithIndex(dom: DomTree, index: RuleIndex, node: NodeId, viewport: Viewport): ComputedStyle {
+export function createComputedStyleResolver(
+  dom: DomTree,
+  sheets: readonly StyleSheet[],
+  viewport: Viewport = DEFAULT_VIEWPORT,
+  origins?: readonly CascadeOrigin[],
+  layerOrder?: readonly (readonly string[])[],
+): (node: NodeId) => ComputedStyle {
+  const index = buildRuleIndex(sheets, origins, layerOrder);
+  const cache = new Map<NodeId, ComputedStyle>();
+  return (node: NodeId): ComputedStyle => cascadeWithIndex(dom, index, node, viewport, layerOrder, cache);
+}
+
+export function cascadeWithRuleIndex(
+  dom: DomTree,
+  index: RuleIndex,
+  node: NodeId,
+  viewport: Viewport = DEFAULT_VIEWPORT,
+  layerOrder?: readonly (readonly string[])[],
+  cache?: Map<NodeId, ComputedStyle>,
+): ComputedStyle {
+  return cascadeWithIndex(dom, index, node, viewport, layerOrder, cache);
+}
+
+function cascadeWithIndex(
+  dom: DomTree,
+  index: RuleIndex,
+  node: NodeId,
+  viewport: Viewport,
+  layerOrder?: readonly (readonly string[])[],
+  cache?: Map<NodeId, ComputedStyle>,
+): ComputedStyle {
+  if (cache !== undefined) {
+    const hit = cache.get(node);
+    if (hit !== undefined) return hit;
+  }
   const domNode = dom.nodes.get(node);
-  // A node absent from the DomTree has no style of its own; fall back to the
-  // all-initial baseline (inherited and non-inherited alike resolve to initial).
-  const parentStyle = resolveParentStyle(dom, index, domNode, viewport);
+  const parentStyle = resolveParentStyle(dom, index, domNode, viewport, layerOrder, cache);
 
   // 1) Collect the declarations of every rule matching this node, in document
   //    order (a stable per-declaration sequence drives the source-order
   //    tie-break across all sheets — design.md §8.1).
-  const winners = selectWinners(dom, index, node, domNode);
+  const winners = selectWinners(dom, index, node, domNode, layerOrder);
+
+  // Collect custom properties (--foo) for var() substitution. Custom properties
+  // inherit, so merge the parent's resolved custom properties with this node's
+  // own declarations.
+  const parentCustom = (parentStyle as unknown as Record<symbol, unknown>)[CUSTOM_PROPS] as CustomPropertyMap | undefined;
+  const custom = collectCustomProperties(
+    winners,
+    parentCustom ?? new Map(),
+  );
 
   // 2 & 3) Resolve every property in the data table to a computed value.
   const ctx: ComputeCtx = { rootFontSize: ROOT_FONT_SIZE };
@@ -166,7 +220,8 @@ function cascadeWithIndex(dom: DomTree, index: RuleIndex, node: NodeId, viewport
   let fontSizePx = parentFontSizePx; // font-size inherits, so this is the default
   const fsWinner = winners.get("font-size");
   if (fsWinner !== undefined) {
-    const fsSpec = parseSpecified("font-size", fsWinner.value);
+    const fsValue = substituteVarInValue(fsWinner.value, custom);
+    const fsSpec = fsValue !== null ? parseSpecified("font-size", fsValue) : { ok: false } as const;
     if (fsSpec.ok) {
       const resolved = resolveLengths(fsSpec.value, parentFontSizePx, remBasis, viewport);
       if (typeof resolved === "number") fontSizePx = resolved;
@@ -174,27 +229,59 @@ function cascadeWithIndex(dom: DomTree, index: RuleIndex, node: NodeId, viewport
   }
 
   const result: Record<string, unknown> = {};
+  // Store the resolved custom properties via Symbol for inheritance.
+  (result as unknown as Record<symbol, unknown>)[CUSTOM_PROPS] = custom;
+
   for (const prop of CSS_PROPERTIES) {
     const winner = winners.get(prop.name);
     if (winner !== undefined) {
-      const specified = parseSpecified(prop.name, winner.value);
+      const valueWithVars = substituteVarInValue(winner.value, custom);
+      if (valueWithVars === null) {
+        result[prop.field] = prop.inherited ? parentStyle[prop.field] : prop.initial;
+        continue;
+      }
+      const keyword = valueWithVars.trim().toLowerCase();
+      if (keyword === "inherit") {
+        result[prop.field] = parentStyle[prop.field];
+        continue;
+      }
+      if (keyword === "initial") {
+        result[prop.field] = prop.initial;
+        continue;
+      }
+      if (keyword === "unset") {
+        result[prop.field] = prop.inherited ? parentStyle[prop.field] : prop.initial;
+        continue;
+      }
+      if (keyword === "revert") {
+        result[prop.field] = prop.inherited ? parentStyle[prop.field] : prop.initial;
+        continue;
+      }
+      const specified = parseSpecified(prop.name, valueWithVars);
       if (specified.ok) {
-        // `em` on font-size is relative to the parent; on everything else it is
-        // relative to this element's own (now resolved) font size.
         const emBasis = prop.name === "font-size" ? parentFontSizePx : fontSizePx;
         const resolved = resolveLengths(specified.value, emBasis, remBasis, viewport);
         result[prop.field] = prop.computeValue(resolved, parentStyle, ctx);
         continue;
       }
-      // A winner whose value fails to parse is treated as no declaration
-      // (defensive: the css-parser already drops invalid known-property values).
     }
     result[prop.field] = prop.inherited
       ? parentStyle[prop.field] // inherited, undeclared → parent's value (Req 11.3)
       : prop.initial; //           non-inherited, undeclared → initial (Req 11.4)
   }
 
-  return deepFreeze(result as unknown as ComputedStyle);
+  const frozen = deepFreeze(result as unknown as ComputedStyle);
+  if (cache !== undefined) cache.set(node, frozen);
+  return frozen;
+}
+
+/**
+ * Substitute `var()` references in a property value string. Returns `null` if
+ * substitution fails (an unresolvable var() with no fallback).
+ */
+function substituteVarInValue(value: string, custom: CustomPropertyMap): string | null {
+  if (!value.includes("var(")) return value;
+  return substituteVars(value, custom);
 }
 
 /**
@@ -208,6 +295,9 @@ function cascadeWithIndex(dom: DomTree, index: RuleIndex, node: NodeId, viewport
 function resolveLengths(value: unknown, emBasis: number, remBasis: number, viewport: Viewport): unknown {
   if (isSpecifiedLength(value)) {
     return resolveOne(value, emBasis, remBasis, viewport);
+  }
+  if (isSpecifiedCalc(value)) {
+    return resolveCalc(value, emBasis, remBasis, viewport);
   }
   if (
     typeof value === "object" &&
@@ -228,14 +318,18 @@ function resolveLengths(value: unknown, emBasis: number, remBasis: number, viewp
   return value;
 }
 
-/** Resolve a single value that may or may not be a relative length. */
+/** Resolve a single value that may or may not be a relative length or calc(). */
 function maybeResolve(value: unknown, emBasis: number, remBasis: number, viewport: Viewport): unknown {
-  return isSpecifiedLength(value) ? resolveOne(value, emBasis, remBasis, viewport) : value;
+  if (isSpecifiedLength(value)) return resolveOne(value, emBasis, remBasis, viewport);
+  if (isSpecifiedCalc(value)) return resolveCalc(value, emBasis, remBasis, viewport);
+  return value;
 }
 
 /** Resolve one {@link SpecifiedLength} to `px` against its unit's basis. */
-function resolveOne(len: SpecifiedLength, emBasis: number, remBasis: number, viewport: Viewport): Px {
+function resolveOne(len: SpecifiedLength, emBasis: number, remBasis: number, viewport: Viewport): Px | SpecifiedLength {
   switch (len.unit) {
+    case "%":
+      return len;
     case "rem":
       return px(len.value * remBasis);
     case "em":
@@ -249,6 +343,39 @@ function resolveOne(len: SpecifiedLength, emBasis: number, remBasis: number, vie
     case "vmax":
       return px((len.value * Math.max(viewport.width, viewport.height)) / 100);
   }
+}
+
+/**
+ * Resolve a {@link SpecifiedCalc} (a `calc()` AST) to `px` by evaluating each
+ * leaf length against the em/rem/viewport context, then folding the arithmetic.
+ * Division by zero yields 0 (defensive — the spec says the declaration is
+ * invalid, but we already validated at parse time; a runtime zero divisor from
+ * a calc like `100px / (1 - 1)` is clamped to avoid NaN).
+ */
+function resolveCalc(calc: SpecifiedCalc, emBasis: number, remBasis: number, viewport: Viewport): Px {
+  const evalNode = (node: CalcNode): number => {
+    switch (node.type) {
+      case "px":
+        return node.value;
+      case "num":
+        return node.value;
+      case "len": {
+        const r = resolveOne({ kind: "specified-length", value: node.value, unit: node.unit }, emBasis, remBasis, viewport);
+        return typeof r === "number" ? r : 0;
+      }
+      case "add":
+        return evalNode(node.left) + evalNode(node.right);
+      case "sub":
+        return evalNode(node.left) - evalNode(node.right);
+      case "mul":
+        return evalNode(node.left) * evalNode(node.right);
+      case "div": {
+        const r = evalNode(node.right);
+        return r === 0 ? 0 : evalNode(node.left) / r;
+      }
+    }
+  };
+  return px(evalNode(calc.ast));
 }
 
 // ---------------------------------------------------------------------------
@@ -276,11 +403,13 @@ function resolveParentStyle(
   index: RuleIndex,
   domNode: DomNode | undefined,
   viewport: Viewport,
+  layerOrder?: readonly (readonly string[])[],
+  cache?: Map<NodeId, ComputedStyle>,
 ): ComputedStyle {
   if (domNode === undefined || domNode.parent === null) {
     return INITIAL_STYLE;
   }
-  return cascadeWithIndex(dom, index, domNode.parent, viewport);
+  return cascadeWithIndex(dom, index, domNode.parent, viewport, layerOrder, cache);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +420,10 @@ function resolveParentStyle(
 interface Candidate {
   readonly value: string;
   readonly important: boolean;
+  /** The cascade origin of this declaration (ua/user/author/inline). */
+  readonly origin: CascadeOrigin | "inline";
+  /** The cascade layer path this declaration belongs to (`undefined` = unlayered). */
+  readonly layer?: readonly string[] | undefined;
   readonly specificity: Specificity;
   /** Global document-order sequence for the source-order tie-break (Req 11.2). */
   readonly seq: number;
@@ -307,6 +440,7 @@ function selectWinners(
   index: RuleIndex,
   node: NodeId,
   domNode: DomNode | undefined,
+  layerOrder?: readonly (readonly string[])[],
 ): ReadonlyMap<string, Candidate> {
   const winners = new Map<string, Candidate>();
   if (domNode === undefined || domNode.kind !== "element") {
@@ -315,38 +449,188 @@ function selectWinners(
   }
 
   let seq = 0;
-  // matchRulesFor is the SOLE entry point to matching (design.md §8.3): it
-  // returns, in document order, exactly the rules an exhaustive scan would —
-  // but verifies only index-bucket candidates (Req 4.1, 4.2, 4.4).
-  for (const rule of matchRulesFor(index, dom, node)) {
-    for (const decl of rule.declarations) {
+  // matchRulesFor returns rules in document order, but each rule now carries
+  // its origin (ua/user/author) via the IndexedRule wrapper. The cascade rank
+  // (see beats) ensures author rules always override UA rules regardless of
+  // specificity (CSS Cascade 4 §6.3).
+  for (const indexed of matchRulesForIndexed(index, dom, node)) {
+    const rule = indexed.rule;
+    for (const decl of expandDeclarations(rule.declarations)) {
       const candidate: Candidate = {
         value: decl.value,
         important: decl.important,
+        origin: indexed.origin,
+        layer: indexed.layer,
         specificity: rule.specificity,
         seq: seq++,
       };
       const current = winners.get(decl.property);
-      if (current === undefined || beats(candidate, current)) {
+      if (current === undefined || beats(candidate, current, layerOrder ?? [])) {
         winners.set(decl.property, candidate);
       }
     }
   }
+
+  for (const decl of expandDeclarations(inlineDeclarations(domNode.attrs?.get("style") ?? ""))) {
+    const candidate: Candidate = {
+      value: decl.value,
+      important: decl.important,
+      origin: "inline",
+      specificity: [1, 0, 0],
+      seq: seq++,
+    };
+    const current = winners.get(decl.property);
+    if (current === undefined || beats(candidate, current, layerOrder ?? [])) {
+      winners.set(decl.property, candidate);
+    }
+  }
+
   return winners;
 }
 
+/**
+ * Compute the cascade precedence rank for a declaration (CSS Cascade 4 §6.3).
+ * Higher rank wins. The order is (low to high):
+ *
+ *   0. UA normal
+ *   1. User normal
+ *   2. Author normal
+ *   3. Inline normal (inline style attribute)
+ *   4. Author important
+ *   5. User important
+ *   6. UA important
+ *   7. Inline important
+ *
+ * Note: important declarations are partially REVERSED — UA important beats
+ * author important, unlike normal where author beats UA. Inline always wins
+ * within its importance class.
+ */
+function cascadeRank(origin: CascadeOrigin | "inline", important: boolean): number {
+  if (important) {
+    switch (origin) {
+      case "author": return 4;
+      case "user": return 5;
+      case "ua": return 6;
+      case "inline": return 7;
+    }
+  }
+  switch (origin) {
+    case "ua": return 0;
+    case "user": return 1;
+    case "author": return 2;
+    case "inline": return 3;
+  }
+}
+
+/**
+ * Compute the layer precedence of a declaration (CSS Cascading 5 §7).
+ * Higher number wins. Unlayered rules have the highest precedence.
+ * Layered rules are ordered by their declaration order: later layers win.
+ *
+ * @param layer the rule's layer path (`undefined` = unlayered).
+ * @param layerOrder the declared layer order (first = lowest precedence).
+ * @returns a numeric precedence (higher = wins).
+ */
+function layerPrecedence(
+  layer: readonly string[] | undefined,
+  layerOrder: readonly (readonly string[])[],
+): number {
+  // Unlayered rules always beat layered rules.
+  if (layer === undefined || layer.length === 0) return layerOrder.length;
+  // Find the index of this layer in the declared order. A layer declared later
+  // has a higher index = higher precedence.
+  const layerKey = layer.join(".");
+  for (let i = 0; i < layerOrder.length; i++) {
+    if (layerOrder[i]?.join(".") === layerKey) return i;
+  }
+  // A layer that was not explicitly declared: treat it as declared at its
+  // first-seen position (same as the index where it would be inserted).
+  return layerOrder.length;
+}
+
 /** Does `candidate` win over `current` under the cascade order (Req 11.2)? */
-function beats(candidate: Candidate, current: Candidate): boolean {
-  if (candidate.important !== current.important) {
-    return candidate.important; // !important beats normal (same author origin).
+function beats(
+  candidate: Candidate,
+  current: Candidate,
+  layerOrder: readonly (readonly string[])[],
+): boolean {
+  const candidateRank = cascadeRank(candidate.origin, candidate.important);
+  const currentRank = cascadeRank(current.origin, current.important);
+  if (candidateRank !== currentRank) {
+    return candidateRank > currentRank;
+  }
+  // Same origin+importance: compare cascade layer precedence. Unlayered rules
+  // beat layered rules; later-declared layers beat earlier ones.
+  const candidateLayer = layerPrecedence(candidate.layer, layerOrder);
+  const currentLayer = layerPrecedence(current.layer, layerOrder);
+  if (candidateLayer !== currentLayer) {
+    return candidateLayer > currentLayer;
   }
   const cmp = compareSpecificity(candidate.specificity, current.specificity);
   if (cmp !== 0) {
     return cmp > 0; // higher specificity wins.
   }
-  // Same importance and specificity: the later declaration in document order
-  // wins. `candidate` is processed after `current`, so it has the higher seq.
+  // Same importance, origin, layer, and specificity: the later declaration in
+  // document order wins. `candidate` is processed after `current`.
   return candidate.seq >= current.seq;
+}
+
+/** Parse an element's inline `style` attribute into declaration candidates. */
+function inlineDeclarations(style: string): Declaration[] {
+  const decls: Declaration[] = [];
+  for (const piece of splitInlineDeclarations(style)) {
+    const idx = piece.indexOf(":");
+    if (idx <= 0) continue;
+    const rawProperty = piece.slice(0, idx).trim();
+    const property = rawProperty.startsWith("--") ? rawProperty : rawProperty.toLowerCase();
+    let value = piece.slice(idx + 1).trim();
+    if (property.length === 0 || value.length === 0) continue;
+
+    let important = false;
+    const bang = /!\s*important\s*$/i.exec(value);
+    if (bang !== null) {
+      important = true;
+      value = value.slice(0, bang.index).trim();
+      if (value.length === 0) continue;
+    }
+    if (!parseSpecified(property, value).ok) continue;
+    decls.push({ property, value, important });
+  }
+  return decls;
+}
+
+/** Split inline style declarations on top-level semicolons. */
+function splitInlineDeclarations(input: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    const prev = i > 0 ? input[i - 1] : "";
+    if (quote !== null) {
+      if (ch === quote && prev !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ";" && depth === 0) {
+      parts.push(input.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(input.slice(start).trim());
+  return parts.filter((p) => p.length > 0);
 }
 
 /** Lexicographically compare two `[a, b, c]` specificity triples. */

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getElementsByTagName document order</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="root">
+  <article id="a"><span id="a1">one</span></article>
+  <article id="b"><span id="b1">two</span></article>
+</section>
+<aside id="outside"><span id="out">out</span></aside>
+<script>
+function ids(list) {
+  return list.map(function (el) { return el.getAttribute("id"); });
+}
+
+test(function () {
+  assert_array_equals(ids(document.getElementsByTagName("article")), ["a", "b"]);
+}, "Document.getElementsByTagName returns matching elements in document order");
+
+test(function () {
+  var root = document.getElementById("root");
+  assert_array_equals(ids(root.getElementsByTagName("span")), ["a1", "b1"]);
+}, "Element.getElementsByTagName scopes to descendants");
+
+test(function () {
+  var root = document.getElementById("root");
+  assert_array_equals(ids(root.getElementsByTagName("*")), ["a", "a1", "b", "b1"]);
+}, "Element.getElementsByTagName wildcard returns descendant elements in document order");
+</script>
+</body>

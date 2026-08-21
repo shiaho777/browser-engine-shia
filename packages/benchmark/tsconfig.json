@@ -7,7 +7,9 @@
   "references": [
     { "path": "../ir" },
     { "path": "../scoreboard" },
-    { "path": "../generator" }
+    { "path": "../generator" },
+    { "path": "../cli" },
+    { "path": "../test-harness" }
   ],
   "include": ["src/**/*.ts"]
 }

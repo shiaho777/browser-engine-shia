@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM ParentNode append and prepend</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .made {
+    width: 41px;
+    height: 23px;
+    background-color: rgb(1, 2, 3);
+  }
+</style>
+<body>
+<section id="append-host"><span id="append-middle">M</span></section>
+<section id="prepend-host"><span id="prepend-middle">M</span></section>
+<section id="move-old"><b id="moved">X</b></section>
+<section id="move-new"><span id="anchor">A</span></section>
+<section id="style-host"></section>
+<script>
+test(function () {
+  var host = document.getElementById("append-host");
+  var node = document.createElement("i");
+  node.id = "append-node";
+  node.textContent = "N";
+
+  host.append("L", node, "R");
+
+  assert_equals(host.textContent, "MLNR", "append inserts arguments after existing children in order");
+  assert_equals(host.children[1], node, "element argument is appended in the argument slot");
+  assert_equals(host.lastChild.textContent, "R", "string argument becomes a trailing text node");
+  assert_equals(document.getElementById("append-node"), node, "appended element is queryable by id");
+}, "Element.append inserts string and node arguments after existing children");
+
+test(function () {
+  var host = document.getElementById("prepend-host");
+  var node = document.createElement("i");
+  node.id = "prepend-node";
+  node.textContent = "N";
+
+  host.prepend("L", node, "R");
+
+  assert_equals(host.textContent, "LNRM", "prepend inserts arguments before existing children in order");
+  assert_equals(host.children[0], node, "element argument is prepended in the argument slot");
+  assert_equals(host.firstChild.textContent, "L", "string argument becomes a leading text node");
+  assert_equals(document.getElementById("prepend-node"), node, "prepended element is queryable by id");
+}, "Element.prepend inserts string and node arguments before existing children");
+
+test(function () {
+  var oldParent = document.getElementById("move-old");
+  var newParent = document.getElementById("move-new");
+  var moved = document.getElementById("moved");
+
+  newParent.prepend(moved, "Q");
+
+  assert_equals(oldParent.textContent, "", "old parent loses the moved node");
+  assert_equals(newParent.textContent, "XQA", "reparented node and string are inserted before existing children");
+  assert_equals(moved.parentElement, newParent, "moved node parent is updated");
+  assert_equals(newParent.querySelector("#moved"), moved, "fresh scoped query observes the moved node");
+}, "Element.prepend reparents existing connected nodes without stale copies");
+
+test(function () {
+  var host = document.getElementById("style-host");
+  var made = document.createElement("article");
+  made.id = "styled-append";
+  made.className = "made";
+  made.textContent = "styled";
+
+  host.append("before", made);
+
+  assert_equals(host.querySelector("#styled-append.made"), made, "selector matching observes appended content");
+  assert_equals(host.textContent, "beforestyled", "textContent observes appended string and node");
+  assert_equals(getComputedStyle(made).getPropertyValue("width"), "41px", "computed width applies after append");
+  assert_equals(getComputedStyle(made).getPropertyValue("height"), "23px", "computed height applies after append");
+  assert_equals(getComputedStyle(made).getPropertyValue("background-color"), "rgb(1, 2, 3)", "paint style applies after append");
+}, "Element.append content participates in selector matching and computed style");
+</script>
+</body>

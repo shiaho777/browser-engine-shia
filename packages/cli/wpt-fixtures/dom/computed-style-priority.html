@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle getPropertyPriority</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3) !important;
+    width: 37px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_equals(typeof cs.getPropertyPriority, "function", "computed style exposes getPropertyPriority");
+  assert_equals(cs.getPropertyPriority("color"), "", "author !important priority is not exposed on computed style");
+  assert_equals(cs.getPropertyValue("color"), "rgb(1, 2, 3)", "computed value remains the resolved color");
+}, "getComputedStyle exposes getPropertyPriority without leaking author priority");
+
+test(function () {
+  var el = document.getElementById("target");
+  el.style.setProperty("width", "41px", "important");
+  var cs = getComputedStyle(el);
+
+  assert_equals(el.style.getPropertyPriority("width"), "important", "inline style keeps declaration priority");
+  assert_equals(cs.getPropertyPriority("width"), "", "computed style does not expose inline declaration priority");
+  assert_equals(cs.getPropertyValue("width"), "41px", "computed style still exposes the resolved inline value");
+}, "getComputedStyle priority is empty even for inline important declarations");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_equals(cs.getPropertyPriority("not-a-real-css-property"), "", "unknown properties have empty priority");
+  assert_equals(cs.getPropertyPriority("background-color"), "", "supported normal properties have empty computed priority");
+}, "getComputedStyle getPropertyPriority returns empty string for normal and unknown properties");
+</script>
+</body>

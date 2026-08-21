@@ -457,6 +457,7 @@ export const PHASE3_WPT_BASELINE = PHASE3_WPT_SUBSET.length;
 /** One real-site smoke scenario: an async run asserting end-to-end behaviour. */
 export interface SmokeTest {
   readonly id: string;
+  readonly capabilities: readonly string[];
   readonly run: () => Promise<void>;
 }
 
@@ -466,6 +467,7 @@ export const PHASE3_SMOKE_TESTS: readonly SmokeTest[] = [
     // A "page script" that fetches JSON over the reused stack and reads it back,
     // exercising fetch + Promise reactions + the event loop end-to-end.
     id: "smoke/fetch-json-roundtrip",
+    capabilities: ["fetch", "event-loop-microtask", "v8-guest-execution"],
     run: async () => {
       const rt = new GuestRuntime({
         networkStack: memoryStack({
@@ -492,6 +494,7 @@ export const PHASE3_SMOKE_TESTS: readonly SmokeTest[] = [
   {
     // A "page" declaring a web font, loaded + applied through the reused stack.
     id: "smoke/web-font-applied",
+    capabilities: ["font-face", "fetch"],
     run: async () => {
       const css = '@font-face { font-family: "SiteFont"; src: url(https://cdn.example.com/site.woff2); }';
       const registry = new FontRegistry();

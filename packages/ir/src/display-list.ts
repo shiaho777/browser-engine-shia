@@ -49,8 +49,8 @@ export type Matrix = readonly [
 
 /** A backend-agnostic paint command. Skia/Canvas/SVG backends each interpret these. */
 export type PaintCmd =
-  | { readonly op: "rect"; readonly rect: Rect; readonly fill: Color }
-  | { readonly op: "border"; readonly rect: Rect; readonly edges: Edges<BorderSide> }
+  | { readonly op: "rect"; readonly rect: Rect; readonly fill: Color; readonly radius?: Px }
+  | { readonly op: "border"; readonly rect: Rect; readonly edges: Edges<BorderSide>; readonly radius?: Px }
   | {
       readonly op: "text";
       readonly glyphs: readonly Glyph[];
@@ -63,9 +63,11 @@ export type PaintCmd =
        * glyph into `[at + offset, advance × fontSize]`.
        */
       readonly fontSize: Px;
+      readonly fontWeight?: number;
     }
-  | { readonly op: "image"; readonly rect: Rect; readonly src: DecodedImage }
-  | { readonly op: "push-clip"; readonly rect: Rect }
+  | { readonly op: "line"; readonly from: Point; readonly to: Point; readonly fill: Color; readonly width: Px }
+  | { readonly op: "image"; readonly rect: Rect; readonly src: DecodedImage; readonly radius?: Px }
+  | { readonly op: "push-clip"; readonly rect: Rect; readonly radius?: Px }
   | { readonly op: "pop-clip" }
   | {
       readonly op: "push-layer";

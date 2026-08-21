@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle cssText</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3);
+    width: 37px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+  var first = getComputedStyle(el);
+  var second = getComputedStyle(el);
+
+  assert_equals(first.cssText, "", "computed cssText is the subset-compatible empty string");
+  assert_equals(second.cssText, "", "repeated computed declarations expose the same cssText");
+  assert_equals(first.getPropertyValue("color"), "rgb(1, 2, 3)", "resolved values are still exposed through getPropertyValue");
+}, "getComputedStyle cssText is deterministic and does not hide resolved values");
+
+test(function () {
+  var el = document.getElementById("target");
+  var cs = getComputedStyle(el);
+
+  cs.cssText = "color: rgb(9, 8, 7)";
+
+  assert_equals(cs.cssText, "", "assigning computed cssText does not mutate the computed declaration object");
+  assert_equals(el.getAttribute("style"), null, "assigning computed cssText does not create inline style");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed value remains driven by the cascade");
+}, "getComputedStyle cssText assignment does not synthesize a mutable declaration block");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 41px";
+  var cs = getComputedStyle(el);
+
+  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 41px", "inline cssText remains an inline declaration block");
+  assert_equals(cs.cssText, "", "computed cssText stays empty even when inline style participates in the cascade");
+  assert_equals(cs.getPropertyValue("width"), "41px", "computed values still reflect inline declarations");
+}, "computed cssText stays distinct from element.style cssText");
+</script>
+</body>

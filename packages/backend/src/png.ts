@@ -68,7 +68,11 @@ function makeChunk(type: string, data: Uint8Array): Uint8Array {
  * @throws Error if the surface's pixel buffer length does not match its
  *   declared `width × height × 4` (a corrupt Surface).
  */
-export function encodeSurfaceToPng(surface: Surface): Uint8Array {
+export interface EncodePngOptions {
+  readonly level?: number;
+}
+
+export function encodeSurfaceToPng(surface: Surface, options: EncodePngOptions = {}): Uint8Array {
   const { width, height, pixels } = surface;
   if (pixels.length !== width * height * 4) {
     throw new Error(
@@ -88,7 +92,8 @@ export function encodeSurfaceToPng(surface: Surface): Uint8Array {
     }
   }
 
-  const compressed = zlib.deflateSync(filtered);
+  const level = options.level ?? 1;
+  const compressed = zlib.deflateSync(filtered, { level });
 
   const ihdr = new Uint8Array(13);
   const ihdrView = new DataView(ihdr.buffer);

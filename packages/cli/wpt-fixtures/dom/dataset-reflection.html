@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM dataset delete and selector reflection</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="scope">
+  <div id="write-target"></div>
+  <div id="selector-target"></div>
+  <div id="delete-target" data-foo-bar="7"></div>
+  <div id="selector-delete-target" data-foo-bar="delete-me"></div>
+  <div id="readd-target" data-foo-bar="old"></div>
+  <div id="parsed-target" data-existing-value="seed"></div>
+</section>
+<script>
+test(function () {
+  var el = document.getElementById("write-target");
+
+  el.dataset.fooBar = "7";
+
+  assert_equals(el.getAttribute("data-foo-bar"), "7", "camelCase maps to a data-* attribute");
+  assert_equals(el.dataset.fooBar, "7", "dataset reads back from the attribute map");
+  assert_true("fooBar" in el.dataset, "in observes the reflected attribute");
+  assert_false("missingValue" in el.dataset, "in rejects missing reflected attributes");
+}, "dataset writes reflect to data-* attributes and in checks");
+
+test(function () {
+  var scope = document.getElementById("scope");
+  var el = document.getElementById("selector-target");
+
+  assert_false(el.matches("[data-foo-bar]"), "precondition: target has no data attribute");
+  assert_equals(scope.querySelector("[data-foo-bar=\"selector\"]"), null, "precondition: scoped query has no match");
+
+  el.dataset.fooBar = "selector";
+
+  assert_true(el.matches("[data-foo-bar]"), "matches observes dataset writes");
+  assert_true(el.matches("[data-foo-bar=\"selector\"]"), "matches observes the reflected dataset value");
+  assert_equals(scope.querySelector("[data-foo-bar=\"selector\"]"), el, "fresh scoped query sees dataset writes");
+  assert_equals(document.querySelector("#scope [data-foo-bar=\"selector\"]"), el, "fresh document query sees dataset writes");
+}, "matches and fresh querySelector observe dataset writes");
+
+test(function () {
+  var el = document.getElementById("delete-target");
+
+  assert_equals(el.dataset.fooBar, "7", "precondition: parsed data-* attribute is reflected");
+  assert_true("fooBar" in el.dataset, "precondition: in sees the parsed attribute");
+
+  assert_true(delete el.dataset.fooBar, "delete expression succeeds");
+
+  assert_equals(el.getAttribute("data-foo-bar"), null, "delete removes the data-* attribute");
+  assert_equals(el.dataset.fooBar, undefined, "dataset read returns undefined after delete");
+  assert_false("fooBar" in el.dataset, "in stops seeing the deleted attribute");
+}, "delete removes the reflected data-* attribute");
+
+test(function () {
+  var scope = document.getElementById("scope");
+  var el = document.getElementById("selector-delete-target");
+
+  assert_true(el.matches("[data-foo-bar=\"delete-me\"]"), "precondition: reflected attribute matches");
+  assert_equals(scope.querySelector("[data-foo-bar=\"delete-me\"]"), el, "precondition: scoped query sees the attribute");
+
+  delete el.dataset.fooBar;
+
+  assert_false(el.matches("[data-foo-bar]"), "matches stops seeing the deleted attribute");
+  assert_equals(scope.querySelector("[data-foo-bar=\"delete-me\"]"), null, "fresh scoped query stops seeing the old value");
+  assert_equals(document.querySelector("#selector-delete-target[data-foo-bar]"), null, "fresh document query stops seeing the deleted attribute");
+}, "matches and fresh querySelector observe dataset deletion");
+
+test(function () {
+  var scope = document.getElementById("scope");
+  var el = document.getElementById("readd-target");
+
+  assert_true(delete el.dataset.fooBar, "delete removes the old reflected value");
+  el.dataset.fooBar = "again";
+
+  assert_equals(el.getAttribute("data-foo-bar"), "again", "set after delete writes the attribute again");
+  assert_true("fooBar" in el.dataset, "in observes the re-added attribute");
+  assert_true(el.matches("[data-foo-bar=\"again\"]"), "matches observes the re-added value");
+  assert_equals(scope.querySelector("[data-foo-bar=\"again\"]"), el, "fresh scoped query sees the re-added value");
+}, "dataset can be re-added after deletion without stale selector state");
+
+test(function () {
+  var el = document.getElementById("parsed-target");
+
+  assert_equals(el.dataset.existingValue, "seed", "camelCase reads an initially parsed dashed data-* attribute");
+  assert_true("existingValue" in el.dataset, "in sees an initially parsed dashed data-* attribute");
+
+  delete el.dataset.existingValue;
+
+  assert_false(el.hasAttribute("data-existing-value"), "delete removes an initially parsed dashed data-* attribute");
+  assert_equals(el.dataset.existingValue, undefined, "camelCase read returns undefined after deleting the parsed attribute");
+  assert_false("existingValue" in el.dataset, "in stops seeing the deleted parsed attribute");
+}, "dataset delete removes initially parsed dashed data-* attributes");
+</script>
+</body>

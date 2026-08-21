@@ -24,10 +24,29 @@ Emit machine-readable JSON:
 npm run wpt -- /path/to/web-platform-tests/html --limit 50 --json
 ```
 
+Attach fine-grained query evidence to the WPT report:
+
+```bash
+npm run wpt -- /path/to/web-platform-tests/dom --limit 100 --trace
+```
+
 Run maintained subset manifests and enforce their stored pass-count baselines:
 
 ```bash
 npm run wpt:subsets
+```
+
+Run maintained subsets with trace evidence:
+
+```bash
+npm run wpt:subsets -- --trace
+```
+
+Regenerate the public evidence report after maintained WPT, resource, smoke, or
+incremental evidence changes:
+
+```bash
+npm run evidence
 ```
 
 Run the same manifests against an external checkout root:
@@ -71,6 +90,10 @@ Use these buckets in issues and PR descriptions:
 | `network-gap` | Fetch/origin/storage/security behavior missing |
 | `engine-bug` | The mechanism exists but returns the wrong result |
 
+Map the bucket to labels from `.github/labels.json`: add `compatibility`,
+`wpt`, the owning `stage:*` label, the relevant `phase:*` label, and a
+`subset:*` label when a maintained subset is involved.
+
 ## Maintained Subsets
 
 Maintained subsets live under `wpt-subsets/*.json`. Each manifest contains:
@@ -97,6 +120,13 @@ Rules:
   removed upstream and the PR explains why.
 - Expanding a manifest is the preferred way to make compatibility progress
   visible.
+- `--trace` adds the actual fine-grained query graph evidence for the WPT run
+  (`qFineSheets`, `qFineComputed`, `qFineLayout`, `qFinePaint`): calls,
+  recomputes, cache hits, dependency reads, and timing.
+- `npm run evidence` embeds only deterministic WPT trace counts and related
+  execution evidence in `BENCHMARK.md`, `benchmark-evidence.json`, and
+  `evidence-dashboard.html`; wall-clock timings stay in command output because
+  they are environment-dependent.
 
 ## What Not To Do
 
@@ -109,7 +139,8 @@ Rules:
 ## First Target Subsets
 
 1. `dom-core`: create/query/mutate nodes, attributes, text, classList, dataset.
-2. `css-cascade`: selectors, specificity, inheritance, initial values.
+2. `css-cascade`: selectors, attribute selectors, specificity, inheritance,
+   initial values.
 3. `events`: EventTarget, capture/bubble, default prevention.
 4. `css-values`: lengths, percentages, `calc()`, colors, transforms.
 5. `layout-block-inline`: block flow, inline flow, margin collapse, line boxes.
@@ -121,3 +152,5 @@ Maintained today:
 
 - `wpt-subsets/dom-core.json`
 - `wpt-subsets/css-cascade.json`
+
+Starter tasks that expand these gates live in `docs/GOOD-FIRST-ISSUES.md`.

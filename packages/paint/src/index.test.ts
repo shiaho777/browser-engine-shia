@@ -19,6 +19,7 @@ import type {
   BoxGeometry,
   Color,
   ComputedStyle,
+  DecodedImage,
   DisplayValue,
   Edges,
   Fragment,
@@ -202,6 +203,54 @@ void test("a transparent background (alpha 0) emits no rect command", () => {
 
   const list = paint(tree, styles);
   assert.equal(ofOp(list.commands, "rect").length, 0);
+});
+
+void test("a background-image:url() emits an image command resolved via imageBySrc", () => {
+  // A 2×2 solid decoded image supplied through the imageBySrc resolver.
+  const src: DecodedImage = { width: 2, height: 2, pixels: new Uint8ClampedArray(16).fill(255) };
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 60)) }]);
+  const styles = styleTable(
+    new Map([[0, makeStyle({ extra: { backgroundImage: "url(https://example.com/bg.png)" } })]]),
+  );
+
+  const list = paint(tree, styles, undefined, {
+    imageBySrc: (url) => (url === "https://example.com/bg.png" ? src : undefined),
+  });
+  const images = ofOp(list.commands, "image");
+  assert.equal(images.length, 1, "a background-image emits exactly one image command");
+  // The image paints into the padding box (here equal to the full box).
+  assert.deepEqual(images[0]!.rect, { x: px(0), y: px(0), width: px(80), height: px(60) });
+  assert.equal(images[0]!.src, src);
+});
+
+void test("a background-image with no resolver emits no image command", () => {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 60)) }]);
+  const styles = styleTable(
+    new Map([[0, makeStyle({ extra: { backgroundImage: "url(https://example.com/bg.png)" } })]]),
+  );
+  // No imageBySrc resolver ⇒ background-image cannot be resolved ⇒ no command.
+  const list = paint(tree, styles);
+  assert.equal(ofOp(list.commands, "image").length, 0);
+});
+
+void test("background-color and background-image are both painted (color under image)", () => {
+  const src: DecodedImage = { width: 2, height: 2, pixels: new Uint8ClampedArray(16).fill(255) };
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 60)) }]);
+  const styles = styleTable(
+    new Map([
+      [
+        0,
+        makeStyle({ backgroundColor: RED, extra: { backgroundImage: "url(bg.png)" } }),
+      ],
+    ]),
+  );
+  const list = paint(tree, styles, undefined, { imageBySrc: () => src });
+  const rects = ofOp(list.commands, "rect");
+  const images = ofOp(list.commands, "image");
+  assert.equal(rects.length, 1, "background-color rect is emitted");
+  assert.equal(images.length, 1, "background-image is emitted on top");
+  // Color paints first (under), then the image.
+  assert.equal(list.commands.indexOf(rects[0]!) < list.commands.indexOf(images[0]!), true);
 });
 
 void test("the background rect reads from the borderBox, not the margin box", () => {

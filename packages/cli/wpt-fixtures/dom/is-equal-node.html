@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Node isEqualNode</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<article id="source" data-a="1" data-b="2"><span>text</span></article>
+<script>
+test(function () {
+  var source = document.getElementById("source");
+  source.appendChild(document.createComment("note"));
+  var clone = source.cloneNode(true);
+
+  assert_false(source === clone, "precondition: clone is a distinct wrapper");
+  assert_true(source.isEqualNode(source), "a node is equal to itself");
+  assert_true(source.isEqualNode(clone), "a deep clone is structurally equal");
+  assert_false(source.isEqualNode(null), "null is not equal to any node");
+}, "isEqualNode compares structure rather than wrapper identity");
+
+test(function () {
+  var source = document.getElementById("source");
+  var same = document.createElement("article");
+  same.setAttribute("data-b", "2");
+  same.setAttribute("data-a", "1");
+  same.setAttribute("id", "source");
+  var span = document.createElement("span");
+  span.textContent = "text";
+  same.appendChild(span);
+  same.appendChild(document.createComment("note"));
+
+  assert_true(source.isEqualNode(same), "attribute insertion order does not affect equality");
+  same.setAttribute("data-a", "changed");
+  assert_false(source.isEqualNode(same), "attribute values affect equality");
+  same.removeAttribute("data-a");
+  assert_false(source.isEqualNode(same), "attribute presence affects equality");
+}, "isEqualNode compares element names and attributes by name/value");
+
+test(function () {
+  var source = document.getElementById("source");
+  var clone = source.cloneNode(true);
+
+  clone.childNodes[0].textContent = "other";
+  assert_false(source.isEqualNode(clone), "text node data affects equality");
+  clone.childNodes[0].textContent = "text";
+  assert_true(source.isEqualNode(clone), "restoring text data restores equality");
+  clone.childNodes[1].textContent = "changed";
+  assert_false(source.isEqualNode(clone), "comment data affects equality");
+}, "isEqualNode compares text and comment node data");
+
+test(function () {
+  var source = document.getElementById("source");
+  var wrongOrder = document.createElement("article");
+  wrongOrder.setAttribute("data-a", "1");
+  wrongOrder.setAttribute("data-b", "2");
+  wrongOrder.setAttribute("id", "source");
+  wrongOrder.appendChild(document.createComment("note"));
+  var span = document.createElement("span");
+  span.textContent = "text";
+  wrongOrder.appendChild(span);
+
+  assert_false(source.isEqualNode(wrongOrder), "child order affects equality");
+  assert_false(source.isEqualNode(document.createTextNode(source.textContent)), "different node kinds are not equal");
+}, "isEqualNode compares child count, order, and node kind");
+</script>
+</body>

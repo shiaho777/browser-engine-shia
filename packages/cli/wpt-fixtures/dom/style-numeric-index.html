@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration numeric indexed properties</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px; height: 7px !important";
+
+  assert_equals(el.style[0], el.style.item(0), "index 0 mirrors item(0)");
+  assert_equals(el.style[1], el.style.item(1), "index 1 mirrors item(1)");
+  assert_equals(el.style[2], el.style.item(2), "index 2 mirrors item(2)");
+  assert_equals(el.style[3], "", "out-of-range numeric index is empty");
+}, "numeric indexed reads reflect cssText declaration order");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px";
+  el.style.setProperty("height", "7px", "important");
+  el.style.setProperty("color", "blue");
+
+  assert_equals(el.style[0], "color", "overwriting an existing declaration keeps index 0");
+  assert_equals(el.style[1], "width", "existing later declaration keeps index 1");
+  assert_equals(el.style[2], "height", "new declaration appends at the next index");
+  assert_equals(el.style[2], el.style.item(2), "numeric index and item stay aligned after setProperty");
+}, "numeric indexed reads update after setProperty mutations");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px; height: 7px";
+  el.style.removeProperty("width");
+
+  assert_equals(el.style[0], "color", "earlier declaration remains at index 0");
+  assert_equals(el.style[1], "height", "later declaration shifts into the removed slot");
+  assert_equals(el.style[2], "", "removed declaration leaves no stale numeric index");
+}, "numeric indexed reads update after removeProperty");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px";
+  el.style.cssText = "height: 7px; color: blue";
+
+  assert_equals(el.style[0], "height", "new cssText first declaration is visible at index 0");
+  assert_equals(el.style[1], "color", "new cssText second declaration is visible at index 1");
+  assert_equals(el.style[-1], undefined, "negative property lookup is not a supported numeric index");
+}, "numeric indexed reads rebuild after cssText reassignment");
+</script>
+</body>
