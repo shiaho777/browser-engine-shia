@@ -410,14 +410,35 @@ function viewsEqual(a: ArrayBufferView, b: ArrayBufferView): boolean {
   return true;
 }
 
-/** Order-insensitive structural equality for Map-valued IR such as DomTree.nodes. */
+/**
+ * Order-insensitive structural equality for Map-valued IR such as DomTree.nodes.
+ *
+ * Fast path first: when both maps iterate in the SAME order — the common case,
+ * since engine IR is rebuilt deterministically from equal inputs — entries
+ * compare pairwise with no intermediate allocation. Only a mid-walk mismatch
+ * falls back to order-insensitive multiset matching over b's entries, where an
+ * `Object.is` pre-check keeps reference-distinct primitive keys from paying a
+ * full `deepEqual` (which allocates `Object.keys` arrays) per failed probe.
+ */
 function mapsEqual(a: ReadonlyMap<unknown, unknown>, b: ReadonlyMap<unknown, unknown>): boolean {
   if (a.size !== b.size) {
     return false;
   }
+  const iterB = b.entries();
+  let ordered = true;
+  for (const [keyA, valueA] of a) {
+    const step = iterB.next();
+    if (step.done || !keysEqual(keyA, step.value[0]) || !deepEqual(valueA, step.value[1])) {
+      ordered = false;
+      break;
+    }
+  }
+  if (ordered) {
+    return true;
+  }
   const unmatched = [...b.entries()];
   for (const [keyA, valueA] of a) {
-    const index = unmatched.findIndex(([keyB, valueB]) => deepEqual(keyA, keyB) && deepEqual(valueA, valueB));
+    const index = unmatched.findIndex(([keyB, valueB]) => keysEqual(keyA, keyB) && deepEqual(valueA, valueB));
     if (index === -1) {
       return false;
     }
@@ -426,18 +447,38 @@ function mapsEqual(a: ReadonlyMap<unknown, unknown>, b: ReadonlyMap<unknown, unk
   return true;
 }
 
-/** Order-insensitive structural equality for Set-valued IR/diagnostic values. */
+/**
+ * Order-insensitive structural equality for Set-valued IR/diagnostic values,
+ * with the same ordered fast path + multiset fallback as {@link mapsEqual}.
+ */
 function setsEqual(a: ReadonlySet<unknown>, b: ReadonlySet<unknown>): boolean {
   if (a.size !== b.size) {
     return false;
   }
+  const iterB = b.values();
+  let ordered = true;
+  for (const valueA of a) {
+    const step = iterB.next();
+    if (step.done || !(Object.is(valueA, step.value) || deepEqual(valueA, step.value))) {
+      ordered = false;
+      break;
+    }
+  }
+  if (ordered) {
+    return true;
+  }
   const unmatched = [...b.values()];
   for (const valueA of a) {
-    const index = unmatched.findIndex((valueB) => deepEqual(valueA, valueB));
+    const index = unmatched.findIndex((valueB) => Object.is(valueA, valueB) || deepEqual(valueA, valueB));
     if (index === -1) {
       return false;
     }
     unmatched.splice(index, 1);
   }
   return true;
+}
+
+/** Key equality for map entries: identity first (free), then structural. */
+function keysEqual(a: unknown, b: unknown): boolean {
+  return Object.is(a, b) || deepEqual(a, b);
 }
