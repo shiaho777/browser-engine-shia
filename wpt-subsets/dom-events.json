@@ -4,9 +4,18 @@
   "root": "packages/cli/wpt-fixtures",
   "files": [
     "dom/events/AddEventListenerOptions-once.any.js",
+    "dom/events/CustomEvent.html",
+    "dom/events/Event-constructors.any.js",
+    "dom/events/Event-defaultPrevented-after-dispatch.html",
+    "dom/events/Event-defaultPrevented.html",
+    "dom/events/Event-dispatch-bubble-canceled.html",
+    "dom/events/Event-dispatch-detached-click.html",
+    "dom/events/Event-dispatch-propagation-stopped.html",
+    "dom/events/Event-returnValue.html",
     "dom/events/Event-type.html",
     "dom/events/EventTarget-add-remove-listener.any.js",
-    "dom/events/EventTarget-addEventListener.any.js"
+    "dom/events/EventTarget-addEventListener.any.js",
+    "dom/events/EventTarget-dispatchEvent-returnvalue.html"
   ],
-  "baselinePassCount": 9
+  "baselinePassCount": 49
 }

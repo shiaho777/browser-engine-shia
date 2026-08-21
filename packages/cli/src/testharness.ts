@@ -105,10 +105,33 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
         fail(`missing own property ${formatValue(name)}`, desc);
       }
     },
-    assert_throws_js(_ctor: unknown, func: unknown, desc?: unknown): void {
+    assert_throws_js(ctor: unknown, func: unknown, desc?: unknown): void {
       try {
         (func as () => void)();
-      } catch {
+      } catch (e) {
+        // Engine code may throw from either realm (host functions called from
+        // guest scripts create host-realm errors), so a name match counts as
+        // the same error kind when instanceof fails across contexts.
+        const matchesRealm =
+          typeof ctor === "function" && (e instanceof (ctor as new () => object));
+        const matchesName =
+          typeof e === "object" && e !== null &&
+          typeof ctor === "function" &&
+          (e as { name?: unknown }).name === (ctor as { name?: unknown }).name;
+        if (!matchesRealm && !matchesName) {
+          fail(`expected ${formatValue(ctor)} but threw ${formatValue(e)}`, desc);
+        }
+        return;
+      }
+      fail("expected an exception", desc);
+    },
+    assert_throws_exactly(exception: unknown, func: unknown, desc?: unknown): void {
+      try {
+        (func as () => void)();
+      } catch (e) {
+        if (e !== exception) {
+          fail(`expected the thrown value to be the given exception`, desc);
+        }
         return;
       }
       fail("expected an exception", desc);
