@@ -1,0 +1,12 @@
+{
+  "name": "dom-abort",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "dom/abort/AbortSignal.any.js",
+    "dom/abort/abort-signal-any.any.js",
+    "dom/abort/event.any.js",
+    "dom/abort/timeout.any.js"
+  ],
+  "baselinePassCount": 35
+}

@@ -26,6 +26,7 @@ export class EventImpl {
   #target: unknown = null;
   #currentTarget: unknown = null;
   #eventPhase = 0; // 0=none, 1=capturing, 2=at_target, 3=bubbling
+  #trusted = false;
   readonly #timeStamp = performance.now();
 
   constructor(type?: string, init?: EventInit) {
@@ -48,7 +49,10 @@ export class EventImpl {
   get srcElement(): unknown { return this.#target; }
   get currentTarget(): unknown { return this.#currentTarget; }
   get eventPhase(): number { return this.#eventPhase; }
-  get isTrusted(): boolean { return false; }
+  get isTrusted(): boolean { return this.#trusted; }
+
+  /** Platform-dispatched events are trusted; guest-constructed ones are not. @internal */
+  _setTrusted(value: boolean): void { this.#trusted = value; }
   get timeStamp(): number { return this.#timeStamp; }
 
   /** Legacy `returnValue`: mirrors (and can clear) the canceled flag. */
