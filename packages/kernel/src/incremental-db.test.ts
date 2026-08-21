@@ -287,3 +287,99 @@ void test("Req 2.3: IncrementalDb exposes no manual stale-marking API", () => {
     assert.equal(typeof surface[forbidden], "undefined", `unexpected ${forbidden} API`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Map/Set structural equality on the verifyClean hot path (early-stop over
+// Map-valued IR such as DomTree.nodes must stay correct AND cheap).
+// ---------------------------------------------------------------------------
+
+void test("early-stop holds for a Map-valued query: equal recompute keeps dependents cached", () => {
+  const db = new IncrementalDb();
+  const Seed = defineInput<string, number>("Seed");
+  let mapRuns = 0;
+  const qMap = define<string, Map<number, { id: number; tag: string }>>((d: Db, key) => {
+    mapRuns += 1;
+    const n = d.getInput(Seed, key);
+    const nodes = new Map<number, { id: number; tag: string }>();
+    for (let i = 0; i < 400; i += 1) {
+      nodes.set(i, { id: i, tag: `n${i}` });
+    }
+    nodes.set(999, { id: 999, tag: `seed-${String(n)}` });
+    return nodes;
+  }, "qMap");
+  let dependentRuns = 0;
+  const qSize = define<string, number>((d: Db, key) => {
+    dependentRuns += 1;
+    return d.query(qMap, key).size;
+  }, "qSize");
+
+  db.setInput(Seed, "k", 1);
+  assert.equal(db.query(qSize, "k"), 401);
+  assert.equal(mapRuns, 1);
+  assert.equal(dependentRuns, 1);
+
+  // A different input value whose mapped Map is structurally EQUAL (same keys,
+  // same values, different insertion order) must NOT force the dependent to
+  // recompute — the deep structural compare early-stops.
+  db.setInput(Seed, "k", 1);
+  assert.equal(db.query(qSize, "k"), 401);
+
+  // A genuinely different Map (one member's value changed) recomputes both.
+  db.setInput(Seed, "k", 2);
+  assert.equal(db.query(qSize, "k"), 401);
+  assert.equal(dependentRuns, 2, "the dependent re-ran after a real Map change");
+  assert.equal(mapRuns, 2);
+});
+
+void test("Map keys that are structurally equal but reference-distinct match correctly", () => {
+  const db = new IncrementalDb();
+  const Flag = defineInput<string, boolean>("Flag");
+  const qNodes = define<string, Map<{ url: string; node: number }, string>>((d: Db, key) => {
+    const flip = d.getInput(Flag, key);
+    // Two DISTINCT objects with equal structure are two valid keys of one Map.
+    const nodes = new Map<{ url: string; node: number }, string>();
+    nodes.set({ url: "a", node: 1 }, "first");
+    nodes.set({ url: "a", node: 1 }, flip ? "second-b" : "second-a");
+    return nodes;
+  }, "qNodes");
+
+  db.setInput(Flag, "k", false);
+  const first = db.query(qNodes, "k");
+  db.setInput(Flag, "k", true);
+  const second = db.query(qNodes, "k");
+  assert.notEqual(second, first, "a real value change is observed through colliding keys");
+  // And an equal recompute (same flag again) still early-stops via the buckets.
+  db.setInput(Flag, "k", true);
+  const runsBefore = db.recomputeCount;
+  assert.equal(db.query(qNodes, "k"), second);
+  assert.equal(db.recomputeCount, runsBefore, "equal Map recompute does not re-run the query");
+});
+
+void test("Set-valued deps compare order-insensitively on the hot path", () => {
+  const db = new IncrementalDb();
+  const Order = defineInput<string, number>("Order");
+  const qSet = define<string, Set<string>>((d: Db, key) => {
+    const variant = d.getInput(Order, key);
+    const set = new Set<string>(["x", "y", "z"]);
+    if (variant === 1) {
+      // Same members, built in a different order — structurally equal.
+      return new Set<string>(["z", "y", "x"]);
+    }
+    return set;
+  }, "qSet");
+  let runs = 0;
+  const qSize = define<string, number>((d: Db, key) => {
+    runs += 1;
+    return d.query(qSet, key).size;
+  }, "qSetSize");
+
+  db.setInput(Order, "k", 0);
+  assert.equal(db.query(qSize, "k"), 3);
+  db.setInput(Order, "k", 1); // reordered but EQUAL set
+  assert.equal(db.query(qSize, "k"), 3);
+  assert.equal(runs, 1, "the dependent stays cached: the Set re-ran to an equal value");
+  const afterEqual = runs;
+  db.setInput(Order, "k", 1); // equal input write: no recompute at all
+  assert.equal(db.query(qSize, "k"), 3);
+  assert.equal(runs, afterEqual, "equal Set value keeps the dependent cached");
+});
