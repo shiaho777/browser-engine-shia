@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Node.textContent</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="host"><span id="first">hello</span><span> world</span></div>
+<div id="empty"></div>
+<div id="clear"><span>gone</span></div>
+<script>
+test(function () {
+  assert_equals(document.getElementById("host").textContent, "hello world");
+}, "textContent reads descendant text in tree order");
+
+test(function () {
+  var host = document.getElementById("host");
+  host.textContent = "updated";
+  assert_equals(host.textContent, "updated");
+  assert_equals(host.querySelector("span"), null, "setter replaces the old child subtree");
+}, "textContent setter replaces children with one text node");
+
+test(function () {
+  var clear = document.getElementById("clear");
+  clear.textContent = "";
+  assert_equals(clear.textContent, "");
+  assert_equals(clear.childNodes.length, 0, "empty string removes children");
+}, "textContent setter with an empty string removes children");
+
+test(function () {
+  var empty = document.getElementById("empty");
+  empty.appendChild(document.createTextNode("created"));
+  assert_equals(empty.textContent, "created");
+}, "createTextNode + appendChild contributes to textContent");
+</script>
+</body>

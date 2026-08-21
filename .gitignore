@@ -4,3 +4,8 @@ node_modules/
 # Build artifacts
 dist/
 *.tsbuildinfo
+
+# Machine-local working directories
+.codebuddy/
+.zcode/
+artifacts/

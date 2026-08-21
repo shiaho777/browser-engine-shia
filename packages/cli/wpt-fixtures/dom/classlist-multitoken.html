@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOMTokenList classList multi-token reflection</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="scope">
+  <div id="target" class="alpha beta"></div>
+  <div id="second" class="beta"></div>
+</section>
+<div id="assign" class="one two"></div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.classList.add("gamma", "delta", "gamma");
+
+  assert_equals(el.className, "alpha beta gamma delta", "className reflects multi-token add without duplicates");
+  assert_equals(el.getAttribute("class"), "alpha beta gamma delta", "class attribute reflects multi-token add");
+  assert_true(el.classList.contains("gamma"), "added token is present");
+  assert_true(el.classList.contains("delta"), "second added token is present");
+  assert_equals(el.classList.length, 4, "duplicate add does not duplicate the token");
+  assert_true(el.matches(".alpha.gamma.delta"), "matches observes all added classes");
+}, "classList.add accepts multiple tokens and reflects to className and matches");
+
+test(function () {
+  var scope = document.getElementById("scope");
+  var el = document.getElementById("target");
+
+  assert_equals(scope.querySelector(".gamma.delta"), el, "precondition: scoped query sees multi-token target");
+  assert_equals(document.querySelector("#scope .gamma.delta"), el, "precondition: document query sees multi-token target");
+
+  el.classList.remove("alpha", "gamma", "missing");
+
+  assert_equals(el.className, "beta delta", "className reflects multi-token removal");
+  assert_equals(el.getAttribute("class"), "beta delta", "class attribute reflects multi-token removal");
+  assert_false(el.classList.contains("alpha"), "first removed token is absent");
+  assert_false(el.classList.contains("gamma"), "second removed token is absent");
+  assert_true(el.classList.contains("delta"), "unremoved token remains");
+  assert_false(el.matches(".alpha"), "matches stops seeing removed token");
+  assert_equals(scope.querySelector(".gamma"), null, "fresh scoped query stops seeing removed token");
+  assert_equals(document.querySelector("#scope .gamma"), null, "fresh document query stops seeing removed token");
+}, "classList.remove accepts multiple tokens and fresh selector queries observe removal");
+
+test(function () {
+  var el = document.getElementById("assign");
+
+  el.className = "zeta eta";
+
+  assert_equals(el.classList.item(0), "zeta", "classList reads the first token from className");
+  assert_equals(el.classList.item(1), "eta", "classList reads the second token from className");
+  assert_equals(el.classList.item(2), null, "classList item returns null past the end");
+  assert_equals(el.classList.length, 2, "classList length reflects className assignment");
+  assert_true(el.classList.contains("zeta"), "classList contains reflects className assignment");
+  assert_equals(document.querySelector(".zeta.eta"), el, "fresh query sees className assignment");
+}, "classList reads back className assignments without stale tokens");
+</script>
+</body>

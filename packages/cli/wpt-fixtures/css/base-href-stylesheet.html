@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Base href external stylesheet resolution</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<base href="support/">
+<link rel="stylesheet" href="base-href-theme.css">
+<body>
+<div id="base-target">base href stylesheet</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("base-target"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "base-resolved external color applies");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(255, 0, 0)", "base-resolved external background applies");
+}, "base href resolves an external stylesheet support resource");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("base-target"));
+  assert_equals(cs.getPropertyValue("width"), "66px", "base-resolved stylesheet exposes resolved lengths");
+}, "base href external stylesheet participates in layout-affecting cascade");
+</script>
+</body>

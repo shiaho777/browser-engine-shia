@@ -29,6 +29,9 @@ export type {
   QueryDef,
   InputSlot,
   Dependency,
+  QueryTraceEvent,
+  QueryTraceObserver,
+  TraceOptions,
 } from "./db.js";
 export { define, defineInput } from "./db.js";
 

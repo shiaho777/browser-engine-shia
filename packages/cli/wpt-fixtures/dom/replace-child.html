@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM replaceChild</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #replacement { width: 41px; color: red; }
+  #moved { height: 27px; background-color: blue; }
+</style>
+<body>
+<main id="host"><span id="before">a</span><span id="old">b</span><span id="after">c</span></main>
+<aside id="old-parent"><span id="moved">m</span></aside>
+<script>
+test(function () {
+  var host = document.getElementById("host");
+  var old = document.getElementById("old");
+  var replacement = document.createElement("span");
+  replacement.id = "replacement";
+  replacement.appendChild(document.createTextNode("x"));
+
+  var removed = host.replaceChild(replacement, old);
+
+  assert_equals(removed, old, "replaceChild returns the removed child");
+  assert_equals(old.parentNode, null, "the replaced child is detached");
+  assert_equals(replacement.parentElement, host, "the replacement is parented by the host");
+  assert_equals(host.textContent, "axc", "the replacement occupies the old child's position");
+  assert_equals(host.children[1], replacement, "element order is preserved at the replacement slot");
+  assert_equals(document.getElementById("old"), null, "document lookup no longer finds the detached old child");
+  assert_equals(document.querySelector("#host #old"), null, "fresh scoped query no longer sees the old child");
+  assert_equals(document.querySelector("#host #replacement"), replacement, "fresh scoped query sees the replacement");
+  assert_equals(getComputedStyle(replacement).getPropertyValue("width"), "41px", "new child participates in style");
+}, "replaceChild inserts the new child at the old child's position and detaches the old child");
+
+test(function () {
+  var host = document.getElementById("host");
+  var oldParent = document.getElementById("old-parent");
+  var moved = document.getElementById("moved");
+  var before = document.getElementById("before");
+
+  var removed = host.replaceChild(moved, before);
+
+  assert_equals(removed, before, "replaceChild returns the removed host child");
+  assert_equals(before.parentNode, null, "the removed host child is detached");
+  assert_equals(moved.parentElement, host, "the moved node is reparented to the host");
+  assert_equals(oldParent.children.length, 0, "the old parent loses the moved node");
+  assert_equals(host.firstChild, moved, "the moved node occupies the replaced slot");
+  assert_equals(document.querySelector("#old-parent #moved"), null, "fresh query no longer sees the moved node under the old parent");
+  assert_equals(document.querySelector("#host #moved"), moved, "fresh query sees the moved node under the new parent");
+  assert_equals(getComputedStyle(moved).getPropertyValue("height"), "27px", "moved node keeps matching cascade rules");
+}, "replaceChild reparents an existing node before removing the replaced child");
+
+test(function () {
+  var host = document.getElementById("host");
+  var detached = document.createElement("span");
+  detached.id = "detached-old";
+  var replacement = document.createElement("span");
+  replacement.id = "bad-replacement";
+
+  assert_equals(detached.parentNode, null, "precondition: oldChild is detached");
+  assert_throws_js(Error, function () {
+    host.replaceChild(replacement, detached);
+  }, "replaceChild rejects an oldChild that is not a child of the parent");
+  assert_equals(replacement.parentNode, null, "failed replacement does not attach the new child");
+  assert_equals(document.getElementById("bad-replacement"), null, "failed replacement does not enter the document");
+}, "replaceChild rejects an oldChild that is not owned by the parent");
+</script>
+</body>

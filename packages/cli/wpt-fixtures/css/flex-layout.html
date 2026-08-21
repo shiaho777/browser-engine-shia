@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Flexbox grow/shrink and alignment</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #flex-grow {
+    display: flex;
+    width: 300px;
+    height: 50px;
+  }
+  #g1 { flex-grow: 1; }
+  #g2 { flex-grow: 2; }
+  #g3 { flex-grow: 1; }
+
+  #flex-justify {
+    display: flex;
+    justify-content: center;
+    width: 300px;
+    height: 50px;
+  }
+  #j1 { width: 50px; }
+  #j2 { width: 50px; }
+
+  #flex-align {
+    display: flex;
+    align-items: center;
+    width: 300px;
+    height: 60px;
+  }
+  #a1 { width: 50px; height: 20px; }
+  #a2 { width: 50px; height: 40px; }
+</style>
+<body>
+<div id="flex-grow"><div id="g1"></div><div id="g2"></div><div id="g3"></div></div>
+<div id="flex-justify"><div id="j1"></div><div id="j2"></div></div>
+<div id="flex-align"><div id="a1"></div><div id="a2"></div></div>
+<script>
+test(function () {
+  // 300px container, 3 items with no declared width, flex-grow 1:2:1
+  // → grow distributes 300px in ratio 1:2:1 → 75, 150, 75
+  assert_equals(document.getElementById("g1").getBoundingClientRect().width, 75, "flex-grow 1 gets 75px");
+  assert_equals(document.getElementById("g2").getBoundingClientRect().width, 150, "flex-grow 2 gets 150px");
+  assert_equals(document.getElementById("g3").getBoundingClientRect().width, 75, "flex-grow 1 gets 75px");
+}, "flex-grow distributes space proportionally");
+
+test(function () {
+  // justify-content: center → two 50px items centered in 300px → start at 100px
+  var r1 = document.getElementById("j1").getBoundingClientRect();
+  var r2 = document.getElementById("j2").getBoundingClientRect();
+  assert_equals(r1.x, 100, "first centered item starts at 100px");
+  assert_equals(r2.x, 150, "second centered item starts at 150px");
+}, "justify-content: center centers items");
+
+test(function () {
+  // align-items: center → items vertically centered in 60px container
+  var r1 = document.getElementById("a1").getBoundingClientRect();
+  var r2 = document.getElementById("a2").getBoundingClientRect();
+  // a1 is 20px tall in 60px → centered at y=20
+  assert_equals(r1.y, 20, "20px item centered in 60px starts at y=20");
+  // a2 is 40px tall in 60px → centered at y=10
+  assert_equals(r2.y, 10, "40px item centered in 60px starts at y=10");
+}, "align-items: center centers items on cross axis");
+</script>
+</body>

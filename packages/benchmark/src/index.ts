@@ -14,12 +14,21 @@ export { COMPETITORS, competitorFor } from "./competitors.data.js";
 export type { LiveMetrics } from "./metrics.js";
 export { computeLiveMetrics, isTestFile } from "./metrics.js";
 
+export type { ExecutionEvidence } from "./evidence.js";
+export { collectExecutionEvidence } from "./evidence.js";
+
 export { scanRepositorySources } from "./scan.js";
 
 export type { Verdict, DimensionResult } from "./dimensions.js";
 export { evaluateDimensions } from "./dimensions.js";
 
-export type { BenchmarkSnapshot } from "./report.js";
-export { buildSnapshot, renderBenchmarkMarkdown } from "./report.js";
+export type { BenchmarkJsonReport, BenchmarkSnapshot } from "./report.js";
+export {
+  buildBenchmarkJsonReport,
+  buildSnapshot,
+  renderBenchmarkJson,
+  renderBenchmarkMarkdown,
+  renderEvidenceDashboardHtml,
+} from "./report.js";
 
 export { BENCHMARK_SELF_TEST_SUBSET, liveWptPassCount } from "./self-test.js";

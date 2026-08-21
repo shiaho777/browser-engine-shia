@@ -3,6 +3,7 @@
  */
 import path from "node:path";
 
+import { formatStageTrace } from "./render.js";
 import {
   defaultWptSubsetDir,
   runWptSubsetManifestDir,
@@ -15,6 +16,7 @@ export interface WptSubsetCommandArgs {
   readonly manifestDir: string;
   readonly wptRootOverride?: string;
   readonly json: boolean;
+  readonly trace: boolean;
 }
 
 /** Parse the `wpt-subsets` command line. */
@@ -22,11 +24,16 @@ export function parseWptSubsetArgs(argv: readonly string[]): WptSubsetCommandArg
   let manifestDir: string | undefined;
   let wptRootOverride: string | undefined;
   let json = false;
+  let trace = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+    if (arg === "--trace") {
+      trace = true;
       continue;
     }
     if (arg === "--wpt-root") {
@@ -47,6 +54,7 @@ export function parseWptSubsetArgs(argv: readonly string[]): WptSubsetCommandArg
   const parsed: WptSubsetCommandArgs = {
     manifestDir: path.resolve(manifestDir ?? defaultWptSubsetDir()),
     json,
+    trace,
   };
   return wptRootOverride === undefined ? parsed : { ...parsed, wptRootOverride };
 }
@@ -63,7 +71,10 @@ export async function runWptSubsetsCommand(argv: readonly string[]): Promise<num
   }
 
   try {
-    const options = args.wptRootOverride === undefined ? {} : { wptRootOverride: args.wptRootOverride };
+    const options = {
+      ...(args.wptRootOverride === undefined ? {} : { wptRootOverride: args.wptRootOverride }),
+      ...(args.trace ? { trace: true } : {}),
+    };
     const summary = await runWptSubsetManifestDir(args.manifestDir, options);
     if (args.json) {
       console.log(JSON.stringify(serializableSummary(summary), null, 2));
@@ -91,6 +102,9 @@ export function formatWptSubsetSummary(summary: WptSubsetManifestRunSummary): st
       lines.push(
         `  regression: candidate ${String(run.regression.candidate)} < baseline ${String(run.regression.baseline)}`,
       );
+    }
+    if (run.report.trace !== undefined) {
+      lines.push(indent(formatStageTrace(run.report.trace), "  "));
     }
   }
 
@@ -127,8 +141,13 @@ function serializableSummary(summary: WptSubsetManifestRunSummary): object {
         passed: run.report.passed,
         failed: run.report.failed,
         errored: run.report.errored,
+        trace: run.report.trace,
         byFile: Object.fromEntries(run.report.byFile),
       },
     })),
   };
+}
+
+function indent(text: string, prefix: string): string {
+  return text.split("\n").map((line) => `${prefix}${line}`).join("\n");
 }

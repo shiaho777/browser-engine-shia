@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS text-transform and text-align</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #upper { text-transform: uppercase; }
+  #lower { text-transform: lowercase; }
+  #cap { text-transform: capitalize; }
+  #center { text-align: center; }
+  #right { text-align: right; }
+</style>
+<body>
+<div id="upper">hello</div>
+<div id="lower">WORLD</div>
+<div id="cap">hello world</div>
+<div id="center">centered</div>
+<div id="right">right</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("upper"));
+  assert_equals(cs.getPropertyValue("text-transform"), "uppercase", "text-transform: uppercase is computed");
+}, "text-transform: uppercase computed value");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("lower"));
+  assert_equals(cs.getPropertyValue("text-transform"), "lowercase", "text-transform: lowercase is computed");
+}, "text-transform: lowercase computed value");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("cap"));
+  assert_equals(cs.getPropertyValue("text-transform"), "capitalize", "text-transform: capitalize is computed");
+}, "text-transform: capitalize computed value");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("center"));
+  assert_equals(cs.getPropertyValue("text-align"), "center", "text-align: center is computed");
+}, "text-align: center computed value");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("right"));
+  assert_equals(cs.getPropertyValue("text-align"), "right", "text-align: right is computed");
+}, "text-align: right computed value");
+</script>
+</body>

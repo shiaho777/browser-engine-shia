@@ -21,6 +21,8 @@
 import { tallyLoc, type LocTally, type SourceFileInput } from "@browser-engine/scoreboard";
 import { CSS_PROPERTIES, DOM_INTERFACES } from "@browser-engine/generator";
 
+import type { ExecutionEvidence } from "./evidence.js";
+
 /** The live, repository-derived metrics for our engine. */
 export interface LiveMetrics {
   /** Hand-written product lines (excludes generated AND test files). */
@@ -43,6 +45,8 @@ export interface LiveMetrics {
   readonly compatPerLoc: number | null;
   /** mechanism-density = platformFeatureCount / (handWrittenLines / 1000), or null. */
   readonly mechanismDensity: number | null;
+  /** Stable execution evidence from maintained WPT subset traces. */
+  readonly executionEvidence?: ExecutionEvidence;
 }
 
 /** True when a path is a test file (excluded from the product hand-written surface). */
@@ -60,6 +64,7 @@ export function isTestFile(path: string): boolean {
 export function computeLiveMetrics(
   files: Iterable<SourceFileInput>,
   wptPassCount: number,
+  executionEvidence?: ExecutionEvidence,
 ): LiveMetrics {
   // Split test files out of the product surface, then tally the rest by origin.
   const product: SourceFileInput[] = [];
@@ -81,7 +86,7 @@ export function computeLiveMetrics(
   const mechanismDensity =
     tally.handWritten > 0 ? platformFeatureCount / (tally.handWritten / 1000) : null;
 
-  return {
+  const metrics: LiveMetrics = {
     handWrittenLines: tally.handWritten,
     generatedLines: tally.generated,
     testLines,
@@ -93,6 +98,7 @@ export function computeLiveMetrics(
     compatPerLoc,
     mechanismDensity,
   };
+  return executionEvidence === undefined ? metrics : { ...metrics, executionEvidence };
 }
 
 /** Count non-blank physical lines (mirrors the scoreboard's source-line rule). */

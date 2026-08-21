@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle read-only mutation behavior</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3);
+    background-color: rgb(4, 5, 6);
+    width: 37px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+  var cs = getComputedStyle(el);
+
+  cs.color = "rgb(9, 8, 7)";
+  cs["background-color"] = "rgb(7, 8, 9)";
+
+  assert_equals(cs.color, "rgb(1, 2, 3)", "camelCase assignment does not mutate the computed declaration object");
+  assert_equals(cs["background-color"], "rgb(4, 5, 6)", "dashed assignment does not mutate the computed declaration object");
+  assert_equals(el.getAttribute("style"), null, "computed property assignment does not create inline style");
+}, "computed style property assignment is read-only");
+
+test(function () {
+  var el = document.getElementById("target");
+  var cs = getComputedStyle(el);
+
+  cs.notARealCssProperty = "12px";
+
+  assert_equals(cs.notARealCssProperty, "12px", "unknown expandos remain ordinary JS properties");
+  assert_equals(cs.getPropertyValue("not-a-real-css-property"), "", "unknown expandos do not synthesize computed CSS declarations");
+  assert_equals(el.getAttribute("style"), null, "unknown expandos do not create inline style");
+}, "computed style unknown expandos do not synthesize CSS declarations");
+
+test(function () {
+  var el = document.getElementById("target");
+  var cs = getComputedStyle(el);
+
+  assert_throws_js(Error, function () {
+    cs.setProperty("color", "rgb(9, 8, 7)");
+  }, "setProperty on computed style throws");
+  assert_throws_js(Error, function () {
+    cs.removeProperty("color");
+  }, "removeProperty on computed style throws");
+
+  assert_equals(el.getAttribute("style"), null, "mutating methods do not create inline style");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed value remains driven by the cascade");
+}, "computed style mutating methods fail loudly");
+</script>
+</body>

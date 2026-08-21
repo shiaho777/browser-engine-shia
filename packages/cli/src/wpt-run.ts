@@ -7,6 +7,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { formatStageTrace } from "./render.js";
 import { runWptDirectory, type WptSuiteReport } from "./wpt-suite.js";
 
 /** Parsed arguments for the `wpt` subcommand. */
@@ -14,6 +15,7 @@ export interface WptCommandArgs {
   readonly root: string;
   readonly limit: number;
   readonly json: boolean;
+  readonly trace: boolean;
 }
 
 const DEFAULT_FIXTURE_ROOT = path.join(
@@ -33,11 +35,16 @@ export function parseWptArgs(argv: readonly string[]): WptCommandArgs {
   let root: string | undefined;
   let limit = Infinity;
   let json = false;
+  let trace = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+    if (arg === "--trace") {
+      trace = true;
       continue;
     }
     if (arg === "--limit") {
@@ -63,6 +70,7 @@ export function parseWptArgs(argv: readonly string[]): WptCommandArgs {
     root: path.resolve(root ?? DEFAULT_FIXTURE_ROOT),
     limit,
     json,
+    trace,
   };
 }
 
@@ -78,7 +86,7 @@ export async function runWptCommand(argv: readonly string[]): Promise<number> {
   }
 
   try {
-    const report = await runWptDirectory(args.root, args.limit);
+    const report = await runWptDirectory(args.root, args.limit, { trace: args.trace });
     if (args.json) {
       console.log(JSON.stringify(serializableReport(report), null, 2));
     } else {
@@ -116,6 +124,9 @@ export function formatWptReport(root: string, report: WptSuiteReport): string {
       lines.push(`- ... ${String(failingFiles.length - 20)} more failing files`);
     }
   }
+  if (report.trace !== undefined) {
+    lines.push("", formatStageTrace(report.trace));
+  }
 
   return lines.join("\n");
 }
@@ -128,6 +139,7 @@ function serializableReport(report: WptSuiteReport): object {
     passed: report.passed,
     failed: report.failed,
     errored: report.errored,
+    trace: report.trace,
     byFile: Object.fromEntries(report.byFile),
   };
 }

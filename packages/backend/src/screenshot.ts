@@ -159,6 +159,11 @@ interface ClipBounds {
   readonly y0: number;
   readonly x1: number;
   readonly y1: number;
+  readonly radius?: number;
+  readonly rx?: number;
+  readonly ry?: number;
+  readonly rw?: number;
+  readonly rh?: number;
 }
 
 /**
@@ -218,9 +223,23 @@ export class ScreenshotBackend implements PaintBackend {
         throw new UnsupportedPaintCommandError(cmd.op);
       }
       switch (cmd.op) {
-        case "push-clip":
-          clipStack.push(intersect(currentClip(), rectToBounds(cmd.rect)));
+        case "push-clip": {
+          const next = intersect(currentClip(), rectToBounds(cmd.rect));
+          const radius = cmd.radius !== undefined ? Number(cmd.radius) : 0;
+          if (radius > 0) {
+            clipStack.push({
+              ...next,
+              radius,
+              rx: Number(cmd.rect.x),
+              ry: Number(cmd.rect.y),
+              rw: Number(cmd.rect.width),
+              rh: Number(cmd.rect.height),
+            });
+          } else {
+            clipStack.push(next);
+          }
           break;
+        }
         case "pop-clip":
           if (clipStack.length > 1) clipStack.pop();
           break;
@@ -262,7 +281,7 @@ export class ScreenshotBackend implements PaintBackend {
   private execute(cmd: PaintCmd, target: Surface, clip: ClipBounds): void {
     switch (cmd.op) {
       case "rect":
-        fillRect(target, cmd.rect, cmd.fill, clip, 1);
+        fillRect(target, cmd.rect, cmd.fill, clip, 1, cmd.radius !== undefined ? Number(cmd.radius) : 0);
         return;
       case "border":
         fillBorder(target, cmd.rect, cmd.edges, clip, 1);
@@ -271,7 +290,7 @@ export class ScreenshotBackend implements PaintBackend {
         renderText(target, cmd, clip, 1, this.#glyphSource);
         return;
       case "image":
-        blitImage(target, cmd.rect, cmd.src, clip, 1);
+        blitImage(target, cmd.rect, cmd.src, clip, 1, cmd.radius !== undefined ? Number(cmd.radius) : 0);
         return;
       // push/pop-clip and push/pop-layer are handled in `render`.
       case "push-clip":
@@ -564,6 +583,60 @@ function intersect(a: ClipBounds, b: ClipBounds): ClipBounds {
   };
 }
 
+function roundedCover(
+  px: number,
+  py: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+): number {
+  if (!(radius > 0) || !(w > 0) || !(h > 0)) return 1;
+  const r = Math.min(radius, w * 0.5, h * 0.5);
+  if (!(r > 0)) return 1;
+  const lx = px - x;
+  const ly = py - y;
+  if (lx < 0 || ly < 0 || lx > w || ly > h) return 0;
+  let cx: number | null = null;
+  let cy: number | null = null;
+  if (lx < r && ly < r) {
+    cx = x + r;
+    cy = y + r;
+  } else if (lx > w - r && ly < r) {
+    cx = x + w - r;
+    cy = y + r;
+  } else if (lx < r && ly > h - r) {
+    cx = x + r;
+    cy = y + h - r;
+  } else if (lx > w - r && ly > h - r) {
+    cx = x + w - r;
+    cy = y + h - r;
+  } else {
+    return 1;
+  }
+  const dx = px - (cx);
+  const dy = py - (cy);
+  const d2 = dx * dx + dy * dy;
+  const inner = r - 0.5;
+  if (inner > 0 && d2 <= inner * inner) return 1;
+  const outer = r + 0.5;
+  if (d2 >= outer * outer) return 0;
+  const d = Math.sqrt(d2);
+  return Math.max(0, Math.min(1, outer - d));
+}
+
+function clipPixelCover(clip: ClipBounds, x: number, y: number): number {
+  if (x < clip.x0 || x >= clip.x1 || y < clip.y0 || y >= clip.y1) return 0;
+  const r = clip.radius ?? 0;
+  if (!(r > 0)) return 1;
+  const rx = clip.rx ?? clip.x0;
+  const ry = clip.ry ?? clip.y0;
+  const rw = clip.rw ?? clip.x1 - clip.x0;
+  const rh = clip.rh ?? clip.y1 - clip.y0;
+  return roundedCover(x + 0.5, y + 0.5, rx, ry, rw, rh, r);
+}
+
 /** Fill `rect` with `fill`, clipped to `clip` and scaled by `opacity`. */
 function fillRect(
   surface: Surface,
@@ -571,9 +644,32 @@ function fillRect(
   fill: Color,
   clip: ClipBounds,
   opacity: number,
+  radius = 0,
 ): void {
   const region = intersect(rectToBounds(rect), clip);
-  blendRegion(surface, region, fill, opacity);
+  const clipRounded = (clip.radius ?? 0) > 0;
+  if (!(radius > 0) && !clipRounded) {
+    blendRegion(surface, region, fill, opacity);
+    return;
+  }
+  const bx = Number(rect.x);
+  const by = Number(rect.y);
+  const bw = Number(rect.width);
+  const bh = Number(rect.height);
+  for (let y = region.y0; y < region.y1; y += 1) {
+    for (let x = region.x0; x < region.x1; x += 1) {
+      let cover = 1;
+      if (clipRounded) {
+        cover = clipPixelCover(clip, x, y);
+        if (cover <= 0) continue;
+      }
+      if (radius > 0) {
+        cover *= roundedCover(x + 0.5, y + 0.5, bx, by, bw, bh, radius);
+        if (cover <= 0) continue;
+      }
+      blendPixel(surface, x, y, fill, opacity * cover);
+    }
+  }
 }
 
 /** Fill the four border edges that are not `none`, within `rect`. */
@@ -632,23 +728,28 @@ function renderText(
   const fontSize = cmd.fontSize;
   if (fontSize <= 0) return;
   const ascentPx = source.ascentEm * fontSize;
+  const weight = cmd.fontWeight !== undefined ? Number(cmd.fontWeight) : 400;
+  const boldOffset = weight >= 700 ? 1 : weight >= 500 ? 1 : 0;
   for (const glyph of cmd.glyphs) {
     const gid = source.glyphId(glyph.glyphId);
     if (gid === 0) continue; // missing glyph ⇒ blank, never a fabricated block.
     const r = source.raster(gid, fontSize);
     if (r.width === 0 || r.height === 0) continue; // blank glyph (e.g. space).
-    const gridLeft = Math.round(cmd.at.x + glyph.offset.x + r.left);
-    const gridTop = Math.round(cmd.at.y + glyph.offset.y + ascentPx - r.top);
-    for (let ry = 0; ry < r.height; ry += 1) {
-      const py = gridTop + ry;
-      if (py < clip.y0 || py >= clip.y1) continue;
-      const rowBase = ry * r.width;
-      for (let rx = 0; rx < r.width; rx += 1) {
-        const px = gridLeft + rx;
-        if (px < clip.x0 || px >= clip.x1) continue;
-        const cov = r.coverage[rowBase + rx] ?? 0;
-        if (cov <= 0) continue;
-        blendPixel(surface, px, py, cmd.fill, opacity * cov);
+    const stamps = boldOffset > 0 ? [0, boldOffset] : [0];
+    for (const dx of stamps) {
+      const gridLeft = Math.round(cmd.at.x + glyph.offset.x + r.left + dx);
+      const gridTop = Math.round(cmd.at.y + glyph.offset.y + ascentPx - r.top);
+      for (let ry = 0; ry < r.height; ry += 1) {
+        const py = gridTop + ry;
+        if (py < clip.y0 || py >= clip.y1) continue;
+        const rowBase = ry * r.width;
+        for (let rx = 0; rx < r.width; rx += 1) {
+          const px = gridLeft + rx;
+          if (px < clip.x0 || px >= clip.x1) continue;
+          const cov = r.coverage[rowBase + rx] ?? 0;
+          if (cov <= 0) continue;
+          blendPixel(surface, px, py, cmd.fill, opacity * cov);
+        }
       }
     }
   }
@@ -661,16 +762,32 @@ function blitImage(
   src: DecodedImage,
   clip: ClipBounds,
   opacity: number,
+  radius = 0,
 ): void {
-  const dst = intersect(rectToBounds(rect), clip);
-  const destW = rectToBounds(rect).x1 - rectToBounds(rect).x0;
-  const destH = rectToBounds(rect).y1 - rectToBounds(rect).y0;
+  const bounds = rectToBounds(rect);
+  const dst = intersect(bounds, clip);
+  const destW = bounds.x1 - bounds.x0;
+  const destH = bounds.y1 - bounds.y0;
   if (destW <= 0 || destH <= 0 || src.width <= 0 || src.height <= 0) return;
-  const originX = rectToBounds(rect).x0;
-  const originY = rectToBounds(rect).y0;
+  const originX = bounds.x0;
+  const originY = bounds.y0;
+  const clipRounded = (clip.radius ?? 0) > 0;
+  const bx = Number(rect.x);
+  const by = Number(rect.y);
+  const bw = Number(rect.width);
+  const bh = Number(rect.height);
   for (let y = dst.y0; y < dst.y1; y += 1) {
     const sy = Math.min(src.height - 1, Math.floor(((y - originY) / destH) * src.height));
     for (let x = dst.x0; x < dst.x1; x += 1) {
+      let cover = 1;
+      if (clipRounded) {
+        cover = clipPixelCover(clip, x, y);
+        if (cover <= 0) continue;
+      }
+      if (radius > 0) {
+        cover *= roundedCover(x + 0.5, y + 0.5, bx, by, bw, bh, radius);
+        if (cover <= 0) continue;
+      }
       const sx = Math.min(src.width - 1, Math.floor(((x - originX) / destW) * src.width));
       const si = (sy * src.width + sx) * 4;
       const color: Color = {
@@ -679,7 +796,7 @@ function blitImage(
         b: src.pixels[si + 2] as number,
         a: (src.pixels[si + 3] as number) / 255,
       };
-      blendPixel(surface, x, y, color, opacity);
+      blendPixel(surface, x, y, color, opacity * cover);
     }
   }
 }

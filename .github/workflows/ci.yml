@@ -66,6 +66,11 @@ jobs:
       - name: Test constitution guards (deliberate-violation fixtures)
         run: npm run test:constitution
 
+      # Open-source flywheel guard: labels, templates, RFCs, and starter issues
+      # stay evidence-oriented and routeable by phase/stage/subset.
+      - name: Test open-source flywheel metadata
+        run: npm run test:open-source
+
       # Every workspace package's unit + property tests, including the §7.2
       # empty-pipeline wiring and the Phase 0 check gate (task 1.10).
       - name: Test (all workspace packages)
@@ -106,3 +111,64 @@ jobs:
       # if any configured check fails; green in Phase 0 (Requirements 12.4, 12.5).
       - name: Phase 0 empty-pipeline check gate
         run: node packages/cli/dist/index.js
+
+  evidence:
+    name: public evidence is reproducible
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Regenerate public evidence
+        run: npm run evidence
+
+      - name: Require generated evidence to be committed
+        run: |
+          git ls-files --error-unmatch BENCHMARK.md benchmark-evidence.json evidence-dashboard.html
+          git diff --exit-code -- BENCHMARK.md benchmark-evidence.json evidence-dashboard.html
+
+      - name: Prepare public evidence artifact
+        run: |
+          rm -rf public-evidence
+          mkdir -p public-evidence
+          cp BENCHMARK.md benchmark-evidence.json evidence-dashboard.html public-evidence/
+          cp evidence-dashboard.html public-evidence/index.html
+
+      - name: Upload public evidence artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: public-evidence
+          path: public-evidence
+          if-no-files-found: error
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: public-evidence
+
+  publish-evidence-dashboard:
+    name: publish evidence dashboard
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    needs: [evidence, scoreboard]
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy evidence dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

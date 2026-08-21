@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOMTokenList classList replace reflection</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="scope">
+  <div id="basic" class="alpha beta gamma"></div>
+  <div id="selector-target" class="old keep"></div>
+  <div id="missing" class="one two"></div>
+  <div id="dedupe" class="alpha beta gamma"></div>
+  <div id="live" class="start old"></div>
+</section>
+<script>
+test(function () {
+  var el = document.getElementById("basic");
+
+  assert_equals(el.classList.replace("beta", "delta"), true, "replace returns true for an existing token");
+
+  assert_equals(el.className, "alpha delta gamma", "className reflects the replacement in place");
+  assert_equals(el.getAttribute("class"), "alpha delta gamma", "class attribute reflects the replacement");
+  assert_false(el.classList.contains("beta"), "old token is removed");
+  assert_true(el.classList.contains("delta"), "new token is present");
+  assert_equals(el.classList.item(1), "delta", "replacement keeps the old token position");
+  assert_equals(el.classList.length, 3, "replacement preserves token count when the new token was absent");
+}, "classList.replace swaps an existing token in place");
+
+test(function () {
+  var scope = document.getElementById("scope");
+  var el = document.getElementById("selector-target");
+
+  assert_true(el.matches(".old.keep"), "precondition: old class selector matches");
+  assert_equals(scope.querySelector(".new.keep"), null, "precondition: new class selector is absent");
+
+  assert_equals(el.classList.replace("old", "new"), true, "replace returns true for the selector target");
+
+  assert_false(el.matches(".old"), "matches stops seeing the old token");
+  assert_true(el.matches(".new.keep"), "matches sees the replacement token");
+  assert_equals(scope.querySelector("#selector-target.old"), null, "fresh scoped query stops seeing the old token on the target");
+  assert_equals(scope.querySelector(".new.keep"), el, "fresh scoped query sees the replacement token");
+  assert_equals(document.querySelector("#scope .new.keep"), el, "fresh document query sees the replacement token");
+}, "matches and fresh querySelector observe classList.replace");
+
+test(function () {
+  var el = document.getElementById("missing");
+
+  assert_equals(el.classList.replace("missing", "three"), false, "replace returns false for a missing token");
+
+  assert_equals(el.className, "one two", "missing-token replace leaves className unchanged");
+  assert_false(el.classList.contains("three"), "missing-token replace does not add the new token");
+  assert_false(el.matches(".three"), "missing-token replace does not affect selector matching");
+}, "classList.replace is a no-op when the old token is missing");
+
+test(function () {
+  var el = document.getElementById("dedupe");
+
+  assert_equals(el.classList.replace("beta", "alpha"), true, "replace returns true when the replacement already exists");
+
+  assert_equals(el.className, "alpha gamma", "existing replacement token is not duplicated");
+  assert_equals(el.getAttribute("class"), "alpha gamma", "class attribute drops the replaced duplicate");
+  assert_equals(el.classList.length, 2, "length reflects duplicate removal");
+  assert_true(el.matches(".alpha.gamma"), "selectors see the deduped class list");
+  assert_false(el.matches(".beta"), "selectors stop seeing the removed token");
+}, "classList.replace deduplicates when the new token already exists");
+
+test(function () {
+  var el = document.getElementById("live");
+  var list = el.classList;
+
+  el.className = "fresh old";
+
+  assert_equals(list.replace("old", "new"), true, "saved classList object observes className assignment");
+  assert_equals(el.className, "fresh new", "saved classList object writes through to className");
+  assert_true(el.matches(".fresh.new"), "selectors observe replace through a saved classList object");
+}, "classList.replace stays live across className assignment");
+</script>
+</body>

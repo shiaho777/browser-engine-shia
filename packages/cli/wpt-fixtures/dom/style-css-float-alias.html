@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration cssFloat alias</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    float: right;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssFloat = "left";
+
+  assert_equals(el.style.getPropertyValue("float"), "left", "cssFloat writes the float declaration");
+  assert_equals(el.style.cssFloat, "left", "cssFloat reads the declaration back");
+  assert_equals(el.style["float"], "left", "float property access reads the same declaration");
+  assert_equals(el.getAttribute("style"), "float: left", "style attribute serializes the CSS property name");
+  assert_equals(getComputedStyle(el).getPropertyValue("float"), "left", "inline cssFloat participates in computed style");
+}, "cssFloat writes normalize to the float CSS property");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "";
+  el.style["float"] = "right";
+
+  assert_equals(el.style.cssFloat, "right", "cssFloat reads a float property write");
+  assert_equals(el.style.getPropertyValue("float"), "right", "float write updates getPropertyValue");
+  assert_equals(getComputedStyle(el).cssFloat, "right", "computed CSSStyleDeclaration exposes cssFloat as a float alias");
+}, "float writes are visible through cssFloat aliases");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "float: left; width: 42px";
+  el.style.cssFloat = "";
+
+  assert_equals(el.style.cssFloat, "", "empty cssFloat assignment removes the declaration");
+  assert_equals(el.style.getPropertyValue("float"), "", "removed float declaration no longer reads through getPropertyValue");
+  assert_equals(el.getAttribute("style"), "width: 42px", "empty cssFloat assignment removes only float");
+  assert_equals(getComputedStyle(el).getPropertyValue("float"), "right", "computed style falls back after cssFloat removal");
+}, "empty cssFloat assignment removes the float declaration");
+</script>
+</body>

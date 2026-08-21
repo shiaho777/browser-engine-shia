@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration length and item</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px; height: 7px !important";
+
+  assert_equals(el.style.length, 3, "length counts inline declarations");
+  assert_equals(el.style.item(0), "color", "first declaration keeps cssText order");
+  assert_equals(el.style.item(1), "width", "second declaration keeps cssText order");
+  assert_equals(el.style.item(2), "height", "third declaration keeps cssText order");
+  assert_equals(el.style.item(3), "", "out-of-range item is empty");
+}, "length and item reflect cssText declaration order");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px";
+  el.style.setProperty("height", "7px", "important");
+  el.style.setProperty("color", "blue");
+
+  assert_equals(el.style.length, 3, "adding a new property grows length");
+  assert_equals(el.style.item(0), "color", "overwriting an existing declaration keeps its position");
+  assert_equals(el.style.item(1), "width", "existing later declaration keeps its position");
+  assert_equals(el.style.item(2), "height", "new declaration appends at the end");
+  assert_equals(el.getAttribute("style"), "color: blue; width: 42px; height: 7px !important", "serialization uses the same order");
+}, "setProperty appends new declarations and preserves overwritten declaration order");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px; height: 7px";
+  assert_equals(el.style.removeProperty("width"), "42px", "removeProperty returns the removed value");
+
+  assert_equals(el.style.length, 2, "removing a declaration shrinks length");
+  assert_equals(el.style.item(0), "color", "earlier declaration remains first");
+  assert_equals(el.style.item(1), "height", "later declaration shifts into the removed slot");
+  assert_equals(el.style.item(2), "", "removed declaration leaves no stale item");
+}, "removeProperty updates length and item order live");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: red; width: 42px";
+  el.style.cssText = "height: 7px; color: blue";
+
+  assert_equals(el.style.length, 2, "reassigning cssText rebuilds declaration count");
+  assert_equals(el.style.item(0), "height", "new cssText first declaration is visible");
+  assert_equals(el.style.item(1), "color", "new cssText second declaration is visible");
+  assert_equals(el.style.item(-1), "", "negative item index is empty");
+}, "cssText reassignment rebuilds length and item order");
+</script>
+</body>

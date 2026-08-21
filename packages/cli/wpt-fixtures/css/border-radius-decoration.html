@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Border radius and text decoration</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #radius {
+    border-radius: 10px;
+    width: 100px;
+    height: 100px;
+    background-color: red;
+  }
+
+  #underline {
+    text-decoration-line: underline;
+    font-size: 16px;
+  }
+
+  #linethrough {
+    text-decoration-line: line-through;
+    font-size: 16px;
+  }
+</style>
+<body>
+<div id="radius"></div>
+<div id="underline">underlined text</div>
+<div id="linethrough">struck text</div>
+<script>
+test(function () {
+  // border-radius should not affect layout geometry
+  var rect = document.getElementById("radius").getBoundingClientRect();
+  assert_equals(rect.width, 100, "border-radius does not change width");
+  assert_equals(rect.height, 100, "border-radius does not change height");
+}, "border-radius does not affect layout");
+
+test(function () {
+  // text-decoration-line: underline should be parsed
+  var cs = getComputedStyle(document.getElementById("underline"));
+  assert_equals(cs.textDecorationLine, "underline", "text-decoration-line is underline");
+}, "text-decoration-line: underline is computed");
+
+test(function () {
+  // text-decoration-line: line-through should be parsed
+  var cs = getComputedStyle(document.getElementById("linethrough"));
+  assert_equals(cs.textDecorationLine, "line-through", "text-decoration-line is line-through");
+}, "text-decoration-line: line-through is computed");
+</script>
+</body>

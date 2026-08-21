@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration named property enumeration</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="parsed" style="background-color: rgb(1, 2, 3); float: left; width: 42px">target</div>
+<div id="dynamic">dynamic</div>
+<script>
+function keys(object) {
+  return Object.keys(object);
+}
+
+test(function () {
+  var style = document.getElementById("parsed").style;
+  var names = keys(style);
+
+  assert_true(names.indexOf("0") >= 0, "numeric item 0 is enumerable");
+  assert_true(names.indexOf("background-color") >= 0, "declared dashed property is enumerable");
+  assert_true(names.indexOf("backgroundColor") >= 0, "declared camelCase alias is enumerable");
+  assert_true(names.indexOf("float") >= 0, "declared float property is enumerable");
+  assert_true(names.indexOf("cssFloat") >= 0, "declared cssFloat alias is enumerable");
+  assert_true(names.indexOf("getPropertyValue") >= 0, "declaration methods remain enumerable");
+  assert_true(names.indexOf("cssText") >= 0, "cssText remains enumerable");
+  assert_false(names.indexOf("height") >= 0, "known but undeclared CSS names are not enumerable");
+  assert_false(names.indexOf("not-a-real-css-property") >= 0, "unknown dashed names are not enumerable");
+}, "element.style enumerates declared CSS names and aliases without synthesizing missing declarations");
+
+test(function () {
+  var style = document.getElementById("parsed").style;
+  var descriptor = Object.getOwnPropertyDescriptor(style, "background-color");
+  var aliasDescriptor = Object.getOwnPropertyDescriptor(style, "backgroundColor");
+  var indexDescriptor = Object.getOwnPropertyDescriptor(style, "0");
+
+  assert_equals(descriptor.value, "rgb(1, 2, 3)", "descriptor exposes the inline declaration value");
+  assert_true(descriptor.enumerable, "declared CSS properties are enumerable");
+  assert_true(descriptor.configurable, "declared CSS property descriptors are configurable");
+  assert_true(descriptor.writable, "inline CSS property descriptors are writable");
+  assert_equals(aliasDescriptor.value, "rgb(1, 2, 3)", "camelCase alias descriptor sees the same declaration");
+  assert_equals(indexDescriptor.value, style.item(0), "numeric descriptor mirrors item(0)");
+  assert_true(Object.prototype.propertyIsEnumerable.call(style, "background-color"), "propertyIsEnumerable sees declared CSS names");
+  assert_equals(Object.getOwnPropertyDescriptor(style, "height"), undefined, "known undeclared CSS names have no descriptor");
+}, "element.style descriptors reflect declared CSS named properties");
+
+test(function () {
+  var el = document.getElementById("dynamic");
+  var style = el.style;
+
+  style.backgroundColor = "rgb(3, 4, 5)";
+  style.cssFloat = "right";
+
+  assert_true(keys(style).indexOf("backgroundColor") >= 0, "alias write appears in enumeration");
+  assert_true(keys(style).indexOf("cssFloat") >= 0, "cssFloat write appears in enumeration");
+  assert_equals(Object.assign({}, style).backgroundColor, "rgb(3, 4, 5)", "Object.assign copies alias values");
+  assert_equals(Object.assign({}, style).cssFloat, "right", "Object.assign copies cssFloat values");
+
+  style.backgroundColor = "";
+
+  assert_false(keys(style).indexOf("background-color") >= 0, "removed declaration drops dashed name");
+  assert_false(keys(style).indexOf("backgroundColor") >= 0, "removed declaration drops camelCase alias");
+  assert_equals(Object.assign({}, style).backgroundColor, undefined, "Object.assign stops copying removed aliases");
+  assert_true(keys(style).indexOf("cssFloat") >= 0, "unremoved declarations stay enumerable");
+}, "element.style enumeration updates after CSSOM alias writes and removals");
+
+test(function () {
+  var style = document.getElementById("dynamic").style;
+
+  style.expandoValue = "kept";
+  style.notARealCssProperty = "12px";
+
+  assert_true(keys(style).indexOf("expandoValue") >= 0, "explicit expandos remain enumerable");
+  assert_true(keys(style).indexOf("notARealCssProperty") >= 0, "unknown camelCase writes stay ordinary expandos");
+  assert_equals(style.getPropertyValue("not-a-real-css-property"), "", "unknown expandos do not synthesize declarations");
+  assert_equals(Object.getOwnPropertyDescriptor(style, "expandoValue").value, "kept", "expando descriptor is ordinary data");
+  assert_equals(Object.assign({}, style).expandoValue, "kept", "Object.assign copies explicit expandos");
+}, "element.style enumeration preserves ordinary expando properties");
+</script>
+</body>

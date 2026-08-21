@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Node cloneNode</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .copied {
+    width: 37px;
+    height: 19px;
+    background-color: rgb(1, 2, 3);
+  }
+</style>
+<body>
+<section id="host">
+  <article id="source" class="copied" data-k="v"><span id="inner">hello</span><em> world</em></article>
+</section>
+<script>
+test(function () {
+  var source = document.getElementById("source");
+  var clone = source.cloneNode(false);
+
+  assert_false(clone === source, "cloneNode returns a new node");
+  assert_equals(clone.tagName, "ARTICLE", "the element name is preserved");
+  assert_equals(clone.getAttribute("class"), "copied", "attributes are copied");
+  assert_equals(clone.getAttribute("data-k"), "v", "data attributes are copied");
+  assert_equals(clone.childNodes.length, 0, "shallow clone has no children");
+  assert_equals(clone.parentNode, null, "clone is detached");
+}, "cloneNode(false) copies element data without children");
+
+test(function () {
+  var source = document.getElementById("source");
+  var clone = source.cloneNode(true);
+
+  assert_equals(clone.childNodes.length, 2, "deep clone preserves child count");
+  assert_equals(clone.textContent, "hello world", "deep clone preserves descendant text");
+  assert_equals(clone.querySelector("span").textContent, "hello", "deep clone preserves nested elements");
+  assert_equals(clone.querySelector("em").textContent, " world", "deep clone preserves later descendants in tree order");
+}, "cloneNode(true) copies the descendant subtree");
+
+test(function () {
+  var source = document.getElementById("source");
+  var clone = source.cloneNode(true);
+
+  source.setAttribute("data-k", "changed");
+  source.querySelector("span").textContent = "source";
+  clone.setAttribute("data-k", "clone");
+  clone.querySelector("span").textContent = "clone";
+
+  assert_equals(source.getAttribute("data-k"), "changed", "original keeps its later attribute value");
+  assert_equals(clone.getAttribute("data-k"), "clone", "clone keeps its later attribute value");
+  assert_equals(document.getElementById("inner").textContent, "source", "original descendant text is independent");
+  assert_equals(clone.querySelector("span").textContent, "clone", "clone descendant text is independent");
+}, "cloneNode creates independent attribute and text nodes");
+
+test(function () {
+  var host = document.getElementById("host");
+  var source = document.getElementById("source");
+  var clone = source.cloneNode(true);
+
+  clone.setAttribute("id", "appended-clone");
+  clone.querySelector("span").setAttribute("id", "appended-inner");
+  clone.querySelector("span").textContent = "visible";
+  host.appendChild(clone);
+
+  assert_equals(document.getElementById("appended-clone"), clone, "appended clone is queryable by id");
+  assert_equals(document.getElementById("appended-inner").textContent, "visible", "appended clone descendants are queryable");
+  assert_equals(host.querySelector("#appended-clone.copied"), clone, "selector matching observes the appended clone");
+  assert_equals(getComputedStyle(clone).getPropertyValue("width"), "37px", "computed style applies to the appended clone");
+  assert_equals(getComputedStyle(clone).getPropertyValue("background-color"), "rgb(1, 2, 3)", "paint style applies to the appended clone");
+}, "appended clones participate in live queries and computed style");
+</script>
+</body>

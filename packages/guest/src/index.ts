@@ -29,8 +29,61 @@ export const PACKAGE_NAME = "@browser-engine/guest" as const;
 // accepts; exporting the type (erased at runtime) is safe and necessary for the
 // factory to be callable externally. The module-private `INTERNAL` symbol, the
 // WeakMap, and `attachInternal`/`readInternal` remain unexported (Req 7.1).
-export { ElementImpl, createElementWrapper } from "./element.js";
+// ---- DOM wrappers (the guest-visible web surface) -------------------------
+// The original ElementImpl from element.ts (5 read methods) is kept for backward
+// compatibility. The full implementation lives in node-impls.ts.
+export { ElementImpl as ElementImplBase, createElementWrapper } from "./element.js";
 export type { NodeInternal } from "./internal.js";
+
+// ---- Concrete DOM wrapper implementations (Node/Element/Text/Document) ----
+export {
+  NodeImpl,
+  ElementImpl,
+  TextImpl,
+  CommentImpl,
+  DocumentImpl,
+  DocumentFragmentImpl,
+  wrapNode,
+  type DOMRectLike,
+} from "./node-impls.js";
+
+// ---- DomContext (shared wrapper creation context) -------------------------
+export { DomContext } from "./dom-context.js";
+
+// ---- LiveDom (mutable DOM layer) ------------------------------------------
+export { LiveDom, syncNodeToKernel, type LiveNode } from "./live-dom.js";
+
+// ---- Wrapper cache (reference identity per NodeId) ------------------------
+export { WrapperCache } from "./wrapper-cache.js";
+
+// ---- Event system (Event, EventTarget, MouseEvent, KeyboardEvent, etc.) ---
+export {
+  Event,
+  UIEvent,
+  MouseEvent,
+  KeyboardEvent,
+  CustomEvent,
+  FocusEvent,
+  InputEvent,
+  EventTarget,
+  EventTargetImpl,
+  EventImpl,
+  type EventInit,
+  type MouseEventInit,
+  type KeyboardEventInit,
+} from "./event-system.js";
+
+// ---- Storage (localStorage / sessionStorage) ------------------------------
+export { StorageImpl } from "./storage.js";
+
+// ---- CSSStyleDeclaration (getComputedStyle return type) -------------------
+export { CSSStyleDeclarationImpl } from "./css-style-declaration.js";
+
+// ---- XMLHttpRequest -------------------------------------------------------
+export { XMLHttpRequestImpl } from "./xhr.js";
+
+// ---- Resource loader (img/script/link loading) ----------------------------
+export { loadResource, resolveUrl, type LoadedResource } from "./resource-loader.js";
 
 // ---- the guest global builder (surface-only, no engine internals) ---------
 export { buildGuestGlobal, type GuestGlobal, type GuestGlobalOptions } from "./guest-global.js";
@@ -41,13 +94,24 @@ export { EventLoop, type Task } from "./event-loop.js";
 // ---- the reused networking boundary (Requirement 8.1) ---------------------
 export {
   nodeFetchNetworkStack,
+  createBrowserNetworkStack,
+  networkStackToFetchFn,
+  networkStackToBrowserFetch,
+  DEFAULT_BROWSER_UA,
   type NetworkStack,
   type NetworkRequest,
   type NetworkResponse,
+  type BrowserNetworkStack,
+  type BrowserNetworkOptions,
+  type BrowserNetworkEvent,
 } from "./network.js";
+export { CookieJar, type StoredCookie } from "./cookie-jar.js";
 
 // ---- guest fetch over the reused stack (Requirements 16.5, 16.7) ----------
 export { createGuestFetch, type GuestFetch, type GuestResponse } from "./fetch.js";
+
+// ---- guest-boundary value coercion (spec-like ToString for unknowns) ------
+export { coerceGuestString } from "./coerce.js";
 
 // ---- @font-face web-font loading + application (Requirement 16.6) ---------
 export {

@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>browser-engine-shia</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b1220;
+    --chrome: #111827;
+    --line: #243044;
+    --text: #e5eefc;
+    --muted: #93a4bd;
+    --accent: #38bdf8;
+    --danger: #f87171;
+    --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    height: 100%;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 6px 8px 0;
+    background: #0d1524;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    -webkit-app-region: drag;
+  }
+  .tabs button, .tabs .tab {
+    -webkit-app-region: no-drag;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 220px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    background: #152033;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .tab.active {
+    background: var(--chrome);
+    color: var(--text);
+    border-color: var(--line);
+  }
+  .tab span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab .x {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .toolbar {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    background: linear-gradient(180deg, #152033, var(--chrome));
+    border-bottom: 1px solid var(--line);
+    -webkit-app-region: drag;
+  }
+  .toolbar button, .toolbar input, .toolbar label, .toolbar form {
+    -webkit-app-region: no-drag;
+  }
+  .nav, .tools { display: flex; gap: 6px; align-items: center; }
+  button, .file-btn {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: #1a2740;
+    color: var(--text);
+    border-radius: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font: inherit;
+  }
+  button:hover, .file-btn:hover { border-color: #3b82f6; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary {
+    background: #0ea5e9;
+    border-color: #0284c7;
+    color: #082f49;
+    font-weight: 600;
+  }
+  .address { display: flex; gap: 8px; min-width: 0; }
+  #url {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--line);
+    background: #0a1424;
+    color: var(--text);
+    border-radius: 12px;
+    padding: 10px 14px;
+    outline: none;
+  }
+  #url:focus { border-color: var(--accent); }
+  .viewport-wrap {
+    position: relative;
+    overflow: auto;
+    background:
+      linear-gradient(45deg, #0f172a 25%, transparent 25%),
+      linear-gradient(-45deg, #0f172a 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #0f172a 75%),
+      linear-gradient(-45deg, transparent 75%, #0f172a 75%);
+    background-size: 24px 24px;
+    background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    background-color: #121a29;
+  }
+  .viewport {
+    position: relative;
+    min-height: 100%;
+    min-width: 100%;
+    display: grid;
+    place-items: start center;
+    padding: 0;
+  }
+  #frame {
+    display: block;
+    background: #fff;
+    border: 0;
+    max-width: none;
+    user-select: none;
+    image-rendering: auto;
+    -ms-interpolation-mode: bicubic;
+  }
+  #frame.pointer { cursor: pointer; }
+  #frame.textish { cursor: text; }
+  #editor {
+    position: absolute;
+    z-index: 5;
+    display: none;
+    margin: 0;
+    border: 2px solid transparent;
+    background: transparent;
+    color: transparent;
+    caret-color: transparent;
+    font: 16px/1.3 "Segoe UI", system-ui, sans-serif;
+    padding: 6px 8px;
+    resize: none;
+    outline: none;
+    box-shadow: none;
+  }
+  .error {
+    margin: 48px auto;
+    max-width: 560px;
+    padding: 24px;
+    border-radius: 16px;
+    border: 1px solid #7f1d1d;
+    background: rgba(15, 23, 42, 0.95);
+    color: #fecaca;
+  }
+  .status {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--line);
+    background: #0d1524;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .status strong { color: var(--text); font-weight: 600; }
+  .status .ok { color: var(--ok); }
+  .status .bad { color: var(--danger); }
+  .status-actions { display: flex; align-items: center; gap: 8px; }
+  .status-actions button {
+    border: 1px solid var(--line);
+    background: #152033;
+    color: var(--text);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .status-actions button:hover { border-color: #3b82f6; }
+  #log-panel {
+    position: fixed;
+    right: 12px;
+    bottom: 48px;
+    width: min(720px, calc(100vw - 24px));
+    height: min(360px, 42vh);
+    margin: 0;
+    padding: 10px 12px;
+    overflow: auto;
+    z-index: 40;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(8, 12, 20, 0.96);
+    color: #cbd5e1;
+    font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  body.busy #frame { opacity: 0.72; }
+  input[type="file"] { display: none; }
+  #zoom-label { min-width: 48px; text-align: center; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="tabs" id="tabs">
+    <button id="new-tab" title="New tab">+</button>
+  </div>
+  <header class="toolbar">
+    <div class="nav">
+      <button id="back" title="Back (Alt+Left)" disabled>←</button>
+      <button id="forward" title="Forward (Alt+Right)" disabled>→</button>
+      <button id="reload" title="Reload (Ctrl/Cmd+R)">↻</button>
+      <button id="home" title="Home">⌂</button>
+    </div>
+    <form class="address" id="go-form">
+      <input id="url" spellcheck="false" autocomplete="off" placeholder="URL, file path, or engine://home">
+      <button class="primary" type="submit">Go</button>
+    </form>
+    <div class="tools">
+      <button id="zoom-out" title="Zoom out (Ctrl/Cmd+-)">−</button>
+      <span id="zoom-label">100%</span>
+      <button id="zoom-in" title="Zoom in (Ctrl/Cmd+=)">+</button>
+      <button id="zoom-reset" title="Reset zoom">1:1</button>
+      <label class="file-btn" for="file">Open HTML</label>
+      <input id="file" type="file" accept=".html,.htm,text/html">
+    </div>
+  </header>
+  <main class="viewport-wrap" id="viewport-wrap">
+    <div class="viewport" id="viewport">
+      <img id="frame" alt="Engine content" hidden>
+      <textarea id="editor"></textarea>
+      <div id="error" class="error" hidden></div>
+    </div>
+  </main>
+  <footer class="status">
+    <div id="status-left">Starting…</div>
+    <div class="status-actions">
+      <button id="copy-logs" type="button" title="Copy all engine logs">Copy Logs</button>
+      <button id="toggle-logs" type="button" title="Show/hide log panel">Logs</button>
+      <div id="status-right">browser-engine-shia</div>
+    </div>
+  </footer>
+  <pre id="log-panel" hidden></pre>
+  <script>
+    const bridge = window.engineShell || null;
+    const urlInput = document.getElementById("url");
+    const frame = document.getElementById("frame");
+    const editor = document.getElementById("editor");
+    const errorBox = document.getElementById("error");
+    const statusLeft = document.getElementById("status-left");
+    const statusRight = document.getElementById("status-right");
+    const copyLogsBtn = document.getElementById("copy-logs");
+    const toggleLogsBtn = document.getElementById("toggle-logs");
+    const logPanel = document.getElementById("log-panel");
+    const engineLogs = [];
+    const ENGINE_LOG_LIMIT = 800;
+    function engineLog(level, message, detail) {
+      const ts = new Date().toISOString();
+      const line = detail
+        ? ("[" + ts + "] " + level + " " + message + " | " + detail)
+        : ("[" + ts + "] " + level + " " + message);
+      engineLogs.push(line);
+      if (engineLogs.length > ENGINE_LOG_LIMIT) engineLogs.splice(0, engineLogs.length - ENGINE_LOG_LIMIT);
+      if (logPanel && !logPanel.hidden) {
+        logPanel.textContent = engineLogs.join("\n");
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+      try { console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](line); } catch (_) {}
+    }
+    function dumpEngineLogs() {
+      return engineLogs.join("\n");
+    }
+    async function copyEngineLogs() {
+      const text = dumpEngineLogs() || "(no logs yet)";
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        engineLog("info", "logs copied", String(engineLogs.length) + " lines");
+        statusRight.textContent = "logs copied (" + engineLogs.length + ")";
+      } catch (err) {
+        engineLog("error", "copy logs failed", err && err.message ? err.message : String(err));
+        statusRight.textContent = "copy logs failed";
+      }
+    }
+    if (copyLogsBtn) copyLogsBtn.addEventListener("click", () => { void copyEngineLogs(); });
+    if (toggleLogsBtn && logPanel) {
+      toggleLogsBtn.addEventListener("click", () => {
+        logPanel.hidden = !logPanel.hidden;
+        if (!logPanel.hidden) {
+          logPanel.textContent = dumpEngineLogs() || "(no logs yet)";
+          logPanel.scrollTop = logPanel.scrollHeight;
+        }
+      });
+    }
+    engineLog("info", "shell ready", bridge ? "electron bridge" : "http host");
+    const wrap = document.getElementById("viewport-wrap");
+    const viewportEl = document.getElementById("viewport");
+    const tabsEl = document.getElementById("tabs");
+    const newTabBtn = document.getElementById("new-tab");
+    const backBtn = document.getElementById("back");
+    const forwardBtn = document.getElementById("forward");
+    const reloadBtn = document.getElementById("reload");
+    const homeBtn = document.getElementById("home");
+    const goForm = document.getElementById("go-form");
+    const fileInput = document.getElementById("file");
+    const zoomInBtn = document.getElementById("zoom-in");
+    const zoomOutBtn = document.getElementById("zoom-out");
+    const zoomResetBtn = document.getElementById("zoom-reset");
+    const zoomLabel = document.getElementById("zoom-label");
+
+    let busy = false;
+    let zoom = 1;
+    let contentW = 0;
+    let contentH = 0;
+    let lastViewport = { width: 1024, height: 720 };
+    let nav = { canGoBack: false, canGoForward: false, url: "" };
+    let resizeTimer = 0;
+    let frameBlobUrl = null;
+    let useBinary = !bridge;
+    let activeEditable = null;
+    let tabsState = [];
+
+    function measureViewport() {
+      const w = Math.max(320, Math.floor(wrap.clientWidth || 1024));
+      const h = Math.max(240, Math.floor(wrap.clientHeight || 720));
+      const raw = window.devicePixelRatio || 1;
+      const dpr = Math.max(1, Math.min(3, raw >= 1.5 ? Math.max(2, raw) : raw));
+      return { width: w, height: h, devicePixelRatio: dpr };
+    }
+
+    async function post(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      const text = await res.text();
+      let payload = null;
+      try { payload = text ? JSON.parse(text) : null; } catch (_) {
+        throw new Error("engine host returned non-JSON (HTTP " + res.status + ")");
+      }
+      if (!res.ok && payload && payload.error) throw new Error(payload.error);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return payload;
+    }
+
+    const api = bridge ? {
+      navigate: (target, viewport) => bridge.navigate(target, viewport),
+      loadHtml: (html, title, viewport) => bridge.loadHtml(html, title, viewport),
+      back: (viewport) => bridge.back(viewport),
+      forward: (viewport) => bridge.forward(viewport),
+      reload: (viewport) => bridge.reload(viewport),
+      setViewport: (viewport) => bridge.setViewport(viewport),
+      scroll: (deltaX, deltaY, viewport, extra) => bridge.scroll(deltaX, deltaY, viewport, extra),
+      hitTest: (x, y) => bridge.hitTest(x, y),
+      click: (x, y, viewport) => bridge.click(x, y, viewport),
+      type: (nodeId, text, options) => bridge.type(nodeId, text, options),
+      newTab: () => bridge.newTab(),
+      selectTab: (id) => bridge.selectTab(id),
+      closeTab: (id) => bridge.closeTab(id),
+    } : {
+      navigate: (target, viewport) => post("/api/navigate", Object.assign({ target: target, frameMode: "binary" }, viewport || {})),
+      loadHtml: (html, title, viewport) => post("/api/navigate", Object.assign({ html: html, title: title, frameMode: "binary" }, viewport || {})),
+      back: (viewport) => post("/api/back", Object.assign({ frameMode: "binary" }, viewport || {})),
+      forward: (viewport) => post("/api/forward", Object.assign({ frameMode: "binary" }, viewport || {})),
+      reload: (viewport) => post("/api/reload", Object.assign({ frameMode: "binary" }, viewport || {})),
+      setViewport: (viewport) => post("/api/viewport", Object.assign({ frameMode: "binary" }, viewport || {})),
+      scroll: (deltaX, deltaY, viewport, extra) => post("/api/scroll", Object.assign({ deltaX: deltaX, deltaY: deltaY, frameMode: "binary", settle: !!(extra && extra.settle) }, viewport || {})),
+      hitTest: async (x, y) => {
+        const payload = await post("/api/hit-test", { x: x, y: y });
+        return payload;
+      },
+      click: (x, y, viewport) => post("/api/click", Object.assign({ x: x, y: y, frameMode: "binary" }, viewport || {})),
+      type: (nodeId, text, options) => post("/api/type", Object.assign({ nodeId: nodeId, text: text, frameMode: "binary" }, options || {})),
+      newTab: () => post("/api/tabs/new", {}),
+      selectTab: (id) => post("/api/tabs/select", { id: id, frameMode: "binary" }),
+      closeTab: (id) => post("/api/tabs/close", { id: id, frameMode: "binary" }),
+    };
+
+    function setBusy(next) {
+      busy = next;
+      document.body.classList.toggle("busy", next);
+      reloadBtn.disabled = next;
+      syncNav();
+    }
+
+    function syncNav() {
+      backBtn.disabled = !nav.canGoBack || busy;
+      forwardBtn.disabled = !nav.canGoForward || busy;
+    }
+
+    function applyZoom() {
+      zoomLabel.textContent = Math.round(zoom * 100) + "%";
+      if (contentW > 0 && contentH > 0) {
+        frame.style.width = Math.round(contentW * zoom) + "px";
+        frame.style.height = Math.round(contentH * zoom) + "px";
+      }
+      positionEditor();
+    }
+
+    function showError(message) {
+      hideEditor();
+      frame.hidden = true;
+      errorBox.hidden = false;
+      errorBox.textContent = message;
+      statusLeft.innerHTML = '<span class="bad">Failed</span>';
+      engineLog("error", "ui error", message);
+    }
+
+    function renderTabs(list) {
+      if (!list || !list.length) return;
+      tabsState = list;
+      const old = tabsEl.querySelectorAll(".tab");
+      for (const el of old) el.remove();
+      for (const tab of list) {
+        const btn = document.createElement("div");
+        btn.className = "tab" + (tab.active ? " active" : "");
+        btn.dataset.id = String(tab.id);
+        const title = document.createElement("span");
+        title.textContent = tab.title || tab.url || ("Tab " + tab.id);
+        title.title = tab.url || "";
+        const close = document.createElement("button");
+        close.className = "x";
+        close.type = "button";
+        close.textContent = "×";
+        close.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          if (busy) return;
+          setBusy(true);
+          try {
+            const payload = await api.closeTab(tab.id);
+            if (payload && payload.ok !== false) await showFrame(payload, "tab closed");
+          } catch (err) {
+            showError(err && err.message ? err.message : String(err));
+          } finally {
+            setBusy(false);
+          }
+        });
+        btn.appendChild(title);
+        btn.appendChild(close);
+        btn.addEventListener("click", async () => {
+          if (busy || tab.active) return;
+          setBusy(true);
+          try {
+            const payload = await api.selectTab(tab.id);
+            if (payload && payload.ok !== false) await showFrame(payload, "tab switch");
+          } catch (err) {
+            showError(err && err.message ? err.message : String(err));
+          } finally {
+            setBusy(false);
+          }
+        });
+        tabsEl.insertBefore(btn, newTabBtn);
+      }
+    }
+
+    async function attachFrameImage(payload) {
+      const mode = payload.frameMode || (payload.pngBase64 ? "base64" : "binary");
+      if (mode === "binary" && useBinary) {
+        const res = await fetch("/api/frame?r=" + encodeURIComponent(String(payload.frameRev || Date.now())));
+        if (!res.ok) throw new Error("frame fetch failed");
+        const blob = await res.blob();
+        if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
+        frameBlobUrl = URL.createObjectURL(blob);
+        frame.src = frameBlobUrl;
+        return;
+      }
+      if (!payload.pngBase64) throw new Error("empty frame");
+      frame.src = "data:image/png;base64," + payload.pngBase64;
+    }
+
+    async function showFrame(payload, extra) {
+      if (!payload) throw new Error("empty frame");
+      if (payload.ok === false) throw new Error(payload.error || "request failed");
+      const frameData = payload.pngBase64 || payload.frameMode || payload.width
+        ? payload
+        : payload.frame;
+      if (!frameData || (!frameData.pngBase64 && frameData.frameMode !== "binary" && !frameData.width)) {
+        if (payload.frame === null) return;
+        throw new Error("empty frame");
+      }
+      errorBox.hidden = true;
+      frame.hidden = false;
+      contentW = frameData.width || payload.width;
+      contentH = frameData.height || payload.height;
+      frame.removeAttribute("width");
+      frame.removeAttribute("height");
+      await attachFrameImage(frameData.pngBase64 || frameData.frameMode ? frameData : payload);
+      applyZoom();
+      urlInput.value = frameData.url || frameData.source || payload.url || "";
+      const vp = payload.viewport || lastViewport;
+      const note = extra ? " · " + extra : "";
+      const scriptsRun = frameData.scriptsRun != null ? frameData.scriptsRun : 0;
+      const mutations = frameData.mutations != null ? frameData.mutations : 0;
+      const modeBit = (frameData.frameMode || payload.frameMode || "base64") === "binary" ? " · binary" : "";
+      const loaded = frameData.scriptsLoaded != null ? frameData.scriptsLoaded : scriptsRun;
+      const failed = frameData.scriptsFailed != null ? frameData.scriptsFailed : 0;
+      const mods = frameData.moduleUrls != null ? frameData.moduleUrls : 0;
+      const cookies = frameData.cookies != null ? frameData.cookies : 0;
+      const modEval = frameData.modulesEvaluated != null ? frameData.modulesEvaluated : 0;
+      const modLink = frameData.modulesLinked != null ? frameData.modulesLinked : 0;
+      const esm = frameData.esmSupported === false ? "off" : ("on " + modEval + "/" + modLink);
+      const scriptBit = frameData.scriptError
+        ? (' · <span class="bad">script err</span> · load ok=' + loaded + ' fail=' + failed + ' · esm ' + esm)
+        : (' · scripts <strong>' + scriptsRun + '</strong>/mut <strong>' + mutations + '</strong> · load ok=' + loaded + ' fail=' + failed + ' · esm ' + esm + ' · cookie ' + cookies);
+      statusLeft.innerHTML =
+        '<span class="ok">Rendered</span> · <strong>' +
+        contentW + "×" + contentH +
+        "</strong> · viewport <strong>" + vp.width + "×" + vp.height +
+        "</strong> · " + (frameData.bytes || payload.bytes || 0) + " bytes · " +
+        Number(frameData.durationMs || payload.durationMs || 0).toFixed(1) + " ms" +
+        scriptBit + modeBit + note;
+      statusRight.textContent = frameData.url || frameData.source || payload.url || "";
+      engineLog(
+        frameData.scriptError ? "warn" : "info",
+        "frame " + (extra || "render"),
+        JSON.stringify({
+          url: frameData.url || frameData.source || payload.url || "",
+          size: contentW + "x" + contentH,
+          viewport: vp.width + "x" + vp.height,
+          bytes: frameData.bytes || payload.bytes || 0,
+          durationMs: Number(frameData.durationMs || payload.durationMs || 0),
+          scriptsRun: scriptsRun,
+          mutations: mutations,
+          scriptsLoaded: loaded,
+          scriptsFailed: failed,
+          esmSupported: frameData.esmSupported !== false,
+          modulesEvaluated: modEval,
+          modulesLinked: modLink,
+          scriptError: frameData.scriptError || null,
+          note: extra || null,
+        })
+      );
+      if (frameData.scriptError) {
+        engineLog("error", "scriptError detail", String(frameData.scriptError));
+      }
+      if (payload.nav) nav = payload.nav;
+      if (payload.tabs) renderTabs(payload.tabs);
+      syncNav();
+      if (payload.editable) {
+        openEditor(payload.editable);
+      } else if (!activeEditable) {
+        hideEditor();
+      }
+    }
+
+    function hideEditor() {
+      activeEditable = null;
+      editor.style.display = "none";
+      editor.value = "";
+    }
+
+    function positionEditor() {
+      if (!activeEditable || editor.style.display === "none") return;
+      const rect = frame.getBoundingClientRect();
+      const host = viewportEl.getBoundingClientRect();
+      const scaleX = rect.width / (contentW || 1);
+      const scaleY = rect.height / (contentH || 1);
+      const left = rect.left - host.left + activeEditable.x * scaleX;
+      const top = rect.top - host.top + activeEditable.y * scaleY;
+      const width = Math.max(48, activeEditable.width * scaleX);
+      const height = Math.max(28, activeEditable.height * scaleY);
+      editor.style.left = left + "px";
+      editor.style.top = top + "px";
+      editor.style.width = width + "px";
+      editor.style.height = (activeEditable.multiline ? Math.max(height, 72) : height) + "px";
+    }
+
+    function openEditor(editable) {
+      activeEditable = editable;
+      editor.value = editable.value || "";
+      editor.style.display = "block";
+      positionEditor();
+      editor.focus();
+      try {
+        const end = editor.value.length;
+        editor.setSelectionRange(end, end);
+      } catch (_) {}
+      void previewEditor(false);
+    }
+
+    let typeTimer = 0;
+    async function previewEditor(commit) {
+      if (!activeEditable) return;
+      const nodeId = activeEditable.nodeId;
+      const text = editor.value;
+      const caret = typeof editor.selectionStart === "number" ? editor.selectionStart : text.length;
+      const selStart = typeof editor.selectionStart === "number" ? editor.selectionStart : caret;
+      const selEnd = typeof editor.selectionEnd === "number" ? editor.selectionEnd : caret;
+      if (busy && !commit) return;
+      if (commit) setBusy(true);
+      try {
+        const payload = await api.type(nodeId, text, {
+          caret: caret,
+          selStart: selStart,
+          selEnd: selEnd,
+          preview: !commit,
+        });
+        if (payload.ok === false) throw new Error(payload.error || "type failed");
+        await showFrame(payload, commit ? "typed" : "caret");
+        if (commit) hideEditor();
+        else {
+          editor.style.display = "block";
+          positionEditor();
+          if (document.activeElement !== editor) editor.focus();
+        }
+      } catch (err) {
+        if (commit) showError(err && err.message ? err.message : String(err));
+      } finally {
+        if (commit) setBusy(false);
+      }
+    }
+
+    async function commitEditor() {
+      if (!activeEditable) return;
+      window.clearTimeout(typeTimer);
+      await previewEditor(true);
+    }
+
+    function schedulePreview() {
+      window.clearTimeout(typeTimer);
+      typeTimer = window.setTimeout(function () {
+        void previewEditor(false);
+      }, 40);
+    }
+
+    async function navigate(target) {
+      if (busy) return;
+      hideEditor();
+      setBusy(true);
+      statusLeft.textContent = "Rendering…";
+      engineLog("info", "navigate start", String(target || ""));
+      try {
+        lastViewport = measureViewport();
+        const payload = await api.navigate(target, lastViewport);
+        if (payload.ok === false) throw new Error(payload.error || "navigate failed");
+        await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode, frameRev: payload.frameRev }) : payload);
+      } catch (err) {
+        engineLog("error", "navigate failed", err && err.message ? err.message : String(err));
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function relayoutIfNeeded() {
+      if (busy || frame.hidden) return;
+      const next = measureViewport();
+      if (Math.abs(next.width - lastViewport.width) <= 2 && Math.abs(next.height - lastViewport.height) <= 2) {
+        return;
+      }
+      statusLeft.textContent = "Resizing…";
+      try {
+        lastViewport = next;
+        const payload = await api.setViewport(next);
+        if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || next, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "viewport");
+        }
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        statusLeft.textContent = "Ready";
+      }
+    }
+
+    goForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void navigate(urlInput.value);
+    });
+    backBtn.addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        lastViewport = measureViewport();
+        const payload = await api.back(lastViewport);
+        if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+        }
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+    forwardBtn.addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        lastViewport = measureViewport();
+        const payload = await api.forward(lastViewport);
+        if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+        }
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+    reloadBtn.addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        lastViewport = measureViewport();
+        const payload = await api.reload(lastViewport);
+        if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+        }
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+    homeBtn.addEventListener("click", () => {
+      void navigate("engine://home");
+    });
+    newTabBtn.addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const payload = await api.newTab();
+        if (payload && payload.ok !== false) await showFrame(payload, "new tab");
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file || busy) return;
+      setBusy(true);
+      try {
+        lastViewport = measureViewport();
+        const text = await file.text();
+        const payload = await api.loadHtml(text, file.name, lastViewport);
+        if (payload.ok === false) throw new Error(payload.error || "load failed");
+        await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+        fileInput.value = "";
+      }
+    });
+
+    zoomInBtn.addEventListener("click", () => {
+      zoom = Math.min(2, Math.round((zoom + 0.1) * 10) / 10);
+      applyZoom();
+    });
+    zoomOutBtn.addEventListener("click", () => {
+      zoom = Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10);
+      applyZoom();
+    });
+    zoomResetBtn.addEventListener("click", () => {
+      zoom = 1;
+      applyZoom();
+    });
+
+    function contentPoint(event) {
+      const rect = frame.getBoundingClientRect();
+      const scaleX = contentW ? contentW / rect.width : 1;
+      const scaleY = contentH ? contentH / rect.height : 1;
+      return {
+        x: (event.clientX - rect.left) * scaleX,
+        y: (event.clientY - rect.top) * scaleY,
+      };
+    }
+
+    let moveTimer = 0;
+    frame.addEventListener("mousemove", (event) => {
+      if (frame.hidden || busy) return;
+      window.clearTimeout(moveTimer);
+      const point = contentPoint(event);
+      moveTimer = window.setTimeout(async () => {
+        try {
+          const hit = await api.hitTest(point.x, point.y);
+          frame.classList.toggle("pointer", hit && hit.cursor === "pointer");
+          frame.classList.toggle("textish", hit && hit.cursor === "text");
+          if (hit && hit.href) statusRight.textContent = hit.href;
+          else if (hit && hit.editable) statusRight.textContent = "edit " + (hit.editable.tag || "field");
+        } catch (_) {}
+      }, 20);
+    });
+
+    frame.addEventListener("click", async (event) => {
+      if (frame.hidden || busy) return;
+      event.preventDefault();
+      const point = contentPoint(event);
+      setBusy(true);
+      try {
+        lastViewport = measureViewport();
+        const payload = await api.click(point.x, point.y, lastViewport);
+        if (payload.ok === false) throw new Error(payload.error || "click failed");
+        const data = payload.frame
+          ? Object.assign({}, payload.frame, {
+              nav: payload.nav,
+              viewport: payload.viewport || lastViewport,
+              navigated: payload.navigated,
+              editable: payload.editable,
+              tabs: payload.tabs,
+              frameMode: payload.frameMode,
+              frameRev: payload.frameRev,
+            })
+          : payload;
+        await showFrame(data, payload.navigated || data.navigated ? "navigated via hit-test" : (payload.editable ? "edit" : "click"));
+        frame.classList.remove("pointer");
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    editor.addEventListener("input", () => {
+      schedulePreview();
+    });
+    editor.addEventListener("keyup", () => {
+      schedulePreview();
+    });
+    editor.addEventListener("click", () => {
+      schedulePreview();
+    });
+    editor.addEventListener("select", () => {
+      schedulePreview();
+    });
+    editor.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hideEditor();
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && activeEditable && !activeEditable.multiline) {
+        event.preventDefault();
+        void commitEditor();
+      }
+    });
+    editor.addEventListener("blur", () => {
+      if (activeEditable) void commitEditor();
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.target === editor) return;
+      if (!frame.hidden && !busy && (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "PageDown" || event.key === "PageUp" || event.key === " ")) {
+        const viewH = lastViewport.height || 720;
+        let dy = 0;
+        if (event.key === "ArrowDown") dy = 80;
+        else if (event.key === "ArrowUp") dy = -80;
+        else if (event.key === "PageDown" || (event.key === " " && !event.shiftKey)) dy = Math.round(viewH * 0.85);
+        else if (event.key === "PageUp" || (event.key === " " && event.shiftKey)) dy = -Math.round(viewH * 0.85);
+        if (dy !== 0) {
+          event.preventDefault();
+          pendingScrollY += dy;
+          if (scrollRaf === 0 && !scrollInFlight) scrollRaf = window.requestAnimationFrame(flushScroll);
+          return;
+        }
+      }
+      const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        urlInput.focus();
+        urlInput.select();
+        return;
+      }
+      if (meta && event.shiftKey && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        void copyEngineLogs();
+        return;
+      }
+      if (meta && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        reloadBtn.click();
+        return;
+      }
+      if (meta && event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        newTabBtn.click();
+        return;
+      }
+      if (meta && (event.key === "=" || event.key === "+")) {
+        event.preventDefault();
+        zoomInBtn.click();
+        return;
+      }
+      if (meta && event.key === "-") {
+        event.preventDefault();
+        zoomOutBtn.click();
+        return;
+      }
+      if (meta && event.key === "0") {
+        event.preventDefault();
+        zoomResetBtn.click();
+        return;
+      }
+      if (event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        backBtn.click();
+        return;
+      }
+      if (event.altKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        forwardBtn.click();
+      }
+    });
+
+    let pendingScrollX = 0;
+    let pendingScrollY = 0;
+    let scrollRaf = 0;
+    let scrollInFlight = false;
+    let scrollSettleTimer = 0;
+    function scheduleScrollSettle() {
+      window.clearTimeout(scrollSettleTimer);
+      scrollSettleTimer = window.setTimeout(() => {
+        if (scrollInFlight || frame.hidden || busy) return;
+        lastViewport = measureViewport();
+        api.scroll(0, 0, lastViewport, { settle: true }).then(async (payload) => {
+          if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+            await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "scroll settle");
+          }
+        }).catch(() => {});
+      }, 140);
+    }
+    function flushScroll() {
+      scrollRaf = 0;
+      if (scrollInFlight || frame.hidden || busy) return;
+      const dx = pendingScrollX;
+      const dy = pendingScrollY;
+      pendingScrollX = 0;
+      pendingScrollY = 0;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      scrollInFlight = true;
+      lastViewport = measureViewport();
+      api.scroll(dx, dy, lastViewport).then(async (payload) => {
+        if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
+          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "wheel scroll");
+        }
+      }).catch((err) => {
+        showError(err && err.message ? err.message : String(err));
+      }).finally(() => {
+        scrollInFlight = false;
+        if (Math.abs(pendingScrollX) > 0.5 || Math.abs(pendingScrollY) > 0.5) {
+          scrollRaf = window.requestAnimationFrame(flushScroll);
+        } else {
+          scheduleScrollSettle();
+        }
+      });
+    }
+    wrap.addEventListener("wheel", (event) => {
+      if (frame.hidden || busy) return;
+      event.preventDefault();
+      pendingScrollX += event.deltaX;
+      pendingScrollY += event.deltaY;
+      if (scrollRaf === 0 && !scrollInFlight) {
+        scrollRaf = window.requestAnimationFrame(flushScroll);
+      }
+    }, { passive: false });
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => {
+          void relayoutIfNeeded();
+          positionEditor();
+        }, 280);
+      });
+      observer.observe(wrap);
+    } else {
+      window.addEventListener("resize", () => {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => {
+          void relayoutIfNeeded();
+          positionEditor();
+        }, 280);
+      });
+    }
+
+    const isFile = location.protocol === "file:";
+    if (isFile && !bridge) {
+      showError("Electron preload bridge missing (window.engineShell). Restart with: npm run app:electron");
+      statusRight.textContent = "browser-engine-shia · bridge missing";
+    } else {
+      statusRight.textContent = bridge
+        ? "browser-engine-shia · electron bridge"
+        : "browser-engine-shia · http host";
+      if (bridge && bridge.ping) {
+        bridge.ping().then(function (p) {
+          var bits = ["browser-engine-shia", (p && p.mode) || "electron bridge"];
+          if (p && p.fonts) bits.push("fonts " + p.fonts);
+          if (p && p.features && p.features.length) bits.push(p.features.join("+"));
+          statusRight.textContent = bits.join(" · ");
+          if (p && p.tabs) renderTabs(p.tabs);
+        }).catch(function () {});
+      }
+      if (!bridge) {
+        fetch("/api/health").then(function (res) { return res.json(); }).then(function (h) {
+          if (h && h.fonts) {
+            statusRight.textContent = "browser-engine-shia · fonts " + h.fonts + " · binary+caret";
+          }
+          if (h && h.tabs) renderTabs(h.tabs);
+        }).catch(function () {});
+      }
+      var startParam = "";
+      try {
+        startParam = new URLSearchParams(location.search).get("start") || "";
+      } catch (_) {}
+      void navigate(startParam && startParam.trim() ? startParam.trim() : "engine://home");
+    }
+  </script>
+</body>
+</html>

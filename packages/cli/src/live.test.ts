@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import type { DisplayList, DomTree, NodeId, PaintCmd } from "@browser-engine/ir";
 import { nodeId } from "@browser-engine/ir";
 
-import { LiveSession, withText } from "./live.js";
+import { LiveSession, withRemoveAttribute, withText } from "./live.js";
 
 /** Find the first node of a given kind/tag in a session's DOM. */
 function findNode(dom: DomTree, pred: (n: { kind: string; tag?: string; text?: string }) => boolean): NodeId {
@@ -127,6 +127,16 @@ void test("mutating an attribute restyles the node (class drives a CSS rule)", (
   const rects = session.render().commands.filter((c) => c.op === "rect");
   assert.ok(rects.length >= 1, "adding the class paints the rule's background");
   assert.ok(rects.some((c) => c.op === "rect" && c.fill.r === 255 && c.fill.b === 0), "background is red");
+});
+
+void test("withRemoveAttribute removes the key rather than storing an empty value", () => {
+  const session = new LiveSession('<div id="x" data-on="yes"></div>');
+  const divId = findNode(session.dom, (n) => n.kind === "element" && n.tag === "div");
+  const next = withRemoveAttribute(session.dom, divId, "data-on");
+  const div = next.nodes.get(divId);
+
+  assert.equal(div?.attrs?.has("data-on"), false, "the attribute key is gone");
+  assert.equal(div?.attrs?.get("data-on"), undefined, "there is no empty-string placeholder");
 });
 
 void test("the live session's render is itself deterministic across calls", () => {

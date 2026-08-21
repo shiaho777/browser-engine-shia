@@ -136,6 +136,7 @@ import type {
 
 import { defaultShaper } from "./text-shaper.js";
 import type { ShapingFont, TextShaper } from "./text-shaper.js";
+export { hitTest } from "./hit-test.js";
 
 export const PACKAGE_NAME = "@browser-engine/layout" as const;
 
@@ -201,6 +202,7 @@ export const DEFAULT_VIEWPORT_HEIGHT: Px = px(600);
 
 /** Options for {@link layout}. All optional, so `layout(dom, styleOf)` is valid. */
 export interface LayoutOptions {
+  readonly clipMaxY?: number;
   /** The root containing-block width. Defaults to {@link DEFAULT_VIEWPORT_WIDTH}. */
   readonly viewportWidth?: Px;
   /**
@@ -290,7 +292,88 @@ export function layout(
    * place and registers it. Descendants are registered during recursion.
    * Returns `null` when the node produces no box (comment, or `display:none`).
    */
-  function layoutNode(id: NodeId, containingWidth: Px): Fragment | null {
+
+  function resolveIntrinsicSize(node: DomNode): { width: number; height: number } | undefined {
+    const attrs = node.attrs;
+    if (attrs !== undefined) {
+      const aw = Number(attrs.get("width"));
+      const ah = Number(attrs.get("height"));
+      if (Number.isFinite(aw) && Number.isFinite(ah) && aw > 0 && ah > 0) {
+        return { width: aw, height: ah };
+      }
+      const src = attrs.get("src") ?? attrs.get("data-src") ?? "";
+      const m = /@(\d+)w_(\d+)h/i.exec(src);
+      if (m !== null) {
+        const width = Number(m[1]);
+        const height = Number(m[2]);
+        if (width > 0 && height > 0) return { width, height };
+      }
+      if (node.tag === "svg") {
+        const vb = attrs.get("viewBox") ?? attrs.get("viewbox");
+        if (vb !== undefined) {
+          const parts = vb.trim().split(/[\s,]+/).map(Number);
+          if (parts.length >= 4) {
+            const width = parts[2]!;
+            const height = parts[3]!;
+            if (width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)) {
+              return { width, height };
+            }
+          }
+        }
+        return { width: 20, height: 20 };
+      }
+    } else if (node.tag === "svg") {
+      return { width: 20, height: 20 };
+    }
+    return undefined;
+  }
+
+  function layoutReplaced(node: DomNode, containingWidth: Px): Fragment {
+    const style = computedStyleOf(node.id);
+    const margin = resolveMargin(style);
+    const padding = resolvePadding(style, containingWidth);
+    const border = resolveBorder(style);
+    const intrinsic = resolveIntrinsicSize(node);
+    const ratio =
+      intrinsic !== undefined && intrinsic.width > 0
+        ? intrinsic.height / intrinsic.width
+        : 9 / 16;
+    const declaredW = typeof style["width"] === "number" ? (style["width"]) : null;
+    const declaredH = typeof style["height"] === "number" ? (style["height"]) : null;
+    let contentW: number;
+    let contentH: number;
+    if (declaredW !== null) {
+      contentW = Math.max(0, declaredW);
+      contentH = declaredH !== null ? Math.max(0, declaredH) : contentW * ratio;
+    } else if (declaredH !== null) {
+      contentH = Math.max(0, declaredH);
+      contentW = ratio > 0 ? contentH / ratio : 0;
+    } else if (node.tag === "svg") {
+      const iw = intrinsic?.width ?? 18;
+      const ih = intrinsic?.height ?? 18;
+      const maxSide = 20;
+      if (iw <= maxSide && ih <= maxSide) {
+        contentW = Math.max(1, iw);
+        contentH = Math.max(1, ih);
+      } else if (iw >= ih) {
+        contentW = maxSide;
+        contentH = Math.max(1, maxSide * (ih / Math.max(1, iw)));
+      } else {
+        contentH = maxSide;
+        contentW = Math.max(1, maxSide * (iw / Math.max(1, ih)));
+      }
+    } else if (intrinsic !== undefined) {
+      contentW = Math.min(Number(containingWidth), intrinsic.width);
+      contentH = contentW * ratio;
+    } else {
+      contentW = Math.max(0, Number(resolveWidth(style, containingWidth, margin, padding, border)));
+      contentH = contentW * ratio;
+    }
+    const box = buildBoxAtOrigin(margin, px(contentW), px(contentH), padding, border);
+    return { node: node.id, box, children: [] };
+  }
+
+  function layoutNode(id: NodeId, containingWidth: Px, containingHeight?: number, forceContentHeight?: number): Fragment | null {
     const node = dom.nodes.get(id);
     if (node === undefined || node.kind === "comment") {
       return null;
@@ -309,8 +392,11 @@ export function layout(
       if (display === "none") {
         return null; // skip the element and its entire subtree.
       }
+      if (node.tag === "img" || node.tag === "svg") {
+        return layoutReplaced(node, containingWidth);
+      }
       if (display === "flex") {
-        return layoutFlex(node, containingWidth);
+        return layoutFlex(node, containingWidth, containingHeight, forceContentHeight);
       }
       if (display === "grid") {
         return layoutGrid(node, containingWidth);
@@ -322,7 +408,7 @@ export function layout(
         return layoutMulticol(node, containingWidth);
       }
     }
-    return layoutBlock(node, containingWidth);
+    return layoutBlock(node, containingWidth, containingHeight, forceContentHeight, undefined);
   }
 
   /**
@@ -344,122 +430,649 @@ export function layout(
    *     `absolute` child is removed from flow (no `cursorY` advance) and placed
    *     at its insets relative to the container's content origin.
    */
-  function layoutBlock(node: DomNode, containingWidth: Px): Fragment {
+  function layoutBlock(node: DomNode, containingWidth: Px, containingHeight?: number, forceContentHeight?: number, maxHeight?: number): Fragment {
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
-    const padding = resolvePadding(style);
+    const padding = resolvePadding(style, containingWidth);
     const border = resolveBorder(style);
     const contentWidth = resolveWidth(style, containingWidth, margin, padding, border);
 
-    // The content origin (relative to this box's border-box origin), into which
-    // in-flow children are laid. Zero padding/border ⇒ (0, 0), so the existing
-    // child coordinates are byte-for-byte unchanged.
-    const contentLeft = border.left + padding.left;
-    const contentTop = border.top + padding.top;
+    // Children register in this box's LOCAL frame — the fragment is still at the
+    // origin here and only the box itself is offset by the grandparent later — so
+    // the content origin runs from the MARGIN-box origin: +margin → border box,
+    // +border+padding → content box. Zero margins ⇒ the historical values.
+    const contentLeft = margin.left + border.left + padding.left;
+    const contentTop = margin.top + border.top + padding.top;
+
+    // The DEFINITE content height this block offers its percentage-height children.
+    // Only when this block's own `height` is a definite length (not auto/% of an
+    // indefinite ancestor) does a child `height: <percent>` resolve; otherwise the
+    // CSS rule makes it behave as `auto` and `definiteChildHeight` stays undefined.
+    const declaredHeight = style["height"];
+    const definiteChildHeight =
+      forceContentHeight !== undefined
+        ? Math.max(0, forceContentHeight)
+        : typeof declaredHeight === "number"
+          ? Math.max(0, readBoxSizing(style) === "border-box" ? declaredHeight - (padding.top + padding.bottom + border.top + border.bottom) : declaredHeight)
+          : containingHeight;
 
     let cursorY = 0;
-    // The bottom margin of the previous in-flow sibling, for adjacent-sibling
-    // margin collapsing (null until the first in-flow child is placed).
     let prevBottomMargin: number | null = null;
-    const childIds: FragmentId[] = [];
-    for (const childNodeId of node.children) {
-      const childFrag = layoutNode(childNodeId, contentWidth);
-      if (childFrag === null) {
+    type AbsPending = { childNodeId: NodeId; childStyle: ComputedStyle | null };
+    type ChildSlot = { kind: "frag"; id: FragmentId } | { kind: "abs"; abs: AbsPending };
+    const childSlots: ChildSlot[] = [];
+    const activeFloats: { side: "left" | "right"; width: number; bottom: number }[] = [];
+
+    function intrusionAt(y: number): { left: number; right: number } {
+      let left = 0;
+      let right = 0;
+      for (const f of activeFloats) {
+        if (f.bottom > y) {
+          if (f.side === "left") left = Math.max(left, f.width);
+          else right = Math.max(right, f.width);
+        }
+      }
+      return { left, right };
+    }
+
+    for (let ci = 0; ci < node.children.length; ci += 1) {
+      const childNodeId = node.children[ci]!;
+      const childNode = dom.nodes.get(childNodeId);
+      if (childNode === undefined || childNode.kind === "comment") {
         continue;
       }
       const childStyle = childStyleOf(childNodeId);
-      const float = childStyle === null ? "none" : readFloat(childStyle);
-      const position = childStyle === null ? "static" : readPosition(childStyle);
 
-      if (float === "left" || float === "right") {
-        // Floated: shift to the container's left/right content edge, out of the
-        // vertical flow (cursorY is NOT advanced — following content flows by).
-        // A float does not participate in margin collapsing (prevBottomMargin
-        // is left untouched, so the blocks around it still collapse).
-        const dx =
-          float === "left"
-            ? 0
-            : Math.max(0, contentWidth - childFrag.box.marginBox.width);
-        childIds.push(register(offsetFragment(childFrag, contentLeft + dx, contentTop + cursorY)));
+      // ---- inline formatting context -------------------------------------
+      // A run of CONSECUTIVE inline-level children (text nodes + display:inline
+      // / inline-block elements) flows left-to-right in line boxes instead of
+      // each taking its own vertical row. Block-level members, positioned and
+      // floated boxes break the run.
+      if (isInlineLevelChild(childNode, childStyle)) {
+        const runIds: NodeId[] = [];
+        while (ci < node.children.length) {
+          const mId = node.children[ci]!;
+          const mNode = dom.nodes.get(mId);
+          if (mNode === undefined || mNode.kind === "comment") {
+            ci += 1;
+            continue;
+          }
+          const mStyle = childStyleOf(mId);
+          if (!isInlineLevelChild(mNode, mStyle)) {
+            break;
+          }
+          runIds.push(mId);
+          ci += 1;
+        }
+        ci -= 1; // the for-loop's ++ re-advances past the last run member.
+        const runFragments = layoutInlineRun(runIds, px(contentWidth), style);
+        let runHeight = 0;
+        for (const frag of runFragments) {
+          childSlots.push({
+            kind: "frag",
+            id: register(offsetFragment(frag, contentLeft, contentTop + cursorY)),
+          });
+          runHeight = Math.max(runHeight, Number(frag.box.marginBox.height));
+        }
+        cursorY += runHeight;
+        prevBottomMargin = null; // an inline run never participates in margin collapse.
         continue;
       }
+
+      const float = childStyle === null ? "none" : readFloat(childStyle);
+      const rawPosition = childStyle === null ? "static" : readPosition(childStyle);
+      const position =
+        rawPosition === "fixed"
+          ? "absolute"
+          : childStyle !== null && childStyle["position"] === "sticky"
+            ? "relative"
+            : rawPosition;
 
       if (position === "absolute") {
-        // Out of flow: positioned at its insets relative to the content origin;
-        // cursorY is NOT advanced (it occupies no in-flow space) and it does not
-        // collapse margins with its siblings.
-        const insets = readInsets(childStyle);
-        childIds.push(register(offsetFragment(childFrag, contentLeft + insets.left, contentTop + insets.top)));
+        childSlots.push({ kind: "abs", abs: { childNodeId, childStyle } });
         continue;
       }
 
-      // In normal flow. Collapse this in-flow child's TOP margin with the
-      // previous in-flow sibling's BOTTOM margin (CSS 2.1 §8.3.1): the gap
-      // between them is the collapsed margin, not the sum, so pull this child up
-      // by the overlap. With no vertical margins the overlap is 0 — unchanged.
+      if (float === "left" || float === "right") {
+        const childFrag = layoutNode(childNodeId, contentWidth);
+        if (childFrag === null) {
+          continue;
+        }
+        const fw = childFrag.box.marginBox.width;
+        const fh = childFrag.box.marginBox.height;
+        const dx =
+          float === "left" ? 0 : Math.max(0, contentWidth - fw);
+        childSlots.push({
+          kind: "frag",
+          id: register(offsetFragment(childFrag, contentLeft + dx, contentTop + cursorY)),
+        });
+        activeFloats.push({ side: float, width: fw, bottom: cursorY + fh });
+        continue;
+      }
+
+      // `clear`: advance the cursor below the relevant floats before placing
+      // this in-flow child. `clear: left` clears left floats, `right` clears
+      // right floats, `both`/`inline-start`/`inline-end` clear all (we treat the
+      // logical values as `both` since direction-aware clearing is not wired).
+      const clear = childStyle === null ? "none" : readClear(childStyle);
+      if (clear !== "none") {
+        let clearBottom = 0;
+        for (const f of activeFloats) {
+          const matches =
+            clear === "both" ||
+            clear === "inline-start" ||
+            clear === "inline-end" ||
+            f.side === clear;
+          if (matches) {
+            clearBottom = Math.max(clearBottom, f.bottom);
+          }
+        }
+        if (clearBottom > cursorY) {
+          cursorY = clearBottom;
+          prevBottomMargin = null; // clearing establishes a new BFC edge for margins.
+        }
+      }
+
+      const room = intrusionAt(cursorY);
+      const availWidth = px(Math.max(0, contentWidth - room.left - room.right));
+      const childFrag = layoutNode(childNodeId, availWidth, definiteChildHeight);
+      if (childFrag === null) {
+        continue;
+      }
+
       const childMargin = childStyle === null ? ZERO_MARGIN : resolveMargin(childStyle);
       if (prevBottomMargin !== null) {
-        const overlap = (prevBottomMargin + childMargin.top) - collapsedMargin(prevBottomMargin, childMargin.top);
+        const overlap =
+          prevBottomMargin + childMargin.top - collapsedMargin(prevBottomMargin, childMargin.top);
         cursorY -= overlap;
       }
 
-      // Place at the content origin, advanced by (the collapsed) cursorY.
-      let positioned = offsetFragment(childFrag, contentLeft, contentTop + cursorY);
-      const advance = positioned.box.marginBox.height; // in-flow space reserved.
+      const room2 = intrusionAt(cursorY);
+      const xShift = room2.left;
+      let positioned = offsetFragment(childFrag, contentLeft + xShift, contentTop + cursorY);
+      const advance = positioned.box.marginBox.height;
       if (position === "relative") {
-        // Visually offset by the insets, but the in-flow space is preserved, so
-        // cursorY still advances by the pre-offset margin-box height.
         const insets = readInsets(childStyle);
         positioned = offsetFragment(positioned, insets.left, insets.top);
       }
-      childIds.push(register(positioned));
-      cursorY += advance; // ← monotonic block advance (in-flow children only).
+      childSlots.push({ kind: "frag", id: register(positioned) });
+      cursorY += advance;
       prevBottomMargin = childMargin.bottom;
     }
 
-    const contentHeight = resolveHeight(style, px(cursorY), padding, border);
+    const hasAbsoluteSlots = childSlots.some((slot) => slot.kind === "abs");
+    if (hasAbsoluteSlots) {
+      const inFlowContentHeight = Number(resolveHeight(style, px(cursorY), padding, border, containingHeight));
+      const padCbW = contentWidth + padding.left + padding.right;
+      const padCbH = inFlowContentHeight + padding.top + padding.bottom;
+      const padEdgeLeft = border.left;
+      const padEdgeTop = border.top;
+      for (let si = 0; si < childSlots.length; si += 1) {
+        const slot = childSlots[si]!;
+        if (slot.kind !== "abs") continue;
+        const item = slot.abs;
+        const absId = item.childNodeId;
+        const absStyle = item.childStyle;
+        const declaredTop = absStyle === null ? null : readLengthOr(absStyle["top"]);
+        const declaredLeft = absStyle === null ? null : readLengthOr(absStyle["left"]);
+        const declaredBottom = absStyle === null ? null : readLengthOr(absStyle["bottom"]);
+        const declaredRight = absStyle === null ? null : readLengthOr(absStyle["right"]);
+        let usedW = padCbW;
+        let forceH: number | undefined;
+        let topOffset: number;
+        let leftOffset: number;
+        if (declaredLeft !== null && declaredRight !== null) {
+          usedW = Math.max(0, padCbW - declaredLeft - declaredRight);
+          leftOffset = padEdgeLeft + declaredLeft;
+        } else if (declaredLeft !== null) {
+          leftOffset = padEdgeLeft + declaredLeft;
+        } else if (declaredRight !== null) {
+          leftOffset = padEdgeLeft;
+        } else {
+          leftOffset = contentLeft;
+        }
+        if (declaredTop !== null && declaredBottom !== null) {
+          forceH = Math.max(0, padCbH - declaredTop - declaredBottom);
+          topOffset = padEdgeTop + declaredTop;
+        } else if (declaredTop !== null) {
+          topOffset = padEdgeTop + declaredTop;
+        } else if (declaredBottom !== null) {
+          topOffset = padEdgeTop;
+        } else {
+          topOffset = contentTop + cursorY;
+        }
+        const childFrag = layoutNode(absId, px(usedW), forceH, forceH);
+        if (childFrag === null) {
+          childSlots[si] = { kind: "frag", id: register({ node: absId, box: buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0)), children: [] }) };
+          continue;
+        }
+        if (declaredLeft === null && declaredRight !== null) {
+          leftOffset = padEdgeLeft + Math.max(0, padCbW - declaredRight - Number(childFrag.box.marginBox.width));
+        }
+        if (declaredTop === null && declaredBottom !== null && forceH === undefined) {
+          topOffset = padEdgeTop + Math.max(0, padCbH - declaredBottom - Number(childFrag.box.marginBox.height));
+        }
+        let placed = offsetFragment(childFrag, leftOffset, topOffset);
+        if (forceH !== undefined && Number(placed.box.marginBox.height) < forceH - 0.5) {
+          const grow = forceH - Number(placed.box.marginBox.height);
+          placed = stretchFragmentHeight(placed, grow);
+        }
+        childSlots[si] = { kind: "frag", id: register(placed) };
+      }
+    }
+
+    const childIds: FragmentId[] = [];
+    for (const slot of childSlots) {
+      if (slot.kind === "frag") {
+        childIds.push(slot.id);
+      }
+    }
+
+    let contentHeight =
+      forceContentHeight !== undefined
+        ? px(Math.max(0, forceContentHeight))
+        : resolveHeight(style, px(cursorY), padding, border, containingHeight);
+    if (maxHeight !== undefined) {
+      const maxH = Math.max(0, maxHeight);
+      if (Number(contentHeight) > maxH) {
+        contentHeight = px(maxH);
+      }
+    }
     const box = buildBoxAtOrigin(margin, contentWidth, contentHeight, padding, border);
     return { node: node.id, box, children: childIds };
   }
 
   /**
-   * Inline layout (design.md §8.2 `layoutInline`; Requirements 15.3, 8.1, 8.3):
-   * shape the text run through the injected {@link TextShaper} and break it into
-   * LINE BOXES that wrap to a new line when the content would exceed the
-   * containing inline width. This is the real shape-then-break algorithm that
-   * replaces the Phase 1 single-line estimate; dropping in a HarfBuzz adapter at
-   * the {@link shaper} seam changes nothing here, because the break logic
-   * consumes only the abstract {@link ShapedRun} advances.
+   * The INLINE FORMATTING CONTEXT (task: line boxes). Lays a run of consecutive
+   * inline-level children (text nodes + display:inline / inline-block elements)
+   * into LINE BOXES flowing left-to-right, wrapping greedily at the containing
+   * width. Each member becomes its own fragment (a shaped single-line text run
+   * for text members, a laid-out box for atomic members), positioned at its
+   * (x, y) inside the run; the caller offsets them into the block's content
+   * origin. Line height per line = max of that line's members; text-align
+   * distributes each line's slack across ALL its members (row-level, unlike the
+   * single-run alignment in {@link layoutInline}).
    *
-   * ## Algorithm
-   *
-   *   1. Collapse runs of whitespace (CSS `white-space: normal`) and tokenise the
-   *      run into words, keeping whitespace as the only break opportunities.
-   *   2. Measure each word's advance and the inter-word space advance through the
-   *      shaper.
-   *   3. Greedily pack words onto the current line; when the next word (plus the
-   *      separating space) would overflow `containingWidth`, start a new line. A
-   *      single word wider than the line still occupies its own line (it
-   *      overflows rather than breaking mid-word, matching `white-space:normal`).
-   *
-   * ## Wrapped-text fragment representation (documented choice)
-   *
-   * The wrapped run is represented as a SINGLE text fragment with NO
-   * sub-fragments, whose box height spans all the lines:
-   *
-   *     height = lineCount × lineHeight     (lineHeight derives from font-size)
-   *     width  = widest line advance, clamped to the containing width
-   *
-   * Keeping it one childless fragment (rather than per-line sub-fragments) is the
-   * representation the rest of the pipeline already expects: paint treats a
-   * childless fragment as one text leaf and emits exactly one `text` command, and
-   * `getBoundingClientRect` reads this fragment's `borderBox` directly (Property
-   * 3 stays an exact identity). Because the metrics placeholder's advance ratio
-   * matches the Phase 1 estimate, a SHORT single-line run (e.g. "hello") packs
-   * onto one line, so its box is exactly `fontSize` tall — preserving the
-   * existing `<div>hello</div>` geometry the slice's downstream checks assert.
+   * A run with a single text member is behaviorally identical to `layoutInline`
+   * (one line, or word-wrapped lines), so the existing per-text-node path is
+   * byte-for-byte unchanged.
    */
-  function layoutInline(node: DomNode, containingWidth: Px): Fragment {
+  function layoutInlineRun(
+    runIds: readonly NodeId[],
+    containingWidth: Px,
+    containerStyle: ComputedStyle,
+  ): Fragment[] {
+    if (runIds.length === 0) {
+      return [];
+    }
+
+    // A member is either a TEXT run (shaped word by word) or an ATOMIC box
+    // (inline-block / inline element laid out via layoutNode, an indivisible
+    // unit that flows within the line).
+    interface TextMember {
+      readonly kind: "text";
+      readonly nodeId: NodeId;
+      readonly words: readonly string[];
+      readonly font: ShapingFont;
+      readonly letterSpacing: number;
+      readonly spaceAdvance: number; // one inter-word space (incl. word-spacing).
+      readonly wordWidths: readonly number[];
+      readonly lineHeight: number; // px of one line box for this member's font.
+      readonly wraps: boolean;
+      readonly canBreakWord: boolean;
+      readonly perCharWidths?: readonly number[];
+    }
+    interface AtomicMember {
+      readonly kind: "atomic";
+      readonly nodeId: NodeId;
+      readonly frag: Fragment; // laid out box (width is definite).
+    }
+    interface EmptyMember {
+      readonly kind: "empty";
+      readonly nodeId: NodeId; // whitespace-only text: contributes a zero box.
+    }
+    type Member = TextMember | AtomicMember | EmptyMember;
+
+    // ---- prepare members ---------------------------------------------------
+    const members: Member[] = [];
+    let runWraps = true; // default; tightened by the first text member's white-space.
+    let runWrapsSeen = false;
+    for (const memberId of runIds) {
+      const node = dom.nodes.get(memberId);
+      if (node === undefined || node.kind === "comment") {
+        continue;
+      }
+      if (node.kind === "text") {
+        const content = node.text ?? "";
+        const style = computedStyleOf(node.id);
+        const fontSize = style.fontSize;
+        const font: ShapingFont = { fontSize };
+        const letterSpacing = readSpacing(style["letterSpacing"]);
+        const wordSpacing = readSpacing(style["wordSpacing"]);
+        const spaceAdvance = shaper.shapeLine(" ", font).advance + wordSpacing;
+        const wraps = whiteSpaceWraps(readWhiteSpace(style));
+        if (!runWrapsSeen) {
+          runWraps = wraps;
+          runWrapsSeen = true;
+        } else {
+          runWraps = runWraps && wraps; // any nowrap member tightens the run.
+        }
+        const wordBreak = typeof style["wordBreak"] === "string" ? style["wordBreak"] : "normal";
+        const overflowWrap = typeof style["overflowWrap"] === "string" ? style["overflowWrap"] : "normal";
+        const breakAll = wordBreak === "break-all";
+        const breakAnywhere = overflowWrap === "anywhere" || wordBreak === "break-all";
+        const canBreakWord = overflowWrap === "break-word" || overflowWrap === "anywhere";
+        // Whitespace collapses to break opportunities; empty text yields no words.
+        const rawWords = content.split(/\s+/).filter((word) => word.length > 0);
+        const words: string[] = [];
+        if (breakAll || breakAnywhere) {
+          for (const word of rawWords) {
+            for (const ch of word) words.push(ch);
+          }
+        } else {
+          words.push(...rawWords);
+        }
+        if (words.length === 0) {
+          // Whitespace-only text member: contributes a zero box (no line), like
+          // the empty-text behaviour of `layoutInline`.
+          members.push({ kind: "empty", nodeId: memberId });
+          continue;
+        }
+        const wordWidths = words.map(
+          (word) => shaper.shapeLine(word, font).advance + letterSpacing * word.length,
+        );
+        members.push({
+          kind: "text",
+          nodeId: memberId,
+          words,
+          font,
+          letterSpacing,
+          spaceAdvance,
+          wordWidths,
+          lineHeight: readLineHeight(style) * fontSize,
+          wraps,
+          canBreakWord,
+        });
+      } else {
+        // inline / inline-block element: an atomic box. The box SHRINK-WRAPS:
+        // an auto width would otherwise fill the containing width (block
+        // behaviour) and blow the line. A box whose content is a single text
+        // node (the common `<span>text</span>` case) is measured directly and
+        // laid out once against that width — a two-pass probe would orphan the
+        // first pass's registered fragments. Everything else (declared width,
+        // images, nested boxes) lays out once as-is; a declared width is already
+        // respected by resolveWidth, and block-content atoms keep the fill width.
+        const node = dom.nodes.get(memberId);
+        const textChild =
+          node !== undefined && node.kind === "element" && node.children.length === 1
+            ? dom.nodes.get(node.children[0]!)
+            : undefined;
+        if (textChild !== undefined && textChild.kind === "text") {
+          const st = computedStyleOf(memberId);
+          const fontSize = st.fontSize;
+          const font: ShapingFont = { fontSize };
+          const words = (textChild.text ?? "").split(/\s+/).filter((word) => word.length > 0);
+          const letterSpacing = readSpacing(st["letterSpacing"]);
+          const space = shaper.shapeLine(" ", font).advance;
+          let w = 0;
+          let first = true;
+          for (const word of words) {
+            if (!first) w += space;
+            w += shaper.shapeLine(word, font).advance + letterSpacing * word.length;
+            first = false;
+          }
+          const frag = layoutNode(memberId, px(Math.max(1, w)));
+          if (frag === null) {
+            continue;
+          }
+          members.push({ kind: "atomic", nodeId: memberId, frag });
+        } else {
+          const frag = layoutNode(memberId, containingWidth);
+          if (frag === null) {
+            continue;
+          }
+          members.push({ kind: "atomic", nodeId: memberId, frag });
+        }
+      }
+    }
+    if (members.length === 0) {
+      return [];
+    }
+
+    // ---- single-member fast paths (zero-regression) --------------------------
+    // A run of ONE text member lays out exactly as `layoutInline` does: all lines
+    // share one fragment whose height = lines × line-height (the historical
+    // behaviour). A run of ONLY empty members yields their zero boxes.
+    const textMembers = members.filter((m): m is TextMember => m.kind === "text");
+    if (members.length === 1 && textMembers.length === 1 && members[0]!.kind === "text") {
+      const node = dom.nodes.get(members[0]!.nodeId);
+      if (node !== undefined && node.kind === "text") {
+        return [layoutInline(node, containingWidth, containerStyle)];
+      }
+    }
+    if (members.every((m) => m.kind === "empty")) {
+      return members.map((m) => {
+        const box = buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0));
+        return { node: (m).nodeId, box, children: [] };
+      });
+    }
+
+    // ---- greedy line boxing ------------------------------------------------
+    // Each placed item knows its line index and in-line x so the line-level
+    // text-align pass can shift whole lines uniformly.
+    interface Placed {
+      readonly member: Member;
+      readonly x: number; // in-line x BEFORE the align shift.
+      readonly line: number;
+      readonly glyphs?: LaidGlyph[]; // for text members (built during placement).
+    }
+    const placed: Placed[] = [];
+    const lineWidths: number[] = [0];
+    const lineHeights: number[] = [0];
+    let lineIndex = 0;
+    let penX = 0;
+    let lineHasAny = false;
+
+    const placeWord = (member: TextMember, word: string, startX: number, glyphY: number): LaidGlyph[] => {
+      const glyphs: LaidGlyph[] = [];
+      let x = startX;
+      for (const ch of word) {
+        const advance = shaper.shapeLine(ch, member.font).advance + member.letterSpacing;
+        glyphs.push({
+          glyphId: ch.codePointAt(0) ?? 0,
+          x: px(x),
+          y: px(glyphY),
+          advance: px(advance),
+        });
+        x += advance;
+      }
+      return glyphs;
+    };
+    const closeLine = (): void => {
+      lineWidths.push(0);
+      lineHeights.push(0);
+      lineIndex += 1;
+      penX = 0;
+    };
+    const startNewLineIfNeeded = (nextWidth: number): boolean => {
+      // Wrap when the next unit would overflow AND the line already has content.
+      if (runWraps && lineHasAny && penX + nextWidth > Number(containingWidth)) {
+        closeLine();
+        return true;
+      }
+      return false;
+    };
+
+    for (const member of members) {
+      if (member.kind === "text") {
+        // A text member contributes ONE placed item per line it occupies; the
+        // item's glyphs are the line's words (positions relative to the text
+        // fragment's content-box origin, so y is always 0 for the run's single
+        // line — the fragment itself is offset to the line's y later).
+        let lineGlyphs: LaidGlyph[] = [];
+        let lineStartX = 0;
+        let lineHasGlyphs = false;
+        const flushLine = (): void => {
+          if (!lineHasGlyphs) {
+            return;
+          }
+          placed.push({ member, x: lineStartX, line: lineIndex, glyphs: lineGlyphs });
+          lineGlyphs = [];
+          lineHasGlyphs = false;
+        };
+        for (let wi = 0; wi < member.words.length; wi += 1) {
+          const word = member.words[wi]!;
+          const w = member.wordWidths[wi]!;
+          const gap = penX > 0 ? member.spaceAdvance : 0;
+          const fits = !(runWraps && lineHasAny && penX + gap + w > Number(containingWidth));
+          if (!fits) {
+            flushLine();
+            closeLine();
+          }
+          // A line-leading word that STILL overflows (overflow-wrap: break-word
+          // / anywhere) is broken mid-word across lines.
+          if (
+            runWraps &&
+            w > Number(containingWidth) &&
+            member.canBreakWord &&
+            word.length > 1
+          ) {
+            let x = 0;
+            for (const ch of word) {
+              const cw = shaper.shapeLine(ch, member.font).advance + member.letterSpacing;
+              if (lineHasGlyphs && x + cw > Number(containingWidth)) {
+                flushLine();
+                closeLine();
+                x = 0;
+              }
+              const gl = placeWord(member, ch, x, 0);
+              lineGlyphs = lineGlyphs.concat(gl);
+              lineWidths[lineIndex] = Math.max(lineWidths[lineIndex]!, x + cw);
+              lineHeights[lineIndex] = Math.max(lineHeights[lineIndex]!, member.lineHeight);
+              if (!lineHasGlyphs) {
+                lineStartX = 0;
+                lineHasGlyphs = true;
+              }
+              penX = x + cw;
+              lineHasAny = true;
+              x += cw;
+            }
+            continue;
+          }
+          const startX = penX + gap;
+          const gl = placeWord(member, word, startX, 0);
+          lineGlyphs = lineGlyphs.concat(gl);
+          lineWidths[lineIndex] = Math.max(lineWidths[lineIndex]!, startX + w);
+          lineHeights[lineIndex] = Math.max(lineHeights[lineIndex]!, member.lineHeight);
+          if (!lineHasGlyphs) {
+            lineStartX = startX;
+            lineHasGlyphs = true;
+          }
+          penX = startX + w;
+          lineHasAny = true;
+        }
+        flushLine();
+      } else if (member.kind === "atomic") {
+        // Atomic box: an indivisible unit.
+        const w = Number(member.frag.box.marginBox.width);
+        startNewLineIfNeeded(w);
+        const x = penX;
+        placed.push({ member, x, line: lineIndex });
+        lineWidths[lineIndex] = Math.max(lineWidths[lineIndex]!, x + w);
+        lineHeights[lineIndex] = Math.max(lineHeights[lineIndex]!, Number(member.frag.box.marginBox.height));
+        penX = x + w;
+        lineHasAny = true;
+      }
+      // "empty" members produce no line and no placed item; their zero boxes are
+      // emitted at the end.
+    }
+
+    // ---- line-level text-align ---------------------------------------------
+    const align = readTextAlign(computedStyleOf(runIds[0]!));
+    const alignDeltaFor = (line: number): number => {
+      if (align === "right" || align === "end") {
+        return Math.max(0, Number(containingWidth) - lineWidths[line]!);
+      }
+      if (align === "center") {
+        return Math.max(0, Number(containingWidth) - lineWidths[line]!) / 2;
+      }
+      return 0; // start / left / justify (justify has no inter-word stretch here).
+    };
+
+    // Cumulative line Y: each line sits below the max height of the lines above.
+    const lineY: number[] = [];
+    let yAcc = 0;
+    for (let li = 0; li < lineWidths.length; li += 1) {
+      lineY.push(yAcc);
+      yAcc += lineHeights[li]!;
+    }
+
+    // ---- emit fragments -----------------------------------------------------
+    const out: Fragment[] = [];
+    // Whitespace-only members produce their zero boxes at their document order.
+    const emptyIds = members.filter((m): m is EmptyMember => m.kind === "empty").map((m) => m.nodeId);
+    for (const emptyId of emptyIds) {
+      const box = buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0));
+      out.push({ node: emptyId, box, children: [] });
+    }
+    // Group each text member's placed items by node so a member spanning several
+    // lines emits ONE fragment (like `layoutInline`): the invariant is one
+    // fragment per laid-out node (Req 3.4 / gBCR single-source), so multi-line
+    // text cannot emit one fragment per line.
+    const textGroups = new Map<NodeId, Placed[]>();
+    for (const item of placed) {
+      if (item.member.kind === "text") {
+        const group = textGroups.get(item.member.nodeId) ?? [];
+        group.push(item);
+        textGroups.set(item.member.nodeId, group);
+      }
+    }
+    const emittedText = new Set<NodeId>();
+    for (const item of placed) {
+      const lineYTop = lineY[item.line]!;
+      if (item.member.kind === "text") {
+        if (emittedText.has(item.member.nodeId)) {
+          continue; // already emitted as part of this member's merged fragment.
+        }
+        emittedText.add(item.member.nodeId);
+        const group = textGroups.get(item.member.nodeId)!;
+        const first = group[0]!;
+        const firstLineY = lineY[first.line]!;
+        const lastLine = group[group.length - 1]!.line;
+        // Box: starts at the first item's in-line x (plus its line's align
+        // shift); spans from the first line's top to the last line's bottom.
+        const boxX = first.x + alignDeltaFor(first.line);
+        const boxY = firstLineY;
+        // Glyphs are relative to the box origin: each glyph's x is shifted back
+        // by the first item's x (plus any per-line align delta difference), and
+        // its y is shifted up to the first line's top.
+        const glyphs: LaidGlyph[] = [];
+        let maxRight = 0;
+        for (const gItem of group) {
+          const dY = lineY[gItem.line]! - firstLineY;
+          const dX = alignDeltaFor(gItem.line) - alignDeltaFor(first.line);
+          for (const g of gItem.glyphs ?? []) {
+            glyphs.push({ ...g, x: px(Number(g.x) - first.x + dX), y: px(Number(g.y) + dY) });
+          }
+          maxRight = Math.max(maxRight, lineWidths[gItem.line]!);
+        }
+        const width = px(Math.max(0, maxRight - first.x));
+        const height = px(lineY[lastLine]! + lineHeights[lastLine]! - firstLineY);
+        const box = buildBoxAtOrigin(ZERO_MARGIN, width, height);
+        const firstText = first.member as TextMember;
+        const textRun: TextRun = { fontSize: firstText.font.fontSize, glyphs };
+        const base: Fragment = { node: firstText.nodeId, box, children: [], text: textRun };
+        out.push(boxX > 0 || boxY > 0 ? offsetFragment(base, boxX, boxY) : base);
+      } else if (item.member.kind === "atomic") {
+        const dx = item.x + alignDeltaFor(item.line);
+        out.push(offsetFragment(item.member.frag, dx, lineYTop));
+      }
+      // "empty" members never reach `placed` (no line, no geometry).
+    }
+    return out;
+  }
+
+  function layoutInline(node: DomNode, containingWidth: Px, containerStyle?: ComputedStyle): Fragment {
     const style = computedStyleOf(node.id);
     const fontSize = style.fontSize;
     const content = node.text ?? "";
@@ -468,8 +1081,8 @@ export function layout(
     // Whitespace collapses to break opportunities; words are the unbreakable
     // units. An empty or whitespace-only run renders no line (zero geometry),
     // matching the Phase 1 empty-text behaviour.
-    const words = content.split(/\s+/).filter((word) => word.length > 0);
-    if (words.length === 0) {
+    const rawWords = content.split(/\s+/).filter((word) => word.length > 0);
+    if (rawWords.length === 0) {
       const box = buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0));
       return { node: node.id, box, children: [] };
     }
@@ -482,6 +1095,30 @@ export function layout(
     const letterSpacing = readSpacing(style["letterSpacing"]);
     const wordSpacing = readSpacing(style["wordSpacing"]);
     const spaceAdvance = shaper.shapeLine(" ", font).advance + wordSpacing;
+
+    // `word-break` / `overflow-wrap` control mid-word breaking. `break-all` lets
+    // a word break between ANY two characters; `overflow-wrap: break-word` /
+    // `anywhere` breaks a word ONLY when it would otherwise overflow its line.
+    // We pre-split words into breakable units so the greedy line breaker can
+    // wrap them naturally.
+    const wordBreak = typeof style["wordBreak"] === "string" ? style["wordBreak"] : "normal";
+    const overflowWrap = typeof style["overflowWrap"] === "string" ? style["overflowWrap"] : "normal";
+    const perCharAdvance = (ch: string): number => shaper.shapeLine(ch, font).advance + letterSpacing;
+    const breakAll = wordBreak === "break-all";
+    const breakAnywhere = overflowWrap === "anywhere" || wordBreak === "break-all";
+    // For `break-all` / `anywhere`, every word becomes a sequence of single-char
+    // units (each is its own breakable word). For `overflow-wrap: break-word`,
+    // we keep whole words but split a word mid-way when it cannot fit on a line
+    // by itself (handled in the wrap loop below via `canBreakWord`).
+    const words: string[] = [];
+    if (breakAll || breakAnywhere) {
+      for (const word of rawWords) {
+        for (const ch of word) words.push(ch);
+      }
+    } else {
+      words.push(...rawWords);
+    }
+    const canBreakWord = overflowWrap === "break-word" || overflowWrap === "anywhere";
 
     // `white-space` controls whether the run wraps at the containing width. The
     // wrapping values (`normal`/`pre-wrap`/`pre-line`) break greedily at spaces;
@@ -512,32 +1149,104 @@ export function layout(
     };
 
     const lineWidths: number[] = [];
+    // Track the glyph index range and word count per line so `text-align:
+    // justify` can stretch inter-word gaps afterward.
+    interface LineRange {
+      readonly start: number; // first glyph index on the line.
+      readonly end: number; // one-past the last glyph index on the line.
+      readonly wordCount: number;
+    }
+    const lineRanges: LineRange[] = [];
     let current = 0; // advance of the line currently being filled.
     let lineHasContent = false;
     let lineIndex = 0;
+    let lineStartGlyph = 0;
+    let lineWordCount = 0;
+    const closeLine = (advance: number): void => {
+      lineWidths.push(advance);
+      lineRanges.push({ start: lineStartGlyph, end: glyphs.length, wordCount: lineWordCount });
+      lineStartGlyph = glyphs.length;
+      lineWordCount = 0;
+    };
     for (const word of words) {
       // `letter-spacing` adds advance after each glyph; the metrics shaper emits
       // one glyph per code unit, so the extra is `letterSpacing × word.length`
       // (0 by default ⇒ the inline width is unchanged).
       const wordAdvance = shaper.shapeLine(word, font).advance + letterSpacing * word.length;
       if (!lineHasContent) {
+        // The word is the first on its line. `overflow-wrap: break-word` lets a
+        // word that STILL overflows the line by itself break mid-word, so it wraps
+        // to multiple lines instead of overflowing as one unbreakable unit.
+        if (wraps && canBreakWord && wordAdvance > containingWidth) {
+          let penX = 0;
+          let placedAny = false;
+          for (const ch of word) {
+            const chAdvance = perCharAdvance(ch);
+            if (placedAny && penX + chAdvance > containingWidth) {
+              closeLine(penX);
+              lineIndex += 1;
+              penX = 0;
+              placeWord(ch, 0, lineIndex);
+              penX = chAdvance;
+              lineWordCount = 1;
+            } else {
+              placeWord(ch, penX, lineIndex);
+              penX += chAdvance;
+              if (!placedAny) {
+                lineWordCount = 1;
+                placedAny = true;
+              } else {
+                lineWordCount += 1;
+              }
+            }
+          }
+          current = penX;
+          lineHasContent = true;
+          continue;
+        }
         placeWord(word, 0, lineIndex);
         current = wordAdvance; // first word always fits on its (own) line.
         lineHasContent = true;
+        lineWordCount = 1;
         continue;
       }
       const tentative = current + spaceAdvance + wordAdvance;
       if (wraps && tentative > containingWidth) {
-        lineWidths.push(current); // close the current line and wrap.
+        closeLine(current); // close the current line and wrap.
         lineIndex += 1;
+        // The wrapped word is now first on the new line; if it still overflows and
+        // mid-word breaking is allowed, break it across lines.
+        if (canBreakWord && wordAdvance > containingWidth) {
+          let penX = 0;
+          for (const ch of word) {
+            const chAdvance = perCharAdvance(ch);
+            if (penX > 0 && penX + chAdvance > containingWidth) {
+              closeLine(penX);
+              lineIndex += 1;
+              penX = 0;
+              placeWord(ch, 0, lineIndex);
+              penX = chAdvance;
+              lineWordCount = 1;
+            } else {
+              placeWord(ch, penX, lineIndex);
+              penX += chAdvance;
+              lineWordCount = lineWordCount === 0 ? 1 : lineWordCount + 1;
+            }
+          }
+          current = penX;
+          lineWordCount = Math.max(1, lineWordCount);
+          continue;
+        }
         placeWord(word, 0, lineIndex);
         current = wordAdvance;
+        lineWordCount = 1;
       } else {
         placeWord(word, current + spaceAdvance, lineIndex); // after the space gap.
         current = tentative; // the word (and its space) fit on this line (or no-wrap keeps it).
+        lineWordCount += 1;
       }
     }
-    lineWidths.push(current); // close the final, in-progress line.
+    closeLine(current); // close the final, in-progress line.
 
     const lineCount = lineWidths.length; // ≥ 1 here.
     const contentHeight = px(lineCount * lineHeight);
@@ -547,15 +1256,88 @@ export function layout(
     // which may OVERFLOW the container (the overflow is then clipped/visible per
     // `overflow`). Default `normal` wraps ⇒ the clamp is unchanged.
     const contentWidth = wraps ? px(Math.min(containingWidth, widestLine)) : px(widestLine);
+    // `text-align: justify` stretches the inter-word gaps of every line EXCEPT
+    // the last so the line fills the containing width. We keep the natural layout
+    // for the last line (and for single-word lines, which have no gap to stretch).
+    const justify = readTextAlign(style) === "justify" && wraps;
+    if (justify) {
+      for (let li = 0; li < lineCount - 1; li += 1) {
+        const range = lineRanges[li]!;
+        if (range.wordCount < 2) {
+          continue; // no inter-word gap to distribute.
+        }
+        const slack = Math.max(0, containingWidth - lineWidths[li]!);
+        if (slack <= 0) {
+          continue; // already flush.
+        }
+        const extraPerGap = slack / (range.wordCount - 1);
+        // The glyph stream placed words in DOM order; word boundaries are the
+        // glyph positions where a new word began (a word's first glyph). We walk
+        // the line's glyphs left to right and accumulate the cumulative stretch
+        // at each detected word start.
+        let wordOnLine = 0;
+        for (let gi = range.start; gi < range.end; gi += 1) {
+          const g = glyphs[gi]!;
+          // A word starts at x === 0 (line start) OR when the previous glyph's
+          // right edge left a space-sized gap (the natural word boundary the
+          // placer introduced). Detect the gap: previous glyph advance + its x
+          // is less than this glyph's x by roughly spaceAdvance.
+          if (gi > range.start) {
+            const prev = glyphs[gi - 1]!;
+            const gap = Number(g.x) - (Number(prev.x) + Number(prev.advance));
+            if (gap >= spaceAdvance * 0.5) {
+              wordOnLine += 1;
+            }
+          }
+          const shift = extraPerGap * wordOnLine;
+          glyphs[gi] = { ...g, x: px(Number(g.x) + shift) };
+        }
+      }
+    }
     // `text-align` shifts the inline content horizontally within the containing
     // width. We model the run as one box of width `contentWidth`, so alignment
     // is a horizontal offset of that box inside `containingWidth`: `start`/`left`
     // ⇒ 0 (unchanged), `end`/`right` ⇒ all the slack, `center` ⇒ half. `justify`
-    // has no inter-word stretching in this single-box model, so it lays as
-    // `start`. The initial value is `start`, so an undeclared run is unchanged.
-    const alignDelta = textAlignOffset(readTextAlign(style), containingWidth, contentWidth);
+    // lines are flush to both edges already, so the box offset is 0 (start).
+    const alignDelta = justify
+      ? 0
+      : textAlignOffset(readTextAlign(style), containingWidth, contentWidth);
+    // `text-overflow: ellipsis` (with `overflow` clipping on the box): a SINGLE
+    // line whose natural width exceeds the content width is truncated to fit and
+    // an ellipsis glyph ("…" U+2026) is appended. Multi-line wrapping runs keep
+    // their full content (ellipsis applies to the clipped overflow of a line box,
+    // not to wrapping). The caller's box clips whatever remains.
+    let ellipsisedGlyphs = glyphs;
+    // `text-overflow: ellipsis` is a NON-inherited property of the BLOCK
+    // container, so when this text run was reached via a block's inline run, the
+    // container's value wins over the text node's own (inherited) value.
+    const textOverflowSource = containerStyle ?? style;
+    const textOverflow =
+      typeof textOverflowSource["textOverflow"] === "string" ? textOverflowSource["textOverflow"] : "clip";
+    if (
+      !wraps &&
+      widestLine > containingWidth &&
+      textOverflow === "ellipsis"
+    ) {
+      const ellipsisAdvance = shaper.shapeLine("\u2026", font).advance;
+      const budget = Math.max(0, containingWidth - ellipsisAdvance);
+      const kept: LaidGlyph[] = [];
+      for (const g of glyphs) {
+        if (Number(g.x) + Number(g.advance) > budget) break;
+        kept.push(g);
+      }
+      if (kept.length < glyphs.length) {
+        kept.push({
+          glyphId: 0x2026,
+          x: px(budget),
+          y: px(0),
+          advance: px(ellipsisAdvance),
+        });
+        ellipsisedGlyphs = kept;
+      }
+    }
     const box = buildBoxAtOrigin(ZERO_MARGIN, contentWidth, contentHeight);
-    const textRun: TextRun = { fontSize, glyphs };
+    const textRun: TextRun = { fontSize, glyphs: ellipsisedGlyphs };
     const base: Fragment = { node: node.id, box, children: [], text: textRun };
     return alignDelta > 0 ? offsetFragment(base, alignDelta, 0) : base;
   }
@@ -579,7 +1361,7 @@ export function layout(
    * `flex-direction` is read defensively off the open ComputedStyle index
    * signature (see the module doc); an absent/unknown value means `row`.
    */
-  function layoutFlex(node: DomNode, containingWidth: Px): Fragment {
+  function layoutFlex(node: DomNode, containingWidth: Px, containingHeight?: number, forceContentHeight?: number): Fragment {
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
     const contentWidth = resolveWidth(style, containingWidth, margin);
@@ -588,18 +1370,85 @@ export function layout(
     const childIds: FragmentId[] = [];
 
     if (direction === "column") {
-      // Column main axis ⇒ stack vertically at the cross-start (left) edge.
-      let cursorY = 0;
+      // Column: main axis = vertical (justify-content packs Y), cross axis =
+      // horizontal (align-items aligns X against the content width).
+      const justify = readJustifyContent(style);
+      const align = readAlignItems(style);
+      const mainGap = readFlexGap(style, contentWidth).cross;
+      // `order`: collect child ids, drop non-box children, then stable-sort by order.
+      const orderedIds: { readonly id: NodeId; readonly order: number; readonly seq: number }[] = [];
+      const colAbsIds: NodeId[] = [];
+      let colSeq = 0;
       for (const childNodeId of node.children) {
-        const frag = layoutNode(childNodeId, contentWidth);
+        const childNode = dom.nodes.get(childNodeId);
+        if (childNode === undefined || childNode.kind === "comment") continue;
+        if (childNode.kind === "text" && (childNode.text ?? "").trim().length === 0) continue;
+        const childStyle = childStyleOf(childNodeId);
+        if (childStyle !== null) {
+          const pos = readPosition(childStyle);
+          if (pos === "absolute" || pos === "fixed") {
+            colAbsIds.push(childNodeId);
+            continue;
+          }
+        }
+        const order = childStyle === null ? 0 : readOrder(childStyle);
+        orderedIds.push({ id: childNodeId, order, seq: colSeq });
+        colSeq += 1;
+      }
+      orderedIds.sort((a, b) => (a.order !== b.order ? a.order - b.order : a.seq - b.seq));
+      interface ColPlaced {
+        readonly frag: Fragment;
+        readonly packedY: number;
+      }
+      const placed: ColPlaced[] = [];
+      let cursorY = 0;
+      let usedMain = 0;
+      let placedCount = 0;
+      const childContainingHeight = forceContentHeight ?? containingHeight;
+      for (const { id: childNodeId } of orderedIds) {
+        const frag = layoutNode(childNodeId, contentWidth, childContainingHeight);
         if (frag === null) {
           continue;
         }
-        const placed = offsetFragment(frag, 0, cursorY);
-        childIds.push(register(placed));
-        cursorY += placed.box.marginBox.height;
+        if (placedCount > 0 && mainGap > 0) {
+          cursorY += mainGap;
+          usedMain += mainGap;
+        }
+        placed.push({ frag, packedY: cursorY });
+        cursorY += frag.box.marginBox.height;
+        usedMain += frag.box.marginBox.height;
+        placedCount += 1;
       }
-      const contentHeight = resolveHeight(style, px(cursorY));
+      const justifyFree = Math.max(0, resolveHeight(style, px(usedMain)) - usedMain);
+      const { leading: justifyLeading, between: justifyBetween } = justifyOffsets(
+        justify,
+        justifyFree,
+        placed.length,
+      );
+      for (let i = 0; i < placed.length; i += 1) {
+        const { frag, packedY } = placed[i]!;
+        const mainY = packedY + justifyLeading + justifyBetween * i;
+        const crossX = alignOffset(align, frag.box.marginBox.width, contentWidth);
+        childIds.push(register(offsetFragment(frag, crossX, mainY)));
+      }
+      const contentHeight =
+        forceContentHeight !== undefined
+          ? px(Math.max(0, forceContentHeight))
+          : resolveHeight(style, px(usedMain), ZERO_MARGIN, ZERO_MARGIN, containingHeight);
+      for (const absId of colAbsIds) {
+        const placed = placeAbsoluteFragment(
+          layoutNode,
+          absId,
+          childStyleOf(absId),
+          contentWidth,
+          Number(contentHeight),
+          0,
+          0,
+          0,
+          0,
+        );
+        if (placed !== null) childIds.push(register(placed));
+      }
       const box = buildBoxAtOrigin(margin, contentWidth, contentHeight);
       return { node: node.id, box, children: childIds };
     }
@@ -612,51 +1461,185 @@ export function layout(
       readonly flexible: boolean;
       readonly edges: Edges<Px>; // the item's own margins (0 for text/null).
       readonly fixedInnerWidth: Px; // declared content width when fixed (else 0).
+      readonly order: number; // flex `order` (initial 0).
+      readonly seq: number; // document order (for stable sort ties).
+      readonly flexGrow: number; // `flex-grow` factor (initial 0).
     }
     const rowItems: RowItem[] = [];
     let fixedOuterMain = 0;
     let flexibleCount = 0;
+    let totalGrow = 0;
+    let itemSeq = 0;
+    const absChildIds: NodeId[] = [];
     for (const childNodeId of node.children) {
       const childNode = dom.nodes.get(childNodeId);
       if (childNode === undefined || childNode.kind === "comment") {
-        continue; // produces no box.
+        continue;
+      }
+      if (childNode.kind === "text" && (childNode.text ?? "").trim().length === 0) {
+        continue;
       }
       const childStyle = childStyleOf(childNodeId);
+      if (childStyle !== null) {
+        const pos = readPosition(childStyle);
+        if (pos === "absolute" || pos === "fixed") {
+          absChildIds.push(childNodeId);
+          continue;
+        }
+      }
       const edges = childStyle === null ? ZERO_MARGIN : resolveMargin(childStyle);
-      const declared = childStyle === null ? null : declaredWidthOf(childStyle);
-      if (declared !== null) {
+      const declared = childStyle === null ? null : declaredWidthOf(childStyle, contentWidth);
+      let emptyShell = false;
+      if (
+        declared !== null &&
+        childNode.kind === "element" &&
+        childStyle !== null &&
+        typeof childStyle["height"] !== "number"
+      ) {
+        let hasContent = false;
+        for (const cid of childNode.children) {
+          const c = dom.nodes.get(cid);
+          if (c === undefined || c.kind === "comment") continue;
+          if (c.kind === "text" && (c.text ?? "").trim().length === 0) continue;
+          if (c.kind === "element") {
+            const d = readDisplay(computedStyleOf(cid));
+            if (d === "none") continue;
+            const p = readPosition(computedStyleOf(cid));
+            if (p === "absolute" || p === "fixed") continue;
+          }
+          hasContent = true;
+          break;
+        }
+        if (!hasContent) emptyShell = true;
+      }
+      const order = childStyle === null ? 0 : readOrder(childStyle);
+      const flexGrow = childStyle === null ? 0 : readFlexGrow(childStyle);
+      const seq = itemSeq;
+      itemSeq += 1;
+      if (declared !== null && !emptyShell) {
         const outer = declared + edges.left + edges.right;
         fixedOuterMain += outer;
-        rowItems.push({ nodeId: childNodeId, flexible: false, edges, fixedInnerWidth: px(declared) });
+        rowItems.push({ nodeId: childNodeId, flexible: false, edges, fixedInnerWidth: px(declared), order, seq, flexGrow });
+      } else if (emptyShell) {
+        flexibleCount += 1;
+        totalGrow += flexGrow;
+        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow });
       } else {
         flexibleCount += 1;
-        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0) });
+        totalGrow += flexGrow;
+        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow });
       }
     }
 
     const freeMain = Math.max(0, contentWidth - fixedOuterMain);
-    const flexOuterShare = flexibleCount > 0 ? freeMain / flexibleCount : 0;
+    // `flex-grow`: when at least one flexible item declares a positive grow
+    // factor, the free main space is shared PROPORTIONALLY to each item's grow
+    // factor (flex-basis is treated as auto/0 here). When no grow factors are
+    // set, fall back to equal shares (the original "equal columns" behaviour).
+    const growShare = (item: { readonly flexGrow: number }): number =>
+      totalGrow > 0 ? freeMain * (item.flexGrow / totalGrow) : freeMain / Math.max(1, flexibleCount);
+    const justify = readJustifyContent(style);
+    const align = readAlignItems(style);
+    const flexGap = readFlexGap(style, contentWidth);
+    const mainGap = flexGap.main;
 
-    // Pass 2: lay each item out at its final main size and pack along the axis.
-    let cursorX = 0;
+    // `order`: items are reordered by ascending `order`, ties broken by document
+    // order (a stable sort). This reorders BOTH fixed and flexible items.
+    const orderedItems = [...rowItems].sort((a, b) => {
+      const ao = a.order;
+      const bo = b.order;
+      return ao !== bo ? ao - bo : a.seq - b.seq;
+    });
+
+    // Pass 2: lay each item out at its final main size and pack it into LINES.
+    // Without `flex-wrap` there is exactly one line — behaviour identical to the
+    // historical single-line pack. With `wrap`, items that would overflow the
+    // main axis start a new line; each line justifies independently and `align-
+    // items` resolves against the LINE's cross size. `gap` adds `mainGap`
+    // between items on a line and `rowGap` between lines.
+    const wrap = readFlexWrap(style);
+    const rowGap = readFlexGap(style, contentWidth).cross;
+    interface PlacedItem {
+      readonly frag: Fragment;
+      readonly packedX: number; // main-axis position before justify adjustment.
+    }
+    interface FlexLine {
+      readonly items: PlacedItem[];
+      readonly width: number; // sum of the line's margin-box widths (+ main gaps).
+      readonly height: number; // tallest item on the line.
+    }
+    const lines: FlexLine[] = [];
+    let line: { items: PlacedItem[]; width: number; height: number } = { items: [], width: 0, height: 0 };
     let maxHeight = 0;
-    for (const item of rowItems) {
-      // A flexible item is laid against its inner share (outer share minus its
+    for (const item of orderedItems) {
+      // A flexible item is laid against its inner share (its grow share minus its
       // own margins) so its auto width genuinely fills the distributed space; a
       // fixed item keeps its declared width regardless of the containing value.
       const innerWidth = item.flexible
-        ? px(Math.max(0, flexOuterShare - item.edges.left - item.edges.right))
+        ? px(Math.max(0, growShare(item) - item.edges.left - item.edges.right))
         : item.fixedInnerWidth;
-      const frag = layoutNode(item.nodeId, innerWidth);
+      const frag = layoutNode(item.nodeId, innerWidth, forceContentHeight ?? containingHeight);
       if (frag === null) {
         continue;
       }
-      const positioned = offsetFragment(frag, cursorX, 0); // cross-start top.
-      childIds.push(register(positioned));
-      cursorX += positioned.box.marginBox.width; // pack along the main axis.
-      maxHeight = Math.max(maxHeight, positioned.box.marginBox.height);
+      const w = Number(frag.box.marginBox.width);
+      const h = Number(frag.box.marginBox.height);
+      const gap = line.items.length > 0 ? mainGap : 0;
+      // Wrap: the next item would overflow the line and wrapping is enabled.
+      if (wrap && line.items.length > 0 && line.width + gap + w > contentWidth) {
+        lines.push(line);
+        line = { items: [], width: 0, height: 0 };
+      }
+      const packedX = line.width + (line.items.length > 0 ? mainGap : 0);
+      line.items.push({ frag, packedX });
+      line.width = packedX + w;
+      line.height = Math.max(line.height, h);
+      maxHeight = Math.max(maxHeight, h);
     }
-    const contentHeight = resolveHeight(style, px(maxHeight));
+    lines.push(line);
+    // The cross-axis size for a NON-wrapping container is the larger of the
+    // tallest item and the container's declared cross size (historical
+    // behaviour); for a wrapping container each line resolves against its own
+    // height.
+    const declaredCross = Number(resolveHeight(style, px(maxHeight)));
+    let yAcc = 0;
+    for (let li = 0; li < lines.length; li += 1) {
+      const l = lines[li]!;
+      // `space-*` distribute THIS line's free space (its own width, not the
+      // container's), so each line's justify-content lines up with its content.
+      const justifyFree = Math.max(0, contentWidth - l.width);
+      const { leading: justifyLeading, between: justifyBetween } = justifyOffsets(
+        justify,
+        justifyFree,
+        l.items.length,
+      );
+      const crossSize = wrap ? l.height : Math.max(maxHeight, declaredCross);
+      for (let i = 0; i < l.items.length; i += 1) {
+        const { frag, packedX } = l.items[i]!;
+        const mainX = packedX + justifyLeading + justifyBetween * i;
+        const crossY = yAcc + alignOffset(align, frag.box.marginBox.height, crossSize);
+        childIds.push(register(offsetFragment(frag, mainX, crossY)));
+      }
+      yAcc += l.height + (li < lines.length - 1 ? rowGap : 0);
+    }
+    const contentHeight =
+      forceContentHeight !== undefined
+        ? px(Math.max(0, forceContentHeight))
+        : resolveHeight(style, px(wrap ? yAcc : maxHeight), ZERO_MARGIN, ZERO_MARGIN, containingHeight);
+    for (const absId of absChildIds) {
+      const placed = placeAbsoluteFragment(
+        layoutNode,
+        absId,
+        childStyleOf(absId),
+        contentWidth,
+        Number(contentHeight),
+        0,
+        0,
+        0,
+        0,
+      );
+      if (placed !== null) childIds.push(register(placed));
+    }
     const box = buildBoxAtOrigin(margin, contentWidth, contentHeight);
     return { node: node.id, box, children: childIds };
   }
@@ -673,47 +1656,141 @@ export function layout(
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
     const contentWidth = resolveWidth(style, containingWidth, margin);
-    const columns = readGridColumns(style);
-    const cellWidth = px(contentWidth / columns);
+    const gaps = readGridGaps(style, contentWidth);
+    const tracks = parseGridTracks(style["gridTemplateColumns"]);
+    const colCountHint = Math.max(1, tracks.length);
+    const trackBudget = Math.max(0, contentWidth - gaps.column * Math.max(0, colCountHint - 1));
+    const colWidths = resolveTrackWidths(tracks, trackBudget);
+    const colCount = Math.max(1, colWidths.length);
+    const colOffsets: number[] = [];
+    {
+      let acc = 0;
+      for (let i = 0; i < colCount; i += 1) {
+        colOffsets.push(acc);
+        acc += colWidths[i]! + (i < colCount - 1 ? gaps.column : 0);
+      }
+    }
 
-    // Lay each child against the cell width (children that produce a box).
-    const cells: Fragment[] = [];
+    type Placement = {
+      nodeId: NodeId;
+      col: number;
+      row: number;
+      colSpan: number;
+      rowSpan: number;
+      frag: Fragment;
+    };
+    const placements: Placement[] = [];
+    const occupied = new Set<string>();
+    const key = (r: number, c: number) => `${r},${c}`;
+    const mark = (r: number, c: number, rs: number, cs: number) => {
+      for (let rr = r; rr < r + rs; rr += 1) {
+        for (let cc = c; cc < c + cs; cc += 1) {
+          occupied.add(key(rr, cc));
+        }
+      }
+    };
+    const free = (r: number, c: number, rs: number, cs: number): boolean => {
+      if (c < 0 || c + cs > colCount) return false;
+      for (let rr = r; rr < r + rs; rr += 1) {
+        for (let cc = c; cc < c + cs; cc += 1) {
+          if (occupied.has(key(rr, cc))) return false;
+        }
+      }
+      return true;
+    };
+    const findAuto = (colSpan: number, rowSpan: number, fixedCol: number | null): { col: number; row: number } => {
+      let row = 0;
+      for (;;) {
+        if (fixedCol !== null) {
+          if (free(row, fixedCol, rowSpan, colSpan)) return { col: fixedCol, row };
+        } else {
+          for (let col = 0; col <= colCount - colSpan; col += 1) {
+            if (free(row, col, rowSpan, colSpan)) return { col, row };
+          }
+        }
+        row += 1;
+        if (row > 10000) return { col: 0, row: 0 };
+      }
+    };
+
     for (const childNodeId of node.children) {
-      const frag = layoutNode(childNodeId, cellWidth);
-      if (frag !== null) {
-        cells.push(frag);
+      const childStyle = childStyleOf(childNodeId);
+      if (childStyle !== null) {
+        const pos = readPosition(childStyle);
+        if (pos === "absolute" || pos === "fixed") {
+          continue;
+        }
+      }
+      const colPlace = parseGridPlacement(childStyle === null ? undefined : childStyle["gridColumn"]);
+      const rowPlace = parseGridPlacement(childStyle === null ? undefined : childStyle["gridRow"]);
+      const colSpan = Math.max(1, Math.min(colCount, colPlace.span));
+      const rowSpan = Math.max(1, rowPlace.span);
+      let col: number;
+      let row: number;
+      if (colPlace.start !== null && rowPlace.start !== null) {
+        col = Math.max(0, Math.min(colCount - colSpan, colPlace.start - 1));
+        row = Math.max(0, rowPlace.start - 1);
+      } else if (colPlace.start !== null) {
+        const fixedCol = Math.max(0, Math.min(colCount - colSpan, colPlace.start - 1));
+        const found = findAuto(colSpan, rowSpan, fixedCol);
+        col = found.col;
+        row = found.row;
+      } else if (rowPlace.start !== null) {
+        row = Math.max(0, rowPlace.start - 1);
+        let foundCol = 0;
+        for (let c = 0; c <= colCount - colSpan; c += 1) {
+          if (free(row, c, rowSpan, colSpan)) {
+            foundCol = c;
+            break;
+          }
+        }
+        col = foundCol;
+      } else {
+        const found = findAuto(colSpan, rowSpan, null);
+        col = found.col;
+        row = found.row;
+      }
+      let cellW = 0;
+      for (let c = col; c < col + colSpan && c < colCount; c += 1) {
+        cellW += colWidths[c]!;
+      }
+      const frag = layoutNode(childNodeId, px(Math.max(0, cellW)));
+      if (frag === null) {
+        continue;
+      }
+      mark(row, col, rowSpan, colSpan);
+      placements.push({ nodeId: childNodeId, col, row, colSpan, rowSpan, frag });
+    }
+
+    const maxRow = placements.reduce((m, p) => Math.max(m, p.row + p.rowSpan), 0);
+    const rowHeights = new Array<number>(Math.max(1, maxRow)).fill(0);
+    for (const p of placements) {
+      rowHeights[p.row] = Math.max(rowHeights[p.row]!, p.frag.box.marginBox.height);
+    }
+    const rowOffsets: number[] = [];
+    {
+      let acc = 0;
+      for (let r = 0; r < rowHeights.length; r += 1) {
+        rowOffsets.push(acc);
+        acc += rowHeights[r]! + (r < rowHeights.length - 1 ? gaps.row : 0);
       }
     }
 
     const childIds: FragmentId[] = [];
-    let cursorY = 0;
-    for (let i = 0; i < cells.length; i += columns) {
-      const row = cells.slice(i, i + columns);
-      const rowHeight = row.reduce(
-        (max, cell) => Math.max(max, cell.box.marginBox.height),
-        0,
-      );
-      row.forEach((cell, col) => {
-        const placed = offsetFragment(cell, col * cellWidth, cursorY);
-        childIds.push(register(placed));
-      });
-      cursorY += rowHeight; // next row starts below the tallest cell.
+    for (const p of placements) {
+      const x = colOffsets[p.col] ?? 0;
+      const y = rowOffsets[p.row] ?? 0;
+      childIds.push(register(offsetFragment(p.frag, x, y)));
     }
 
-    const contentHeight = resolveHeight(style, px(cursorY));
+    const totalH =
+      rowHeights.reduce((a, h) => a + h, 0) +
+      gaps.row * Math.max(0, rowHeights.length - 1);
+    const contentHeight = resolveHeight(style, px(totalH));
     const box = buildBoxAtOrigin(margin, contentWidth, contentHeight);
     return { node: node.id, box, children: childIds };
   }
 
-  /**
-   * Multi-column layout BRANCH (CSS Multi-column). An element with
-   * `column-count` > 1 (or a `column-width` that fits ≥ 2 columns in the content
-   * width) flows its block children into N equal-width columns separated by
-   * `column-gap`, balanced by count (`column-fill: balance` — the default): each
-   * column gets a contiguous run of ⌈children/N⌉ children, stacked vertically.
-   * Each column is laid against the column width; the box's content height is
-   * the tallest column. Produces ordinary {@link Fragment}s (no IR change).
-   */
   function layoutMulticol(node: DomNode, containingWidth: Px): Fragment {
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
@@ -888,6 +1965,22 @@ function readPx(value: unknown): Px {
   return typeof value === "number" && Number.isFinite(value) ? px(Math.max(0, value)) : px(0);
 }
 
+/**
+ * Detect a percentage specified-length value (shape: `{ kind: "specified-length",
+ * unit: "%", value: <n> }`) WITHOUT importing the generator (cross-stage boundary).
+ * Returns the numeric percentage (e.g. `50` for `50%`), or `null` when the value
+ * is not a percentage. This lets {@link resolveWidth}/{@link resolveHeight} resolve
+ * `width: 50%` / `height: 50%` against their containing block.
+ */
+function percentOf(value: unknown): number | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as { kind?: unknown; unit?: unknown; value?: unknown };
+  if (v.kind === "specified-length" && v.unit === "%" && typeof v.value === "number" && Number.isFinite(v.value)) {
+    return v.value;
+  }
+  return null;
+}
+
 /** Narrow an `unknown` value to a non-negative {@link Edges}<Px>, or `null`. */
 function readEdgesPx(value: unknown): Edges<Px> | null {
   if (typeof value !== "object" || value === null) {
@@ -911,10 +2004,58 @@ function readEdgesPx(value: unknown): Edges<Px> | null {
  * quad, else 0. Both `padding: 10px` (only the shorthand set) and
  * `padding-top: 5px` (only the longhand set) therefore resolve correctly.
  */
-function resolvePadding(style: ComputedStyle): Edges<Px> {
-  const sh = readEdgesPx(style["padding"]) ?? ZERO_MARGIN;
+function readLengthAgainstWidth(value: unknown, containingWidth: number): Px {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return px(Math.max(0, value));
+  }
+  if (typeof value === "string") {
+    const pct = /^(-?\d+(?:\.\d+)?)%$/.exec(value.trim());
+    if (pct !== null) {
+      return px(Math.max(0, (Number(pct[1]) / 100) * containingWidth));
+    }
+    const pxm = /^(-?\d+(?:\.\d+)?)px$/i.exec(value.trim());
+    if (pxm !== null) {
+      return px(Math.max(0, Number(pxm[1])));
+    }
+  }
+  if (typeof value === "object" && value !== null) {
+    const v = value as { kind?: unknown; unit?: unknown; value?: unknown };
+    if (v.unit === "%" && typeof v.value === "number" && Number.isFinite(v.value)) {
+      return px(Math.max(0, (v.value / 100) * containingWidth));
+    }
+    if (typeof v.value === "number" && Number.isFinite(v.value) && (v.unit === "px" || v.unit === undefined) && v.kind !== "specified-length") {
+      return px(Math.max(0, v.value));
+    }
+    if (v.kind === "specified-length" && typeof v.value === "number" && Number.isFinite(v.value)) {
+      if (v.unit === "%") return px(Math.max(0, (v.value / 100) * containingWidth));
+      if (v.unit === "px" || v.unit === undefined) return px(Math.max(0, v.value));
+    }
+  }
+  return px(0);
+}
+
+function resolvePadding(style: ComputedStyle, containingWidth: number = 0): Edges<Px> {
+  const raw = style["padding"];
+  const sh: Edges<Px> = {
+    top: readLengthAgainstWidth(
+      typeof raw === "object" && raw !== null && "top" in (raw) ? (raw).top : raw,
+      containingWidth,
+    ),
+    right: readLengthAgainstWidth(
+      typeof raw === "object" && raw !== null && "right" in (raw) ? (raw).right : raw,
+      containingWidth,
+    ),
+    bottom: readLengthAgainstWidth(
+      typeof raw === "object" && raw !== null && "bottom" in (raw) ? (raw).bottom : raw,
+      containingWidth,
+    ),
+    left: readLengthAgainstWidth(
+      typeof raw === "object" && raw !== null && "left" in (raw) ? (raw).left : raw,
+      containingWidth,
+    ),
+  };
   const pick = (longhand: unknown, short: Px): Px => {
-    const lv = readPx(longhand);
+    const lv = readLengthAgainstWidth(longhand, containingWidth);
     return lv > 0 ? lv : short;
   };
   return {
@@ -966,7 +2107,20 @@ function readBoxSizing(style: ComputedStyle): "content-box" | "border-box" {
 /** The `line-height` multiplier (a unitless `<number>`); absent/invalid ⇒ 1.0. */
 function readLineHeight(style: ComputedStyle): number {
   const value = style["lineHeight"];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 1.0;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  // `line-height` is declared as a STRING property in the data table, so a
+  // unitless multiplier (`line-height: 2`) reaches layout as the string "2".
+  // Accept a numeric string (and reject "normal"/length strings, which need a
+  // different resolution path we do not yet implement).
+  if (typeof value === "string" && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.trim())) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) {
+      return n;
+    }
+  }
+  return 1.0;
 }
 
 /** A `<length>` spacing field (`letter-spacing`/`word-spacing`), may be negative; absent ⇒ 0. */
@@ -1072,10 +2226,19 @@ function resolveWidth(
     // the declared length IS the content width. Zero insets ⇒ identical.
     content = boxSizing === "border-box" ? declared - insetX : declared;
   } else {
-    // `auto`: the BORDER box fills the containing block minus horizontal
-    // margins, so the content width is that minus this box's own padding+border.
-    // Zero insets ⇒ the Phase-1 `containingWidth - margins` behaviour, unchanged.
-    content = containingWidth - margin.left - margin.right - insetX;
+    const pct = percentOf(declared);
+    if (pct !== null) {
+      // `width: <percent>` resolves against the containing block's content width
+      // (minus this box's margins, matching the auto-width basis). The result is
+      // the BORDER-box percentage; reduce by insets for content-box sizing.
+      const basis = containingWidth - margin.left - margin.right;
+      content = boxSizing === "border-box" ? (pct * basis) / 100 - insetX : (pct * basis) / 100;
+    } else {
+      // `auto`: the BORDER box fills the containing block minus horizontal
+      // margins, so the content width is that minus this box's own padding+border.
+      // Zero insets ⇒ the Phase-1 `containingWidth - margins` behaviour, unchanged.
+      content = containingWidth - margin.left - margin.right - insetX;
+    }
   }
   // Clamp against min-width/max-width (absent ⇒ unchanged).
   return clampSize(px(Math.max(0, content)), style["minWidth"], style["maxWidth"], insetX, boxSizing);
@@ -1092,6 +2255,7 @@ function resolveHeight(
   contentHeight: Px,
   padding: Edges<Px> = ZERO_MARGIN,
   border: Edges<Px> = ZERO_MARGIN,
+  containingHeight?: number,
 ): Px {
   const insetY = padding.top + padding.bottom + border.top + border.bottom;
   const boxSizing = readBoxSizing(style);
@@ -1100,7 +2264,21 @@ function resolveHeight(
   if (typeof declared === "number") {
     content = boxSizing === "border-box" ? declared - insetY : declared;
   } else {
-    content = contentHeight;
+    const pct = percentOf(declared);
+    if (pct !== null) {
+      // `height: <percent>` resolves against the containing block's DEFINITE
+      // height (passed in as `containingHeight`). When the containing height is
+      // not definite (undefined / non-positive), the spec says the percentage
+      // behaves as `auto` — fall through to the element's content height.
+      const basis = containingHeight;
+      if (basis === undefined || !Number.isFinite(basis) || basis <= 0) {
+        content = contentHeight;
+      } else {
+        content = boxSizing === "border-box" ? (pct * basis) / 100 - insetY : (pct * basis) / 100;
+      }
+    } else {
+      content = contentHeight;
+    }
   }
   // Clamp against min-height/max-height (absent ⇒ unchanged).
   return clampSize(px(Math.max(0, content)), style["minHeight"], style["maxHeight"], insetY, boxSizing);
@@ -1175,6 +2353,89 @@ function buildBoxAtOrigin(
 
 /** Return a copy of `frag` with its own box translated by `(dx, dy)`. Descendant
  * fragments are relative to `frag`, so they are intentionally left untouched. */
+
+function placeAbsoluteFragment(
+  layoutNodeFn: (id: NodeId, w: Px, ch?: number, forceH?: number) => Fragment | null,
+  childNodeId: NodeId,
+  childStyle: ComputedStyle | null,
+  padCbW: number,
+  padCbH: number,
+  padEdgeLeft: number,
+  padEdgeTop: number,
+  staticLeft: number,
+  staticTop: number,
+): Fragment | null {
+  const declaredTop = childStyle === null ? null : readLengthOr(childStyle["top"]);
+  const declaredLeft = childStyle === null ? null : readLengthOr(childStyle["left"]);
+  const declaredBottom = childStyle === null ? null : readLengthOr(childStyle["bottom"]);
+  const declaredRight = childStyle === null ? null : readLengthOr(childStyle["right"]);
+  let usedW = padCbW;
+  let forceH: number | undefined;
+  let topOffset: number;
+  let leftOffset: number;
+  if (declaredLeft !== null && declaredRight !== null) {
+    usedW = Math.max(0, padCbW - declaredLeft - declaredRight);
+    leftOffset = padEdgeLeft + declaredLeft;
+  } else if (declaredLeft !== null) {
+    leftOffset = padEdgeLeft + declaredLeft;
+  } else if (declaredRight !== null) {
+    leftOffset = padEdgeLeft;
+  } else {
+    leftOffset = staticLeft;
+  }
+  if (declaredTop !== null && declaredBottom !== null) {
+    forceH = Math.max(0, padCbH - declaredTop - declaredBottom);
+    topOffset = padEdgeTop + declaredTop;
+  } else if (declaredTop !== null) {
+    topOffset = padEdgeTop + declaredTop;
+  } else if (declaredBottom !== null) {
+    topOffset = padEdgeTop;
+  } else {
+    topOffset = staticTop;
+  }
+  const childFrag = layoutNodeFn(childNodeId, px(usedW), forceH, forceH);
+  if (childFrag === null) return null;
+  if (declaredLeft === null && declaredRight !== null) {
+    leftOffset = padEdgeLeft + Math.max(0, padCbW - declaredRight - Number(childFrag.box.marginBox.width));
+  }
+  if (declaredTop === null && declaredBottom !== null && forceH === undefined) {
+    topOffset = padEdgeTop + Math.max(0, padCbH - declaredBottom - Number(childFrag.box.marginBox.height));
+  }
+  let placed = offsetFragment(childFrag, leftOffset, topOffset);
+  if (forceH !== undefined && Number(placed.box.marginBox.height) < forceH - 0.5) {
+    placed = stretchFragmentHeight(placed, forceH - Number(placed.box.marginBox.height));
+  }
+  return placed;
+}
+
+function stretchFragmentHeight(frag: Fragment, grow: number): Fragment {
+  if (!(grow > 0)) return frag;
+  const box = frag.box;
+  return {
+    ...frag,
+    box: {
+      ...box,
+      height: px(Number(box.height) + grow),
+      contentBox: {
+        ...box.contentBox,
+        height: px(Number(box.contentBox.height) + grow),
+      },
+      paddingBox: {
+        ...box.paddingBox,
+        height: px(Number(box.paddingBox.height) + grow),
+      },
+      borderBox: {
+        ...box.borderBox,
+        height: px(Number(box.borderBox.height) + grow),
+      },
+      marginBox: {
+        ...box.marginBox,
+        height: px(Number(box.marginBox.height) + grow),
+      },
+    },
+  };
+}
+
 function offsetFragment(frag: Fragment, dx: number, dy: number): Fragment {
   const b = frag.box;
   return {
@@ -1259,9 +2520,85 @@ function makeRect(x: Px, y: Px, width: Px, height: Px): Rect {
  * keyword — which the `DisplayValue` union does not yet include because the
  * generator does not emit it — can still be matched by the layout dispatch.
  */
+/**
+ * The set of display values the layout dispatcher recognizes as real layout
+ * branches. Legacy/vendor values are normalized INTO these by {@link readDisplay}.
+ */
+const LAYOUT_DISPLAYS: ReadonlySet<string> = new Set([
+  "block",
+  "inline",
+  "inline-block",
+  "flex",
+  "grid",
+  "table",
+  "none",
+]);
+
+/**
+ * Read the computed `display` and NORMALIZE legacy / vendor / inline-variant
+ * values into a layout branch the engine actually implements:
+ *
+ *   - `-webkit-box` / `-webkit-inline-box` / `-ms-flexbox` / `-ms-inline-flexbox`
+ *     / `-webkit-inline-flex` → `flex` (every modern browser maps old flexbox
+ *     to standard flex).
+ *   - `inline-flex` / `inline-grid` / `inline-table` → the inner layout
+ *     (`flex` / `grid` / `table`); the inline *outer* role awaits a real inline
+ *     formatting context, so the box currently participates as a block — but its
+ *     CHILDREN get the correct inner layout, which is where the visible damage
+ *     was (children stacking vertically instead of flowing along a flex axis).
+ *   - `list-item` → `block` (list markers are not yet rendered).
+ *
+ * Unrecognized / absent values fall back to the initial `inline`.
+ */
 function readDisplay(style: ComputedStyle): string {
   const value = style["display"];
-  return typeof value === "string" ? value : "inline";
+  if (typeof value !== "string") {
+    return "inline";
+  }
+  switch (value) {
+    case "-webkit-box":
+    case "-webkit-inline-box":
+    case "-ms-flexbox":
+    case "-ms-inline-flexbox":
+    case "-webkit-inline-flex":
+      return "flex";
+    case "inline-flex":
+      return "flex";
+    case "inline-grid":
+      return "grid";
+    case "inline-table":
+      return "table";
+    case "list-item":
+      return "block";
+    default:
+      return LAYOUT_DISPLAYS.has(value) ? value : "inline";
+  }
+}
+
+/**
+ * Is this child an INLINE-LEVEL box (a member of the inline formatting context)?
+ * Text nodes always are; elements are when they are in-flow, non-floated, and
+ * declare `display: inline` / `inline-block`. Everything else (block/flex/grid/
+ * table/none, positioned, floated) is block-level and BREAKS an inline run.
+ * The raw `display` value is consulted (not the normalized one) so `inline-block`
+ * participates in the run while `inline-flex` (normalized to flex) does not.
+ */
+function isInlineLevelChild(node: DomNode, style: ComputedStyle | null): boolean {
+  if (node.kind === "text") {
+    return true;
+  }
+  if (node.kind !== "element" || style === null) {
+    return false;
+  }
+  const position = readPosition(style);
+  if (position === "absolute" || position === "fixed") {
+    return false;
+  }
+  if (readFloat(style) !== "none") {
+    return false;
+  }
+  const display = style["display"];
+  return display === "inline" || display === "inline-block";
 }
 
 /** The recognised `float` keywords; anything else (incl. absent) ⇒ `"none"`. */
@@ -1276,6 +2613,26 @@ function readFloat(style: ComputedStyle): "left" | "right" | "none" {
   const value = style["float"];
   if (typeof value === "string" && FLOAT_VALUES.has(value)) {
     return value as "left" | "right" | "none";
+  }
+  return "none";
+}
+
+/**
+ * Read the `clear` keyword (initial `none`). Recognized values: `none`, `left`,
+ * `right`, `both`, `inline-start`, `inline-end`. Anything else ⇒ `none`.
+ */
+function readClear(style: ComputedStyle): string {
+  const value = style["clear"];
+  if (
+    typeof value === "string" &&
+    (value === "none" ||
+      value === "left" ||
+      value === "right" ||
+      value === "both" ||
+      value === "inline-start" ||
+      value === "inline-end")
+  ) {
+    return value;
   }
   return "none";
 }
@@ -1296,10 +2653,11 @@ const POSITION_VALUES: ReadonlySet<string> = new Set([
  * `relative` / `absolute` are acted on by the block branch today; `fixed` /
  * `sticky` fall back to static flow.)
  */
-function readPosition(style: ComputedStyle): "static" | "relative" | "absolute" {
+function readPosition(style: ComputedStyle): "static" | "relative" | "absolute" | "fixed" {
   const value = style["position"];
   if (value === "relative") return "relative";
   if (value === "absolute") return "absolute";
+  if (value === "fixed") return "fixed";
   if (typeof value === "string" && POSITION_VALUES.has(value)) return "static";
   return "static";
 }
@@ -1328,7 +2686,19 @@ function readInsets(style: ComputedStyle | null): { readonly top: number; readon
 
 /** Narrow an `unknown` ComputedStyle field to a finite number, else `null`. */
 function readLengthOr(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value && typeof value === "object" && "value" in (value)) {
+    const v = value as { value?: unknown; unit?: unknown; kind?: unknown };
+    if (typeof v.value === "number" && Number.isFinite(v.value)) {
+      if (v.unit === "%" || v.unit === "percent") return null;
+      return v.value;
+    }
+  }
+  if (typeof value === "string") {
+    const m = /^(-?\d+(?:\.\d+)?)(px)?$/.exec(value.trim());
+    if (m) return Number(m[1]);
+  }
+  return null;
 }
 
 /**
@@ -1341,21 +2711,289 @@ function readFlexDirection(style: ComputedStyle): "row" | "column" {
 }
 
 /**
- * The grid's column-track count from `grid-template-columns` (default 1).
- * Modelled minimally: a positive integer is the track count; an array value is
- * its length (one track per entry); anything else is a single column. Clamped
- * to ≥ 1 so the cell width is always finite.
+ * Read the flex container's `justify-content` (main-axis packing). Falls back to
+ * `flex-start` (the initial value) for any unrecognized keyword.
  */
-function readGridColumns(style: ComputedStyle): number {
-  const value = style["gridTemplateColumns"];
+function readJustifyContent(style: ComputedStyle): string {
+  const value = style["justifyContent"];
+  return typeof value === "string" ? value : "flex-start";
+}
+
+/**
+ * Read the flex container's `align-items` (cross-axis alignment). Falls back to
+ * `stretch` (the initial value) for any unrecognized keyword.
+ */
+function readAlignItems(style: ComputedStyle): string {
+  const value = style["alignItems"];
+  return typeof value === "string" ? value : "stretch";
+}
+
+/**
+ * Read the flex `gap` for the main axis (the column gap for a row, the row gap
+ * for a column). Honors the `gap` shorthand, the `column-gap`/`row-gap`
+ * longhands, and the legacy `grid-gap`/`grid-column-gap` aliases.
+ */
+function readFlexGap(style: ComputedStyle, containingWidth: number): { main: number; cross: number } {
+  const gaps = readGridGaps(style, containingWidth);
+  return { main: gaps.column, cross: gaps.row };
+}
+
+/**
+ * Read a flex item's `order` (initial 0). Items are sorted by ascending order;
+ * equal orders keep document order (stable).
+ */
+function readOrder(style: ComputedStyle): number {
+  const value = style["order"];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Read a flex item's `flex-grow` factor (initial 0). A negative value is
+ * clamped to 0. Non-numeric / absent ⇒ 0.
+ */
+function readFlexGrow(style: ComputedStyle): number {
+  const value = style["flexGrow"];
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+/**
+ * Whether the flex container WRAPS its items onto multiple lines. `wrap` and
+ * `wrap-reverse` both return true (the reverse axis is treated as plain wrap for
+ * now); `nowrap` (the initial value) and anything else return false.
+ */
+function readFlexWrap(style: ComputedStyle): boolean {
+  const value = style["flexWrap"];
+  return value === "wrap" || value === "wrap-reverse";
+}
+
+/**
+ * Compute the main-axis (x) offset for each packed item given the total free
+ * space and the `justify-content` keyword. Returns one leading offset per item
+ * index (the item is additionally shifted by the cumulative inter-item spacing).
+ *
+ * `usedMain` is the sum of the items' outer main sizes; `contentMain` is the
+ * container's content-box main size. `count` is the number of items.
+ */
+function justifyOffsets(
+  justify: string,
+  freeSpace: number,
+  count: number,
+): { readonly leading: number; readonly between: number } {
+  if (count <= 0 || freeSpace <= 0) {
+    return { leading: 0, between: 0 };
+  }
+  switch (justify) {
+    case "flex-end":
+    case "end":
+      return { leading: freeSpace, between: 0 };
+    case "center":
+      return { leading: freeSpace / 2, between: 0 };
+    case "space-between":
+      return { leading: 0, between: count > 1 ? freeSpace / (count - 1) : 0 };
+    case "space-around":
+      return {
+        leading: count > 0 ? freeSpace / count / 2 : 0,
+        between: count > 1 ? freeSpace / count : 0,
+      };
+    case "space-evenly":
+      return { leading: freeSpace / (count + 1), between: freeSpace / (count + 1) };
+    case "flex-start":
+    case "start":
+    default:
+      return { leading: 0, between: 0 };
+  }
+}
+
+/**
+ * Compute the cross-axis (y) offset for an item given its outer cross size, the
+ * line's cross size, and the `align-items` keyword. `stretch` keeps the item at
+ * cross-start (its size was already resolved against the container cross size by
+ * the layout call), matching the existing behavior.
+ */
+function alignOffset(align: string, itemCross: number, lineCross: number): number {
+  const slack = Math.max(0, lineCross - itemCross);
+  switch (align) {
+    case "flex-end":
+    case "end":
+      return slack;
+    case "center":
+      return slack / 2;
+    case "flex-start":
+    case "start":
+    case "stretch":
+    case "baseline":
+    default:
+      return 0;
+  }
+}
+
+function readGapLength(value: unknown, containingWidth: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
+  if (typeof value === "string") {
+    const pct = /^(-?\d+(?:\.\d+)?)%$/.exec(value.trim());
+    if (pct !== null) return Math.max(0, (Number(pct[1]) / 100) * containingWidth);
+    const pxm = /^(-?\d+(?:\.\d+)?)px$/i.exec(value.trim());
+    if (pxm !== null) return Math.max(0, Number(pxm[1]));
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.max(0, n);
+  }
+  if (typeof value === "object" && value !== null) {
+    const v = value as { unit?: unknown; value?: unknown };
+    if (typeof v.value === "number" && Number.isFinite(v.value)) {
+      if (v.unit === "%") return Math.max(0, (v.value / 100) * containingWidth);
+      return Math.max(0, v.value);
+    }
+  }
+  return 0;
+}
+
+function readGridGaps(style: ComputedStyle, containingWidth: number): { row: number; column: number } {
+  const shorthand = style["gap"] ?? style["gridGap"];
+  let row = 0;
+  let column = 0;
+  if (typeof shorthand === "string") {
+    const parts = shorthand.trim().split(/\s+/).filter((p) => p.length > 0);
+    if (parts.length === 1) {
+      row = readGapLength(parts[0], containingWidth);
+      column = row;
+    } else if (parts.length >= 2) {
+      row = readGapLength(parts[0], containingWidth);
+      column = readGapLength(parts[1], containingWidth);
+    }
+  } else if (typeof shorthand === "number") {
+    row = Math.max(0, shorthand);
+    column = row;
+  }
+  if (style["rowGap"] !== undefined) row = readGapLength(style["rowGap"], containingWidth);
+  if (style["columnGap"] !== undefined) column = readGapLength(style["columnGap"], containingWidth);
+  return { row, column };
+}
+
+type GridTrack = { readonly kind: "px"; readonly size: number } | { readonly kind: "fr"; readonly fr: number };
+
+function parseOneTrackToken(token: string): GridTrack {
+  const t = token.trim();
+  const pxMatch = /^(-?\d+(?:\.\d+)?)px$/i.exec(t);
+  if (pxMatch !== null) {
+    return { kind: "px", size: Math.max(0, Number(pxMatch[1])) };
+  }
+  const frMatch = /^(-?\d+(?:\.\d+)?)fr$/i.exec(t);
+  if (frMatch !== null) {
+    return { kind: "fr", fr: Math.max(0, Number(frMatch[1])) };
+  }
+  const num = Number(t);
+  if (Number.isFinite(num) && num > 0) {
+    return { kind: "px", size: num };
+  }
+  return { kind: "fr", fr: 1 };
+}
+
+function parseGridTracks(value: unknown): GridTrack[] {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-    return value;
+    return Array.from({ length: value }, () => ({ kind: "fr" as const, fr: 1 }));
   }
   if (Array.isArray(value) && value.length > 0) {
-    return value.length;
+    return value.map((entry) => {
+      if (typeof entry === "number" && Number.isFinite(entry)) {
+        return { kind: "px" as const, size: Math.max(0, entry) };
+      }
+      if (typeof entry === "string") {
+        return parseOneTrackToken(entry);
+      }
+      return { kind: "fr" as const, fr: 1 };
+    });
   }
-  return 1;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const s = value.trim();
+    // A bare positive integer (e.g. `grid-template-columns: 2`) means "that many
+    // equal 1fr columns" — the same meaning as the numeric form, which reaches
+    // this branch as a STRING because the cascade stores grid-template-columns
+    // as a string property.
+    const bareCount = /^\d+$/.exec(s);
+    if (bareCount !== null) {
+      const n = Number(bareCount[0]);
+      if (Number.isInteger(n) && n > 0) {
+        return Array.from({ length: n }, () => ({ kind: "fr" as const, fr: 1 }));
+      }
+    }
+    const tracks: GridTrack[] = [];
+    let i = 0;
+    while (i < s.length) {
+      while (i < s.length && /\s/.test(s[i]!)) i += 1;
+      if (i >= s.length) break;
+      if (/^repeat\s*\(/i.test(s.slice(i))) {
+        const open = s.indexOf("(", i);
+        let depth = 0;
+        let j = open;
+        for (; j < s.length; j += 1) {
+          if (s[j] === "(") depth += 1;
+          else if (s[j] === ")") {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        const inner = s.slice(open + 1, j);
+        const comma = inner.indexOf(",");
+        const count = Math.max(0, Math.floor(Number(inner.slice(0, comma).trim())));
+        const trackPart = inner.slice(comma + 1).trim();
+        const repeated = parseGridTracks(trackPart);
+        for (let n = 0; n < count; n += 1) {
+          tracks.push(...repeated);
+        }
+        i = j + 1;
+        continue;
+      }
+      let j = i;
+      while (j < s.length && !/\s/.test(s[j]!)) j += 1;
+      tracks.push(parseOneTrackToken(s.slice(i, j)));
+      i = j;
+    }
+    return tracks.length > 0 ? tracks : [{ kind: "fr", fr: 1 }];
+  }
+  return [{ kind: "fr", fr: 1 }];
 }
+
+function resolveTrackWidths(tracks: readonly GridTrack[], budget: number): number[] {
+  if (tracks.length === 0) {
+    return [Math.max(0, budget)];
+  }
+  let fixed = 0;
+  let frSum = 0;
+  for (const t of tracks) {
+    if (t.kind === "px") fixed += t.size;
+    else frSum += t.fr;
+  }
+  const free = Math.max(0, budget - fixed);
+  const unit = frSum > 0 ? free / frSum : 0;
+  return tracks.map((t) => (t.kind === "px" ? t.size : t.fr * unit));
+}
+
+function parseGridPlacement(value: unknown): { start: number | null; span: number } {
+  if (typeof value !== "string") {
+    return { start: null, span: 1 };
+  }
+  const raw = value.trim();
+  const spanOnly = /^span\s+(\d+)$/i.exec(raw);
+  if (spanOnly !== null) {
+    return { start: null, span: Math.max(1, Number(spanOnly[1])) };
+  }
+  const lineForm = /^(\d+)\s*\/\s*(\d+)$/.exec(raw);
+  if (lineForm !== null) {
+    const a = Number(lineForm[1]);
+    const b = Number(lineForm[2]);
+    return { start: a, span: Math.max(1, b - a) };
+  }
+  const startSpan = /^(\d+)\s*\/\s*span\s+(\d+)$/i.exec(raw);
+  if (startSpan !== null) {
+    return { start: Number(startSpan[1]), span: Math.max(1, Number(startSpan[2])) };
+  }
+  const single = /^(\d+)$/.exec(raw);
+  if (single !== null) {
+    return { start: Number(single[1]), span: 1 };
+  }
+  return { start: null, span: 1 };
+}
+
 
 /** Whether the element establishes a multi-column container (Multi-column). */
 function establishesMulticol(style: ComputedStyle): boolean {
@@ -1395,7 +3033,12 @@ function resolveColumnCount(style: ComputedStyle, contentWidth: number, gap: num
  * absent (a flexible main size). The cascade emits a `LengthOrAuto`
  * (`Px | "auto"`), narrowed here off the open index signature.
  */
-function declaredWidthOf(style: ComputedStyle): number | null {
+function declaredWidthOf(style: ComputedStyle, containingWidth?: number): number | null {
   const declared = style["width"];
-  return typeof declared === "number" ? Math.max(0, declared) : null;
+  if (typeof declared === "number") return Math.max(0, declared);
+  const pct = percentOf(declared);
+  if (pct !== null && containingWidth !== undefined && Number.isFinite(containingWidth) && containingWidth > 0) {
+    return Math.max(0, (pct * containingWidth) / 100);
+  }
+  return null;
 }

@@ -15,7 +15,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { define, defineInput, type Db } from "./index.js";
+import { define, defineInput, type Db, type QueryTraceEvent } from "./index.js";
 import { InputNotSetError, NaiveDb } from "./naive-db.js";
 
 void test("getInput returns the value last written for a key", () => {
@@ -91,6 +91,25 @@ void test("naive backend never caches: every query call recomputes", () => {
   // Same key, same inputs — a memoising backend would compute once; the naive
   // baseline recomputes every time (design.md §7.1).
   assert.equal(computeRuns, 3);
+});
+
+void test("query observer reports naive recomputes as read-only diagnostics", () => {
+  const events: QueryTraceEvent[] = [];
+  const db = new NaiveDb({ onQuery: (event) => events.push(event) });
+  const X = defineInput<string, number>("X");
+  const qId = define<string, number>((d: Db, key) => d.getInput(X, key), "qId");
+
+  db.setInput(X, "k", 9);
+  assert.equal(db.query(qId, "k"), 9);
+
+  assert.equal(events.length, 1);
+  const event = events[0];
+  assert.ok(event !== undefined);
+  assert.equal(event.queryName, "qId");
+  assert.equal(event.cacheStatus, "miss");
+  assert.equal(event.dependencyCount, 1);
+  assert.equal(typeof event.durationMs, "number");
+  assert.ok(event.durationMs >= 0);
 });
 
 void test("Req 2.3: setInput bumps revision automatically; no stale-marking API", () => {

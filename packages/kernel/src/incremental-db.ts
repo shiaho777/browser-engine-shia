@@ -60,7 +60,7 @@
  * if none actually changed, the cached value is returned unchanged. So an entry
  * "invalidated for a non-dependency reason" still serves its cached value.
  */
-import type { Db, InputSlot, QueryDef, QueryDefInternal } from "./db.js";
+import type { Db, InputSlot, QueryDef, QueryDefInternal, QueryTraceObserver, TraceOptions } from "./db.js";
 import { COMPUTE } from "./db.js";
 import { InputNotSetError } from "./naive-db.js";
 
@@ -101,6 +101,8 @@ interface MemoEntry {
   verifiedAtRevision: number;
 }
 
+type CacheHitStatus = "hit" | "verified-hit";
+
 /**
  * The true incremental backend. Implements {@link Db} and nothing more on that
  * surface; the extra `revision` / `recomputeCount` getters are read-only
@@ -119,6 +121,11 @@ export class IncrementalDb implements Db {
   readonly #frames: Frame[] = [];
   /** How many times a compute fn has actually run — proves caching for tests. */
   #recomputeCount = 0;
+  readonly #onQuery: QueryTraceObserver | undefined;
+
+  constructor(options: TraceOptions = {}) {
+    this.#onQuery = options.onQuery;
+  }
 
   /** The current global revision (diagnostic; see design.md §7.1 algorithm). */
   get revision(): number {
@@ -187,9 +194,15 @@ export class IncrementalDb implements Db {
    * the current revision (design.md §7.1 `Db.query`).
    */
   #fetch<K, V>(q: QueryDef<K, V>, key: K): V {
+    const start = performance.now();
     const cached = this.#lookup(q, key);
-    if (cached !== undefined && this.#verifyClean(cached)) {
-      return cached.value as V;
+    if (cached !== undefined) {
+      const checkedAt = cached.verifiedAtRevision;
+      const clean = this.#verifyClean(cached);
+      if (clean) {
+        this.#emitHit(q, key, cached, checkedAt === this.#revision ? "hit" : "verified-hit", start);
+        return cached.value as V;
+      }
     }
 
     const frame: Frame = { deps: [] };
@@ -206,7 +219,35 @@ export class IncrementalDb implements Db {
       deps: frame.deps,
       verifiedAtRevision: this.#revision,
     });
+    this.#emitMiss(q, key, start, frame.deps.length);
     return value;
+  }
+
+  /**
+   * Emit a read-only cache-hit diagnostic. Duration measures verification time
+   * for a cross-revision hit, or a tiny direct-hit read in the same revision.
+   */
+  #emitHit<K, V>(q: QueryDef<K, V>, key: K, entry: MemoEntry, status: CacheHitStatus, start: number): void {
+    this.#onQuery?.({
+      query: q,
+      queryName: q.name,
+      key,
+      durationMs: performance.now() - start,
+      dependencyCount: entry.deps.length,
+      cacheStatus: status,
+    });
+  }
+
+  /** Emit a read-only recomputation diagnostic. */
+  #emitMiss<K, V>(q: QueryDef<K, V>, key: K, start: number, dependencyCount: number): void {
+    this.#onQuery?.({
+      query: q,
+      queryName: q.name,
+      key,
+      durationMs: performance.now() - start,
+      dependencyCount,
+      cacheStatus: "miss",
+    });
   }
 
   /**

@@ -18,11 +18,18 @@
     "lint": "eslint .",
     "test:eslint-rules": "node --test tools/eslint-rules/*.test.js",
     "test:constitution": "tsc --build && node --test tools/constitution-fixtures/constitution-guards.test.js",
+    "test:open-source": "node --test tools/open-source-flywheel.test.js",
     "test": "tsc --build && node --test packages/*/dist/*.test.js",
     "benchmark": "npm run benchmark --workspace @browser-engine/benchmark",
+    "evidence": "npm run wpt:subsets -- --trace && npm run benchmark",
     "wpt": "tsc --build && node packages/cli/dist/index.js wpt",
     "wpt:subsets": "tsc --build && node packages/cli/dist/index.js wpt-subsets",
-    "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test && npm run wpt:subsets"
+    "ci": "npm run typecheck && npm run lint && npm run test:eslint-rules && npm run test:constitution && npm run test:open-source && npm run test && npm run wpt:subsets",
+    "app": "tsc --build && node packages/app/dist/index.js",
+    "app:no-open": "tsc --build && node packages/app/dist/index.js --web --no-open",
+    "app:web": "tsc --build && node packages/app/dist/index.js --web",
+    "app:electron": "tsc --build && node packages/app/dist/index.js --electron",
+    "app:host": "tsc --build && node packages/app/dist/index.js --web --port 7788"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",

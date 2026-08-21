@@ -293,8 +293,15 @@ void test(":first-child / :last-child skip text siblings and match element edges
 
 void test("an unsupported pseudo-class never matches (out-of-subset → safe no-match)", () => {
   assert.deepEqual(matchedElementIds(":hover"), []); // dynamic state, not statically decidable.
-  assert.deepEqual(matchedElementIds(":has(div)"), []); // :has() is out of subset.
-  assert.deepEqual(matchedElementIds("::before"), []); // pseudo-element, not a pseudo-class.
+  assert.deepEqual(matchedElementIds("::before"), []); // pseudo-element, not supported yet.
+});
+
+void test(":has() relative selector matches elements with matching descendants", () => {
+  // div(1) has span(2) and p(4) as element descendants.
+  assert.deepEqual(matchedElementIds(":has(span)"), [1]);
+  assert.deepEqual(matchedElementIds(":has(p)"), [1]);
+  // No element has a div descendant (div is the root element).
+  assert.deepEqual(matchedElementIds(":has(div)"), []);
 });
 
 void test("the expanded DOM-decidable pseudo-classes match correct nodes", () => {

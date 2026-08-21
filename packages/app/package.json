@@ -1,0 +1,34 @@
+{
+  "name": "@browser-engine/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "browser-engine-app": "./bin/browser-engine-app.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "tsc --build && node dist/index.js",
+    "electron": "tsc --build && node dist/index.js --electron",
+    "web": "tsc --build && node dist/index.js --web",
+    "test": "tsc --build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@browser-engine/guest": "0.0.0",
+    "@browser-engine/backend": "0.0.0",
+    "@browser-engine/cascade": "0.0.0",
+    "@browser-engine/cli": "0.0.0",
+    "@browser-engine/html-parser": "0.0.0",
+    "@browser-engine/ir": "0.0.0",
+    "@browser-engine/layout": "0.0.0",
+    "@browser-engine/paint": "0.0.0"
+  },
+  "optionalDependencies": {
+    "electron": "^37.2.0"
+  }
+}

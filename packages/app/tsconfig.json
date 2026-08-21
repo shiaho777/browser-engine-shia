@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    {
+      "path": "../cli"
+    },
+    {
+      "path": "../layout"
+    },
+    {
+      "path": "../ir"
+    },
+    {
+      "path": "../html-parser"
+    },
+    {
+      "path": "../cascade"
+    },
+    {
+      "path": "../paint"
+    },
+    {
+      "path": "../backend"
+    },
+    {
+      "path": "../guest"
+    }
+  ],
+  "include": [
+    "src/**/*.ts"
+  ]
+}

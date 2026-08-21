@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOMTokenList classList token validation</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="add-target" class="alpha beta"></div>
+<div id="remove-target" class="alpha beta"></div>
+<div id="toggle-target" class="alpha beta"></div>
+<div id="replace-target" class="alpha beta"></div>
+<script>
+function assert_class_unchanged(el, expected, description) {
+  assert_equals(el.className, expected, description + " className");
+  assert_equals(el.getAttribute("class"), expected, description + " class attribute");
+}
+
+test(function () {
+  var el = document.getElementById("add-target");
+
+  assert_throws_dom("SyntaxError", function () { el.classList.add(""); }, "empty token throws");
+  assert_class_unchanged(el, "alpha beta", "empty add leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.add("gamma delta"); }, "space-containing token throws");
+  assert_class_unchanged(el, "alpha beta", "space add leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.add("gamma", "bad token"); }, "multi-token add validates all tokens first");
+  assert_class_unchanged(el, "alpha beta", "failed multi-token add leaves classes unchanged");
+  assert_false(el.classList.contains("gamma"), "failed multi-token add does not partially add earlier tokens");
+}, "classList.add rejects invalid tokens without mutating");
+
+test(function () {
+  var el = document.getElementById("remove-target");
+
+  assert_throws_dom("SyntaxError", function () { el.classList.remove(""); }, "empty token throws");
+  assert_class_unchanged(el, "alpha beta", "empty remove leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.remove("alpha beta"); }, "space-containing token throws");
+  assert_class_unchanged(el, "alpha beta", "space remove leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.remove("alpha", "bad token"); }, "multi-token remove validates all tokens first");
+  assert_class_unchanged(el, "alpha beta", "failed multi-token remove leaves classes unchanged");
+  assert_true(el.classList.contains("alpha"), "failed multi-token remove does not partially remove earlier tokens");
+}, "classList.remove rejects invalid tokens without mutating");
+
+test(function () {
+  var el = document.getElementById("toggle-target");
+
+  assert_throws_dom("SyntaxError", function () { el.classList.toggle(""); }, "empty token throws");
+  assert_class_unchanged(el, "alpha beta", "empty toggle leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.toggle("alpha beta"); }, "space-containing token throws");
+  assert_class_unchanged(el, "alpha beta", "space toggle leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.toggle("new token", true); }, "force=true still validates the token");
+  assert_class_unchanged(el, "alpha beta", "failed force=true toggle leaves classes unchanged");
+}, "classList.toggle rejects invalid tokens without mutating");
+
+test(function () {
+  var el = document.getElementById("replace-target");
+
+  assert_throws_dom("SyntaxError", function () { el.classList.replace("", "gamma"); }, "empty old token throws");
+  assert_class_unchanged(el, "alpha beta", "empty old token replace leaves classes unchanged");
+
+  assert_throws_dom("SyntaxError", function () { el.classList.replace("alpha", ""); }, "empty new token throws");
+  assert_class_unchanged(el, "alpha beta", "empty new token replace leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.replace("alpha beta", "gamma"); }, "space-containing old token throws");
+  assert_class_unchanged(el, "alpha beta", "space old token replace leaves classes unchanged");
+
+  assert_throws_dom("InvalidCharacterError", function () { el.classList.replace("alpha", "gamma delta"); }, "space-containing new token throws");
+  assert_class_unchanged(el, "alpha beta", "space new token replace leaves classes unchanged");
+}, "classList.replace rejects invalid tokens without mutating");
+</script>
+</body>

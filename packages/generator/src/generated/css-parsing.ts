@@ -19,7 +19,7 @@ export function parseColorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `display` value. */
 export function parseDisplayValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none"]);
+  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex"]);
 }
 
 /** Parse a `width` value. */
@@ -84,7 +84,7 @@ export function parseFlexDirectionValue(value: string): ParseResult<unknown> {
 
 /** Parse a `grid-template-columns` value. */
 export function parseGridTemplateColumnsValue(value: string): ParseResult<unknown> {
-  return parseInteger(value, { min: 0 });
+  return parseString(value);
 }
 
 /** Parse a `opacity` value. */
@@ -239,7 +239,7 @@ export function parseFontStyleValue(value: string): ParseResult<unknown> {
 
 /** Parse a `line-height` value. */
 export function parseLineHeightValue(value: string): ParseResult<unknown> {
-  return parseNumber(value, { min: 0 });
+  return parseString(value);
 }
 
 /** Parse a `text-align` value. */
@@ -314,7 +314,7 @@ export function parseOrderValue(value: string): ParseResult<unknown> {
 
 /** Parse a `grid-template-rows` value. */
 export function parseGridTemplateRowsValue(value: string): ParseResult<unknown> {
-  return parseInteger(value, { min: 0 });
+  return parseString(value);
 }
 
 /** Parse a `gap` value. */
@@ -450,6 +450,11 @@ export function parseResizeValue(value: string): ParseResult<unknown> {
 /** Parse a `object-fit` value. */
 export function parseObjectFitValue(value: string): ParseResult<unknown> {
   return parseKeyword(value, ["fill", "contain", "cover", "none", "scale-down"]);
+}
+
+/** Parse a `line-clamp` value. */
+export function parseLineClampValue(value: string): ParseResult<unknown> {
+  return parseInteger(value, { min: 0 });
 }
 
 /** Parse a `background-attachment` value. */
@@ -1797,6 +1802,7 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "user-select": parseUserSelectValue,
   "resize": parseResizeValue,
   "object-fit": parseObjectFitValue,
+  "line-clamp": parseLineClampValue,
   "background-attachment": parseBackgroundAttachmentValue,
   "background-clip": parseBackgroundClipValue,
   "background-origin": parseBackgroundOriginValue,

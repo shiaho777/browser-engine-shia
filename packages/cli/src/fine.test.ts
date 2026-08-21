@@ -278,6 +278,326 @@ void test("insertBefore orders created children correctly", () => {
   );
 });
 
+void test("removeAttribute deletes the attribute key and restyles through fine-grained attrs", () => {
+  const session = new FineSession(
+    '<html><head><style>.on{width:12px;height:12px;background-color:red}</style></head><body><div id="x" class="on"></div></body></html>',
+  );
+  let x: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) if (node.attrs?.get("id") === "x") x = id;
+  assert.ok(x !== null);
+  assert.ok(session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255), "precondition: .on paints");
+
+  session.removeAttribute(x, "class");
+
+  assert.equal(session.dom.nodes.get(x)?.attrs?.has("class"), false, "class key is removed");
+  assert.ok(!session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255), "class rule no longer matches");
+});
+
+void test("external stylesheet links stay synced across append, href change, and removal", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const sheets = new Map<string, Uint8Array>([
+    ["fine://dynamic-stylesheet/a.css", encodeSheet("#x{width:14px;height:14px;background-color:red}")],
+    ["fine://dynamic-stylesheet/b.css", encodeSheet("#x{width:18px;height:18px;background-color:blue}")],
+  ]);
+  const session = new FineSession(
+    '<html><head></head><body><div id="x"></div></body></html>',
+    "fine://dynamic-stylesheet",
+    { loadExternalSheet: (href) => sheets.get(href) },
+  );
+  let head: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.tag === "head") head = id;
+  }
+  assert.ok(head !== null);
+
+  const link = session.createElement("link");
+  session.setAttribute(link, "rel", "stylesheet");
+  session.setAttribute(link, "href", "a.css");
+  session.appendChild(head, link);
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 14),
+    "appending a stylesheet link applies its loaded CSS",
+  );
+
+  session.setAttribute(link, "href", "b.css");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.b === 255 && Number(c.rect.width) === 18),
+    "changing href refreshes the loaded stylesheet input",
+  );
+
+  session.removeChild(head, link);
+  assert.ok(
+    !session.render().commands.some((c) => c.op === "rect" && (c.fill.r === 255 || c.fill.b === 255)),
+    "removing the stylesheet link removes its declarations from the live cascade",
+  );
+});
+
+void test("external stylesheet links resolve through the frozen base href in FineSession", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const documentUrl = "https://site.test/pages/index.html";
+  const stylesheetUrl = "https://cdn.test/assets/theme.css";
+  const loads: string[] = [];
+  const session = new FineSession(
+    '<html><head><base href="https://cdn.test/assets/"><link rel="stylesheet" href="theme.css"></head>' +
+      '<body><div id="x"></div></body></html>',
+    documentUrl,
+    {
+      loadExternalSheet: (href) => {
+        loads.push(href);
+        return href === stylesheetUrl
+          ? encodeSheet("#x{width:16px;height:16px;background-color:red}")
+          : undefined;
+      },
+    },
+  );
+
+  assert.deepEqual(loads, [stylesheetUrl], "FineSession fetches the base-resolved stylesheet URL");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 16),
+    "base-resolved stylesheet participates in the live cascade",
+  );
+});
+
+void test("base href mutations rescan stylesheet URLs only when the effective base changes", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const documentUrl = "https://site.test/pages/index.html";
+  const firstTheme = "https://cdn-a.test/assets/theme.css";
+  const firstNext = "https://cdn-a.test/assets/next.css";
+  const changedNext = "https://cdn-b.test/assets/next.css";
+  const sheets = new Map<string, Uint8Array>([
+    [firstTheme, encodeSheet("#x{width:16px;height:16px;background-color:red}")],
+    [firstNext, encodeSheet("#x{width:20px;height:20px;background-color:rgb(0,255,0)}")],
+    [changedNext, encodeSheet("#x{width:24px;height:24px;background-color:blue}")],
+  ]);
+  const loads: string[] = [];
+  const session = new FineSession(
+    '<html><head><base id="first-base" href="https://cdn-a.test/assets/">' +
+      '<base id="later-base" href="https://ignored.test/assets/">' +
+      '<link id="theme" rel="stylesheet" href="theme.css"></head><body><div id="x"></div></body></html>',
+    documentUrl,
+    {
+      loadExternalSheet: (href) => {
+        loads.push(href);
+        return sheets.get(href);
+      },
+    },
+  );
+  let firstBase: NodeId | null = null;
+  let laterBase: NodeId | null = null;
+  let link: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.attrs?.get("id") === "first-base") firstBase = id;
+    if (node.attrs?.get("id") === "later-base") laterBase = id;
+    if (node.attrs?.get("id") === "theme") link = id;
+  }
+  assert.ok(firstBase !== null);
+  assert.ok(laterBase !== null);
+  assert.ok(link !== null);
+
+  assert.deepEqual(loads, [firstTheme], "initial stylesheet fetch uses the first base");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 16),
+    "initial base-resolved stylesheet applies",
+  );
+
+  session.setAttribute(laterBase, "href", "https://cdn-b.test/assets/");
+
+  assert.deepEqual(loads, [firstTheme], "mutating a later base does not refetch or retarget resources");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 16),
+    "later base mutation keeps the first-base stylesheet active",
+  );
+
+  session.setAttribute(link, "href", "next.css");
+
+  assert.deepEqual(loads, [firstTheme, firstNext], "link href mutation reloads against the first base");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.g === 255 && Number(c.rect.width) === 20),
+    "link href mutation applies the first-base replacement stylesheet",
+  );
+
+  session.setAttribute(firstBase, "href", "https://cdn-b.test/assets/");
+
+  assert.deepEqual(loads, [firstTheme, firstNext, changedNext], "changing the first base reloads current link URLs");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.b === 255 && Number(c.rect.width) === 24),
+    "first base mutation applies the current link through the new base",
+  );
+});
+
+void test("alternate stylesheet links stay inactive until rel becomes an active stylesheet", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const sheets = new Map<string, Uint8Array>([
+    ["fine://alternate-stylesheet/theme.css", encodeSheet("#x{width:14px;height:14px;background-color:red}")],
+  ]);
+  const loads: string[] = [];
+  const session = new FineSession(
+    '<html><head></head><body><div id="x"></div></body></html>',
+    "fine://alternate-stylesheet",
+    {
+      loadExternalSheet: (href) => {
+        loads.push(href);
+        return sheets.get(href);
+      },
+    },
+  );
+  let head: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.tag === "head") head = id;
+  }
+  assert.ok(head !== null);
+
+  const link = session.createElement("link");
+  session.setAttribute(link, "rel", "alternate stylesheet");
+  session.setAttribute(link, "href", "theme.css");
+  session.appendChild(head, link);
+
+  assert.deepEqual(loads, [], "inactive alternate stylesheet is not loaded");
+  assert.ok(
+    !session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255),
+    "inactive alternate stylesheet does not apply",
+  );
+
+  session.setAttribute(link, "rel", "stylesheet");
+
+  assert.deepEqual(loads, ["fine://alternate-stylesheet/theme.css"], "becoming active loads the stylesheet once");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 14),
+    "active stylesheet applies after rel mutation",
+  );
+});
+
+void test("disabled stylesheet links stay inactive until disabled is removed", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const sheets = new Map<string, Uint8Array>([
+    ["fine://disabled-stylesheet/theme.css", encodeSheet("#x{width:14px;height:14px;background-color:red}")],
+  ]);
+  const loads: string[] = [];
+  const session = new FineSession(
+    '<html><head></head><body><div id="x"></div></body></html>',
+    "fine://disabled-stylesheet",
+    {
+      loadExternalSheet: (href) => {
+        loads.push(href);
+        return sheets.get(href);
+      },
+    },
+  );
+  let head: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.tag === "head") head = id;
+  }
+  assert.ok(head !== null);
+
+  const link = session.createElement("link");
+  session.setAttribute(link, "rel", "stylesheet");
+  session.setAttribute(link, "disabled", "");
+  session.setAttribute(link, "href", "theme.css");
+  session.appendChild(head, link);
+
+  assert.deepEqual(loads, [], "disabled stylesheet is not loaded");
+  assert.ok(
+    !session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255),
+    "disabled stylesheet does not apply",
+  );
+
+  session.removeAttribute(link, "disabled");
+
+  assert.deepEqual(loads, ["fine://disabled-stylesheet/theme.css"], "removing disabled loads the stylesheet once");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 14),
+    "enabled stylesheet applies after disabled removal",
+  );
+});
+
+void test("print media stylesheet links stay inactive until media matches screen", () => {
+  const encodeSheet = (css: string): Uint8Array => new TextEncoder().encode(css);
+  const sheets = new Map<string, Uint8Array>([
+    ["fine://media-stylesheet/theme.css", encodeSheet("#x{width:14px;height:14px;background-color:red}")],
+  ]);
+  const loads: string[] = [];
+  const session = new FineSession(
+    '<html><head></head><body><div id="x"></div></body></html>',
+    "fine://media-stylesheet",
+    {
+      loadExternalSheet: (href) => {
+        loads.push(href);
+        return sheets.get(href);
+      },
+    },
+  );
+  let head: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.tag === "head") head = id;
+  }
+  assert.ok(head !== null);
+
+  const link = session.createElement("link");
+  session.setAttribute(link, "rel", "stylesheet");
+  session.setAttribute(link, "media", "print");
+  session.setAttribute(link, "href", "theme.css");
+  session.appendChild(head, link);
+
+  assert.deepEqual(loads, [], "print-only stylesheet is not loaded for screen rendering");
+  assert.ok(
+    !session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255),
+    "print-only stylesheet does not apply",
+  );
+
+  session.setAttribute(link, "media", "screen");
+
+  assert.deepEqual(loads, ["fine://media-stylesheet/theme.css"], "matching media loads the stylesheet once");
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 14),
+    "screen media stylesheet applies after media mutation",
+  );
+});
+
+void test("style element text mutations restyle through qFineSheets dependencies", () => {
+  const session = new FineSession(
+    '<html><head><style id="sheet">#x{width:10px;height:10px;background-color:red}</style></head><body><div id="x"></div></body></html>',
+  );
+  let styleText: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.kind === "text" && (node.text ?? "").includes("background-color:red")) styleText = id;
+  }
+  assert.ok(styleText !== null);
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.r === 255 && Number(c.rect.width) === 10),
+    "precondition: the initial style text applies",
+  );
+
+  session.setText(styleText, "#x{width:18px;height:18px;background-color:blue}");
+
+  assert.ok(
+    session.render().commands.some((c) => c.op === "rect" && c.fill.b === 255 && Number(c.rect.width) === 18),
+    "editing the style text invalidates sheets and applies the new rule",
+  );
+});
+
+void test("removing a style element drops its rules from the live cascade", () => {
+  const session = new FineSession(
+    '<html><head><style id="sheet">#x{width:20px;height:20px;color:red}</style></head><body><div id="x"></div></body></html>',
+  );
+  let head: NodeId | null = null;
+  let sheet: NodeId | null = null;
+  let x: NodeId | null = null;
+  for (const [id, node] of session.dom.nodes) {
+    if (node.tag === "head") head = id;
+    if (node.attrs?.get("id") === "sheet") sheet = id;
+    if (node.attrs?.get("id") === "x") x = id;
+  }
+  assert.ok(head !== null);
+  assert.ok(sheet !== null);
+  assert.ok(x !== null);
+  assert.equal(session.computed(x)["width"], 20, "precondition: the style rule applies");
+
+  session.removeChild(head, sheet);
+
+  assert.equal(session.computed(x)["width"], "auto", "removed style rules no longer affect width");
+  assert.equal(session.computed(x).color.r, 0, "removed style rules no longer affect color");
+});
+
 import { runScript } from "./script.js";
 
 void test("a script classList.add restyles + re-renders (class selector takes effect)", () => {

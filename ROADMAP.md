@@ -175,10 +175,19 @@ Victory condition:
 
 Goal: make lightness and speed measurable advantages, not vibes.
 
+Already landed:
+
+- Query/stage tracing for render and maintained WPT subset runs.
+- Deterministic benchmark evidence for incremental edit sequences, including
+  verified cache hits and paint-only layout reuse.
+- Deterministic benchmark evidence for real V8 script-driven DOM mutation.
+- Resource-loaded page evidence for external CSS, external image, and graceful
+  missing-resource handling.
+- Real-site smoke evidence for fetch/event-loop/V8 and web-font loading.
+
 Deliverables:
 
-- Stage tracing: parse/cascade/layout/paint/backend time, memory, recompute
-  counts, cache hit rates.
+- Expand stage tracing to memory, backend cost, and richer resource timelines.
 - Fine-grained incremental mode as the default render path.
 - Selector/style sharing and invalidation indexes.
 - Layout dirty regions and paint invalidation regions.
@@ -193,14 +202,32 @@ Victory condition:
 
 Goal: make the project easy to trust, easy to run, and hard to corrupt.
 
-Deliverables:
+Already landed:
 
 - `ARCHITECTURE.md`: the constitution and stage boundaries.
-- `CONTRIBUTING.md`: how to add features without breaking the mechanism.
-- Issue labels mapped to phases and WPT subsets.
-- `good first issue` tasks that add real compatibility, not chores.
-- RFC process for new stage seams, generated surfaces, or backend choices.
-- Public dashboard generated from repository evidence.
+- `CONTRIBUTING.md`: evidence ladder and contribution rules.
+- `docs/WPT-WAR-ROOM.md`: WPT workflow, maintained subset rules, and trace
+  commands.
+- `BENCHMARK.md`: generated public evidence report from live repository data.
+- `docs/EVIDENCE.md`: reproducible evidence command, artifact schema, and CI
+  gate.
+- `benchmark-evidence.json`: machine-readable public evidence generated from
+  the same benchmark snapshot as `BENCHMARK.md`.
+- `evidence-dashboard.html`: static public dashboard generated from the same
+  repository evidence.
+- `.github/labels.json`: versioned phase/stage/subset/evidence label taxonomy.
+- `docs/GOOD-FIRST-ISSUES.md`: concrete starter tasks that add compatibility,
+  evidence, or RFC decision records.
+- `docs/RFC-PROCESS.md` and `docs/rfcs/0000-template.md`: RFC lifecycle for new
+  seams, generated surfaces, backend choices, and evidence schema changes.
+- GitHub issue and PR templates that require evidence, WPT classification, and
+  architecture checks.
+
+Deliverables:
+
+- Sync `.github/labels.json` into actual GitHub repository labels.
+- Open the first batch of `good first issue` tickets from the versioned queue.
+- Dashboard publication through CI artifacts or GitHub Pages.
 
 Victory condition:
 

@@ -25,6 +25,8 @@ import {
   renderFileToPng,
   surfaceSizeFor,
   parseRenderArgs,
+  formatStageTrace,
+  formatResourceTrace,
   runRender,
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
@@ -74,6 +76,55 @@ void test("rendering is deterministic: same input ⇒ identical PNG bytes", () =
   assert.deepEqual([...a.png], [...b.png]);
 });
 
+void test("stage tracing reports every render-pipeline query as measurable evidence", () => {
+  const result = renderHtmlToPng(HELLO, "render://trace", { trace: true });
+  const trace = result.trace;
+  assert.ok(trace !== undefined, "trace option must attach a StageTrace");
+
+  const byStage = new Map(trace.summaries.map((summary) => [summary.stage, summary]));
+  for (const stage of ["qDom", "qSheets", "qComputed", "qLayout", "qPaint"]) {
+    const summary = byStage.get(stage);
+    assert.ok(summary !== undefined, `${stage} must appear in the render trace`);
+    assert.ok(summary.calls > 0, `${stage} must have at least one observed call`);
+    assert.equal(summary.recomputes, summary.calls, "NaiveDb render trace reports every call as a recompute");
+    assert.ok(summary.totalDurationMs >= 0);
+  }
+
+  assert.ok(trace.totalCalls >= 5);
+  assert.equal(trace.totalCacheHits, 0);
+  assert.equal(trace.totalRecomputes, trace.totalCalls);
+  assert.ok(trace.events.every((event) => event.cacheStatus === "miss"));
+  const report = formatStageTrace(trace);
+  assert.match(report, /stage trace:/);
+  assert.match(report, /qDom/);
+  assert.match(report, /qPaint/);
+});
+
+void test("formatResourceTrace reports URL resource-loading evidence", () => {
+  const report = formatResourceTrace({
+    url: "https://site.test/index.html",
+    rootBytes: 123,
+    discoveredResources: ["https://site.test/style.css", "https://site.test/pic.png"],
+    loadedResources: ["https://site.test/pic.png"],
+    missingResources: ["https://site.test/style.css"],
+    loadedBytes: 42,
+    stylesheetCount: 1,
+    authorStylesheetCount: 0,
+    authorRuleCount: 0,
+    authorDeclarationCount: 0,
+    decodedImageCount: 1,
+    displayCommands: 3,
+    imagePaintCount: 1,
+    paintOps: ["image", "rect"],
+  });
+  assert.match(report, /resource trace:/);
+  assert.match(report, /rootBytes=123/);
+  assert.match(report, /discovered=2 loaded=1 missing=1 loadedBytes=42/);
+  assert.match(report, /stylesheets=1 authorSheets=0 authorRules=0 authorDeclarations=0/);
+  assert.match(report, /decodedImages=1 displayCommands=3 imagePaints=1/);
+  assert.match(report, /paintOps=image,rect/);
+});
+
 void test("renderFileToPng reads HTML and writes a PNG to disk", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "be-render-"));
   try {
@@ -110,18 +161,60 @@ void test("runRender writes a PNG and returns exit code 0 on success", async () 
   }
 });
 
+void test("runRender --trace prints the stage-trace evidence table", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "be-render-cli-trace-"));
+  try {
+    const input = path.join(dir, "in.html");
+    const output = path.join(dir, "out.png");
+    writeFileSync(input, "<div>hello</div>");
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      const code = await runRender([input, "-o", output, "--trace"]);
+      assert.equal(code, 0);
+    } finally {
+      console.log = original;
+    }
+
+    const out = lines.join("\n");
+    assert.match(out, /rendered .*out\.png/);
+    assert.match(out, /stage trace:/);
+    assert.match(out, /qDom/);
+    assert.match(out, /qSheets/);
+    assert.match(out, /qComputed/);
+    assert.match(out, /qLayout/);
+    assert.match(out, /qPaint/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 void test("runRender returns a non-zero exit code on missing arguments", async () => {
   assert.equal(await runRender([]), 1); // no input, no -o
   assert.equal(await runRender(["only-input.html"]), 1); // missing -o
 });
 
 void test("parseRenderArgs accepts -o before or after the positional input", () => {
-  assert.deepEqual(parseRenderArgs(["a.html", "-o", "b.png"]), { input: "a.html", output: "b.png" });
-  assert.deepEqual(parseRenderArgs(["-o", "b.png", "a.html"]), { input: "a.html", output: "b.png" });
+  assert.deepEqual(parseRenderArgs(["a.html", "-o", "b.png"]), { input: "a.html", output: "b.png", trace: false });
+  assert.deepEqual(parseRenderArgs(["-o", "b.png", "a.html"]), { input: "a.html", output: "b.png", trace: false });
   assert.deepEqual(parseRenderArgs(["--output", "b.png", "a.html"]), {
     input: "a.html",
     output: "b.png",
+    trace: false,
   });
+  assert.deepEqual(parseRenderArgs(["--trace", "a.html", "--output", "b.png"]), {
+    input: "a.html",
+    output: "b.png",
+    trace: true,
+  });
+});
+
+void test("parseRenderArgs rejects unknown render options", () => {
+  assert.throws(() => parseRenderArgs(["a.html", "-o", "b.png", "--wat"]), /unknown option/);
 });
 
 void test("surfaceSizeFor pads to the default canvas and grows to fit painted content", () => {

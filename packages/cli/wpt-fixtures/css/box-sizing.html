@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS box-sizing affects layout geometry</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .box {
+    height: 40px;
+    padding-top: 10px;
+    padding-right: 10px;
+    padding-bottom: 10px;
+    padding-left: 10px;
+    border-top-width: 2px;
+    border-right-width: 2px;
+    border-bottom-width: 2px;
+    border-left-width: 2px;
+    border-top-style: solid;
+    border-right-style: solid;
+    border-bottom-style: solid;
+    border-left-style: solid;
+  }
+  #content {
+    width: 100px;
+  }
+  #border {
+    box-sizing: border-box;
+    width: 100px;
+  }
+</style>
+<body>
+<div id="content" class="box"></div>
+<div id="border" class="box"></div>
+<script>
+test(function () {
+  var rect = document.getElementById("content").getBoundingClientRect();
+  assert_equals(rect.width, 124, "content-box width grows by padding and border");
+  assert_equals(rect.height, 64, "content-box height grows by padding and border");
+}, "content-box sizing exposes an expanded border box");
+
+test(function () {
+  var rect = document.getElementById("border").getBoundingClientRect();
+  assert_equals(rect.width, 100, "border-box width is the declared width");
+  assert_equals(rect.height, 40, "border-box height is the declared height");
+}, "border-box sizing exposes the declared border box");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("border"));
+  assert_equals(cs.getPropertyValue("box-sizing"), "border-box");
+}, "getComputedStyle exposes box-sizing");
+</script>
+</body>

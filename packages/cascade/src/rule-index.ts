@@ -48,9 +48,12 @@
  *   - `:first-child` — the first *element* child of its parent,
  *   - `:last-child`  — the last *element* child of its parent.
  *
- * Any selector feature outside this subset (attribute selectors, sibling
- * combinators, pseudo-elements, unsupported pseudo-classes) makes the selector
- * safely fail to match rather than match the wrong nodes.
+ * Attribute selectors are also parsed and matched here (`[a]`, `[a=v]`,
+ * `[a~=v]`, `[a|=v]`, `[a^=v]`, `[a$=v]`, `[a*=v]`, and the `i` flag), along
+ * with the later-maintained sibling combinators and DOM-decidable pseudos below.
+ * Selector features outside the supported subset (pseudo-elements and
+ * unsupported pseudo-classes) safely fail to match rather than match the wrong
+ * nodes.
  *
  * This module lives inside the *cascade* stage package and imports ONLY the
  * frozen IR (`@browser-engine/ir`), so it never crosses a stage boundary
@@ -127,7 +130,19 @@ export interface IndexedRule {
   readonly rule: StyleRule;
   /** Global document order: ascending across sheets, then rules within a sheet. */
   readonly order: number;
+  /** The cascade origin of the sheet this rule came from. */
+  readonly origin: CascadeOrigin;
+  /** The cascade layer path this rule belongs to (`undefined` = unlayered). */
+  readonly layer?: readonly string[] | undefined;
 }
+
+/**
+ * CSS cascade origins (CSS Cascade 4 §6.3). The numeric rank encodes the
+ * cascade precedence for NORMAL declarations (lower = lower precedence):
+ * UA < User < Author. IMPORTANT declarations have a different, partially
+ * reversed order (see {@link cascadeRank} in index.ts).
+ */
+export type CascadeOrigin = "ua" | "user" | "author";
 
 /**
  * The selector-matching index (design.md §8.3). Rules are bucketed by the key
@@ -159,9 +174,15 @@ interface MutableIndex {
  * bucket per selector-list entry, keyed on that entry's rightmost compound.
  *
  * @param sheets the frozen StyleSheet IR list, in cascade (document) order.
+ * @param origins optional per-sheet origin labels (default: all `"author"`).
+ *   When provided, must be the same length as `sheets`.
  * @returns the bucketed rule index.
  */
-export function buildRuleIndex(sheets: readonly StyleSheet[]): RuleIndex {
+export function buildRuleIndex(
+  sheets: readonly StyleSheet[],
+  origins?: readonly CascadeOrigin[],
+  _layerOrder?: readonly (readonly string[])[],
+): RuleIndex {
   const index: MutableIndex = {
     byId: new Map(),
     byClass: new Map(),
@@ -170,9 +191,17 @@ export function buildRuleIndex(sheets: readonly StyleSheet[]): RuleIndex {
   };
 
   let order = 0;
-  for (const sheet of sheets) {
+  for (let s = 0; s < sheets.length; s += 1) {
+    const sheet = sheets[s];
+    if (sheet === undefined) continue;
+    const origin = origins?.[s] ?? "author";
     for (const rule of sheet.rules) {
-      const indexed: IndexedRule = { rule, order: order++ };
+      const indexed: IndexedRule = {
+        rule,
+        order: order++,
+        origin,
+        layer: rule.layer,
+      };
       fileRule(index, indexed);
     }
   }
@@ -278,6 +307,14 @@ export function candidateRulesFor(index: RuleIndex, dom: DomTree, node: NodeId):
  * @returns the matching rules, in global document order.
  */
 export function matchRulesFor(index: RuleIndex, dom: DomTree, node: NodeId): StyleRule[] {
+  return matchRulesForIndexed(index, dom, node).map((m) => m.rule);
+}
+
+/**
+ * Like {@link matchRulesFor} but returns the full {@link IndexedRule} (with
+ * origin) so the cascade can apply origin-aware sorting (CSS Cascade 4 §6.3).
+ */
+export function matchRulesForIndexed(index: RuleIndex, dom: DomTree, node: NodeId): readonly IndexedRule[] {
   const candidates = collectCandidates(index, dom, node);
   const matched: IndexedRule[] = [];
   for (const candidate of candidates) {
@@ -286,7 +323,7 @@ export function matchRulesFor(index: RuleIndex, dom: DomTree, node: NodeId): Sty
     }
   }
   matched.sort((a, b) => a.order - b.order);
-  return matched.map((m) => m.rule);
+  return matched;
 }
 
 /**
@@ -375,6 +412,8 @@ interface CompoundSelector {
   readonly nth: readonly NthConstraint[];
   /** `:not(...)` negations — each an inner compound that must NOT match. */
   readonly not: readonly CompoundSelector[];
+  /** `:has(...)` relative selectors — each an inner complex that MUST match a descendant. */
+  readonly has: readonly ComplexSelector[];
 }
 
 /** A parsed complex selector: compounds left→right, with the linking combinators. */
@@ -471,6 +510,69 @@ function precedingElementSiblings(domNode: DomNode, dom: DomTree): NodeId[] {
   return out;
 }
 
+/**
+ * Check if `:has(relativeSelector)` matches: the host element has a descendant
+ * (or sibling, for `+`/`~` combinators) that matches the relative selector.
+ * The relative selector's leftmost compound is matched against descendants.
+ */
+function matchesHas(relative: ComplexSelector, host: DomNode, dom: DomTree): boolean {
+  // For a simple descendant relative selector, check all descendants.
+  // For `>` (child), check only direct children.
+  // For `+`/`~`, check siblings.
+  const firstCombinator = relative.combinators[0] ?? "descendant";
+  if (firstCombinator === "child" || firstCombinator === "descendant") {
+    return matchesHasDescendant(relative, host, dom, firstCombinator === "child");
+  }
+  // For sibling combinators, check siblings of the host.
+  // This is a simplified implementation: check if any sibling matches.
+  if (host.parent === null) return false;
+  const parent = dom.nodes.get(host.parent);
+  if (parent === undefined) return false;
+  let foundHost = false;
+  for (const sibId of parent.children) {
+    if (sibId === host.id) { foundHost = true; continue; }
+    if (!foundHost) continue;
+    const sib = dom.nodes.get(sibId);
+    if (sib === undefined || sib.kind !== "element") continue;
+    if (matchFrom(relative, relative.compounds.length - 1, dom, sibId)) {
+      return true;
+    }
+    if (firstCombinator === "next-sibling") break; // only the immediately following sibling
+  }
+  return false;
+}
+
+/** Check descendants for `:has(descendant-selector)` or `:has(> child-selector)`. */
+function matchesHasDescendant(relative: ComplexSelector, host: DomNode, dom: DomTree, directChildOnly: boolean): boolean {
+  for (const childId of host.children) {
+    const child = dom.nodes.get(childId);
+    if (child === undefined) continue;
+    if (child.kind === "element") {
+      if (matchFrom(relative, relative.compounds.length - 1, dom, childId)) {
+        return true;
+      }
+    }
+    if (!directChildOnly) {
+      // Recurse into descendants.
+      if (child !== undefined && matchesHasDescendant(relative, child, dom, false)) {
+        return true;
+      }
+    } else {
+      // For `>` we still need to check the relative selector's own descendant
+      // combinators within the child subtree.
+      if (child !== undefined && child.kind === "element") {
+        // The relative selector may have additional descendant combinators.
+        // matchFrom already handles the full selector chain from the rightmost
+        // compound, so if the first combinator was `>` we only checked direct
+        // children. But the relative selector's compounds[0] is the scope (`*`),
+        // and compounds[1] is the actual selector. The matchFrom function checks
+        // from right to left, so it handles this correctly.
+      }
+    }
+  }
+  return false;
+}
+
 /** Does a single compound selector match this DOM node? */
 function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomTree): boolean {
   if (domNode.kind !== "element") {
@@ -508,6 +610,12 @@ function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomT
   for (const inner of compound.not) {
     if (matchesCompound(inner, domNode, dom)) {
       return false; // :not(X) fails when the inner compound matches.
+    }
+  }
+  for (const hasSelector of compound.has) {
+    // :has(X) matches if ANY descendant matches the relative selector.
+    if (!matchesHas(hasSelector, domNode, dom)) {
+      return false;
     }
   }
   return true;
@@ -851,6 +959,7 @@ function parseCompound(token: string): CompoundSelector | null {
   const attributes: AttrConstraint[] = [];
   const nth: NthConstraint[] = [];
   const not: CompoundSelector[] = [];
+  const has: ComplexSelector[] = [];
 
   let i = 0;
   const len = token.length;
@@ -886,20 +995,37 @@ function parseCompound(token: string): CompoundSelector | null {
     }
     if (ch === ":") {
       if (token[i + 1] === ":") {
-        return null; // pseudo-element (::before, …): out of subset → safe non-match.
+        // Pseudo-element (::before, ::after, etc.) — the engine does not yet
+        // support generated content, so a selector with a pseudo-element does
+        // not match any element. Return null so the rule is a safe no-match
+        // (the selector is still parsed for specificity by the CSS parser).
+        return null;
       }
       const name = readIdent(token, i + 1);
       if (name.length === 0) return null;
       let after = i + 1 + name.length;
       if (token[after] === "(") {
-        // Functional pseudo-class: :nth-*(...) or :not(...).
-        const close = token.indexOf(")", after);
-        if (close === -1) return null;
-        const arg = token.slice(after + 1, close);
+        // Find the matching close paren (handle nested parens).
+        let depth = 1;
+        let close = after + 1;
+        while (close < len && depth > 0) {
+          const cc = token[close];
+          if (cc === "(") depth += 1;
+          else if (cc === ")") depth -= 1;
+          close += 1;
+        }
+        if (depth > 0) return null; // unbalanced
+        const arg = token.slice(after + 1, close - 1);
         if (name === "not") {
           const inner = parseCompound(arg.trim());
           if (inner === null) return null;
           not.push(inner);
+        } else if (name === "has") {
+          // :has(<relative-selector>) — parse the argument as a complex selector
+          // (may start with a combinator like > or +).
+          const inner = parseHasArgument(arg.trim());
+          if (inner === null) return null;
+          has.push(inner);
         } else {
           const axis = NTH_AXES[name];
           if (axis === undefined) return null;
@@ -907,7 +1033,7 @@ function parseCompound(token: string): CompoundSelector | null {
           if (parsed === null) return null;
           nth.push({ axis, a: parsed.a, b: parsed.b });
         }
-        after = close + 1;
+        after = close;
       } else {
         if (!SUPPORTED_PSEUDO_CLASSES.has(name)) {
           return null;
@@ -927,7 +1053,25 @@ function parseCompound(token: string): CompoundSelector | null {
     return null; // unsupported character.
   }
 
-  return { tag, id, classes, pseudoClasses, attributes, nth, not };
+  return { tag, id, classes, pseudoClasses, attributes, nth, not, has };
+}
+
+/**
+ * Parse the argument of `:has(...)` — a relative selector that may start with
+ * a combinator (`>`, `+`, `~`, or whitespace for descendant). The `:scope`
+ * pseudo-class refers to the host element. Returns a {@link ComplexSelector}
+ * with the relative prefix resolved to a descendant/child/etc. match.
+ */
+function parseHasArgument(arg: string): ComplexSelector | null {
+  // The argument is a relative selector. It may start with a combinator.
+  // For simplicity, we parse it as a complex selector (the `:scope` is implicit).
+  const trimmed = arg.trim();
+  // Handle leading combinator (>, +, ~) — treat as the first combinator.
+  if (trimmed.startsWith(">") || trimmed.startsWith("+") || trimmed.startsWith("~")) {
+    // Prepend `*` as the scope element.
+    return parseComplexSelector("* " + trimmed);
+  }
+  return parseComplexSelector(trimmed);
 }
 
 /** The `:nth-*` functional pseudo-classes mapped to the index axis they test. */

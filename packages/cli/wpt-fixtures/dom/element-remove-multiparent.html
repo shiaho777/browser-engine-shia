@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element.remove across detached and reparented nodes</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="noop-host"></section>
+<section id="old-parent"><span id="old-a">a</span><span id="move-me" class="target">move</span><span id="old-c">c</span></section>
+<section id="new-parent"><span id="new-a">a</span><span id="new-c">c</span></section>
+<section id="sibling-host"><span id="sib-a">a</span><span id="sib-b">b</span><span id="sib-c">c</span></section>
+<section id="query-host"><article id="query-remove" class="remove-target">query</article></section>
+<section id="double-host"><span id="double-remove">double</span></section>
+<script>
+test(function () {
+  var detached = document.createElement("span");
+  detached.id = "detached-remove";
+
+  assert_equals(detached.parentNode, null, "precondition: created node is detached");
+  assert_false(detached.isConnected, "precondition: created node is disconnected");
+
+  detached.remove();
+  detached.remove();
+
+  assert_equals(detached.parentNode, null, "remove on a detached node is a no-op");
+  assert_false(detached.isConnected, "detached node stays disconnected after remove");
+  assert_equals(document.getElementById("detached-remove"), null, "detached node never enters document lookup");
+}, "Element.remove is a no-op for detached nodes");
+
+test(function () {
+  var oldParent = document.getElementById("old-parent");
+  var newParent = document.getElementById("new-parent");
+  var moved = document.getElementById("move-me");
+  var newC = document.getElementById("new-c");
+
+  newParent.insertBefore(moved, newC);
+
+  assert_equals(moved.parentElement, newParent, "precondition: moved node is owned by the new parent");
+  assert_equals(oldParent.textContent, "ac", "old parent lost the moved node during reparent");
+  assert_equals(newParent.textContent, "amovec", "new parent gained the moved node before the reference");
+
+  moved.remove();
+
+  assert_equals(moved.parentNode, null, "remove detaches from the current parent");
+  assert_false(moved.isConnected, "removed reparented node becomes disconnected");
+  assert_equals(oldParent.textContent, "ac", "old parent is not touched by removing the reparented node");
+  assert_equals(newParent.textContent, "ac", "new parent loses only the moved node");
+  assert_equals(document.getElementById("move-me"), null, "document lookup no longer sees removed reparented node");
+}, "Element.remove follows the node's current parent after reparenting");
+
+test(function () {
+  var host = document.getElementById("sibling-host");
+  var a = document.getElementById("sib-a");
+  var b = document.getElementById("sib-b");
+  var c = document.getElementById("sib-c");
+
+  b.remove();
+
+  assert_equals(host.childElementCount, 2, "parent childElementCount is fresh");
+  assert_equals(host.children.length, 2, "children collection is fresh");
+  assert_equals(host.childNodes.length, 2, "childNodes collection is fresh");
+  assert_equals(host.firstElementChild, a, "firstElementChild stays on the first remaining element");
+  assert_equals(host.lastElementChild, c, "lastElementChild stays on the last remaining element");
+  assert_equals(a.nextElementSibling, c, "previous sibling relinks to the next remaining element");
+  assert_equals(c.previousElementSibling, a, "next sibling relinks to the previous remaining element");
+  assert_equals(b.previousElementSibling, null, "removed node has no previous element sibling");
+  assert_equals(b.nextElementSibling, null, "removed node has no next element sibling");
+}, "Element.remove keeps parent and sibling traversal fresh");
+
+test(function () {
+  var host = document.getElementById("query-host");
+  var target = document.getElementById("query-remove");
+
+  assert_equals(host.querySelector(".remove-target"), target, "precondition: scoped query sees the target");
+  assert_equals(document.querySelector("#query-host .remove-target"), target, "precondition: document query sees the target");
+  assert_equals(document.getElementsByTagName("article").length, 1, "precondition: document tag query sees the target");
+  assert_true(host.contains(target), "precondition: parent contains target");
+
+  target.remove();
+
+  assert_equals(host.querySelector(".remove-target"), null, "scoped query no longer sees removed target");
+  assert_equals(document.querySelector("#query-host .remove-target"), null, "document query no longer sees removed target");
+  assert_equals(document.getElementsByTagName("article").length, 0, "tag query no longer sees removed target");
+  assert_false(host.contains(target), "parent no longer contains removed target");
+  assert_true(target.contains(target), "removed node still contains itself");
+}, "Element.remove keeps query and containment observations fresh");
+
+test(function () {
+  var host = document.getElementById("double-host");
+  var target = document.getElementById("double-remove");
+
+  target.remove();
+  target.remove();
+
+  assert_equals(host.children.length, 0, "second remove leaves parent unchanged");
+  assert_equals(target.parentNode, null, "second remove leaves node detached");
+  assert_false(target.isConnected, "second remove leaves node disconnected");
+  assert_equals(document.getElementById("double-remove"), null, "second remove does not resurrect document lookup");
+}, "Element.remove remains a no-op after the first detach");
+</script>
+</body>

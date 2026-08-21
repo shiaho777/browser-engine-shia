@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Dynamic base href external stylesheet resolution</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<base id="first-base" href="support/base-a/">
+<base id="later-base" href="support/base-ignored/">
+<link id="dynamic-base-link" rel="stylesheet" href="theme.css">
+<body>
+<div id="base-dynamic-target">dynamic base href stylesheet</div>
+<script>
+var firstBase = document.getElementById("first-base");
+var laterBase = document.getElementById("later-base");
+var link = document.getElementById("dynamic-base-link");
+var target = document.getElementById("base-dynamic-target");
+
+test(function () {
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "61px", "initial stylesheet resolves through the first base");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "initial first-base stylesheet applies color");
+}, "initial external stylesheet uses the first base href");
+
+test(function () {
+  laterBase.setAttribute("href", "support/base-b/");
+
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "61px", "later base mutation does not retarget the active stylesheet");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "first base remains effective after later base mutation");
+}, "mutating a later base href does not change stylesheet resolution");
+
+test(function () {
+  link.setAttribute("href", "next.css");
+
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "62px", "link href reloads through the first base");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(255, 0, 0)", "replacement sheet from first base applies");
+}, "mutating a stylesheet href reloads against the first base href");
+
+test(function () {
+  firstBase.setAttribute("href", "support/base-b/");
+
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "63px", "first base mutation retargets the current stylesheet href");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(0, 0, 255)", "replacement sheet from changed first base applies");
+}, "mutating the first base href reloads current stylesheet URLs");
+</script>
+</body>

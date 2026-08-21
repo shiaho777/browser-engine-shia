@@ -101,7 +101,7 @@ void test("platform-as-data-layout: emitted artifacts include every new field", 
   const parser = emitCssParser(CSS_PROPERTIES).contents;
   // Field types for the new properties.
   assert.match(fields, /readonly flexDirection: FlexDirection;/);
-  assert.match(fields, /readonly gridTemplateColumns: number;/);
+  assert.match(fields, /readonly gridTemplateColumns: string;/);
   assert.match(fields, /readonly opacity: number;/);
   assert.match(fields, /readonly transform: TransformValue;/);
   assert.match(fields, /readonly zIndex: number;/);

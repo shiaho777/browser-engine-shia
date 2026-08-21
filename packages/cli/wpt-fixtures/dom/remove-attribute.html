@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM removeAttribute</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .hot { color: rgb(1, 2, 3); width: 41px; }
+  [data-on] { height: 17px; }
+</style>
+<body>
+<div id="target" class="hot" data-on="yes">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+  assert_true(el.hasAttribute("data-on"), "precondition: data-on exists");
+  el.removeAttribute("data-on");
+  assert_false(el.hasAttribute("data-on"), "hasAttribute observes removal");
+  assert_equals(el.getAttribute("data-on"), null, "getAttribute returns null after removal");
+}, "removeAttribute removes the attribute key");
+
+test(function () {
+  var el = document.getElementById("target");
+  el.setAttribute("data-on", "yes");
+  assert_true(el.matches("[data-on]"), "precondition: presence selector matches");
+  el.removeAttribute("data-on");
+  assert_false(el.matches("[data-on]"), "presence selector stops matching after removal");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "style falls back after attribute selector stops matching");
+}, "removeAttribute updates selector matching and computed style");
+
+test(function () {
+  var el = document.getElementById("target");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "precondition: class rule matches");
+  el.removeAttribute("class");
+  assert_false(el.hasAttribute("class"), "class key is removed");
+  assert_equals(el.className, "", "className reflects the missing class attribute");
+  assert_false(el.matches(".hot"), "class selector stops matching");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(0, 0, 0)", "color falls back to the inherited initial");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "auto", "layout-affecting class style falls back");
+}, "removeAttribute(\"class\") updates reflected class and style");
+</script>
+</body>

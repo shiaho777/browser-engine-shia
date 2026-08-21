@@ -13,6 +13,7 @@ import vm from "node:vm";
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
+import type { StageTrace } from "./stage-trace.js";
 
 /** A single subtest's outcome, mirroring testharness statuses. */
 export interface WptSubtest {
@@ -28,6 +29,10 @@ export interface WptReport {
   readonly failed: number;
   /** A harness-level error (e.g. the script threw before any test ran). */
   readonly harnessError: string | null;
+  /** Optional query trace evidence for WPT runs that ask for it. */
+  readonly trace?: StageTrace;
+  /** Trace/render evidence failure, kept separate from WPT harness scoring. */
+  readonly traceError?: string;
 }
 
 /**

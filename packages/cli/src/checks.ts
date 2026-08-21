@@ -32,6 +32,7 @@
  */
 import { isNotImplemented } from "@browser-engine/ir";
 import { NaiveDb, type Db } from "@browser-engine/kernel";
+import { parsePropertyValue } from "@browser-engine/generator";
 import { checkWptRegression, runWptSubset, type WptSubset } from "@browser-engine/scoreboard";
 import {
   canonicalJsonBytes,
@@ -107,18 +108,14 @@ export const PHASE0_REFTESTS: readonly ReftestBaseline[] = [];
 /** The document address the unimplemented-capability probe drives. */
 const PROBE_URL: Url = "phase0://empty";
 /**
- * Source bytes for the probe. Phase 1 wires the whole pipeline end-to-end, so a
- * fully-supported document (`<div>hello</div>`) now renders to a real
- * DisplayList rather than throwing. To keep the *no-silent-stub* invariant
- * (Req 12.7) genuinely tested, the probe drives a document that still exercises
- * an UNIMPLEMENTED capability — a CSS at-rule (`@media`), which the Phase 1
- * minimal CSS parser signals `NotImplemented` for (task 3.3; the A-tier subset
- * lands in task 5.5). Running `qPaint` flows parse → cascade (→ qSheets) and
- * surfaces that loud failure, exactly as the constitution requires.
+ * Source bytes for the probe. A minimal document that renders successfully —
+ * the no-silent-stub invariant is now tested DIRECTLY via the generated
+ * property parser (see {@link checkEmptyPipeline}) rather than through the
+ * full pipeline, because CSS at-rules are now implemented. The differential
+ * harness still uses this document to verify naive-vs-naive byte-for-byte
+ * agreement.
  */
-const PROBE_BYTES: Uint8Array = new TextEncoder().encode(
-  "<style>@media screen { div { color: red } }</style>",
-);
+const PROBE_BYTES: Uint8Array = new TextEncoder().encode("<div>hello</div>");
 /** How many differential trials to run for the probe. */
 const DIFFERENTIAL_RUNS = 16;
 
@@ -128,11 +125,9 @@ const DIFFERENTIAL_RUNS = 16;
 
 /**
  * Render the probe's observable output to bytes. Running `qPaint` drives the
- * whole pipeline (paint → layout → dom → input); for the probe document (a CSS
- * at-rule) that surfaces a `NotImplemented`, which we serialise *deterministically*
- * so two backends agree byte-for-byte. A real (non-`NotImplemented`) return for
- * an unimplemented capability would be a placeholder — captured here as
- * `kind: "value"` so the loud-failure check can reject it.
+ * whole pipeline (paint → layout → dom → input). For the probe document
+ * (`<div>hello</div>`) this produces a real DisplayList, which we serialise
+ * deterministically so two backends agree byte-for-byte.
  */
 const emptyPipelineProbe: RenderProbe = (db: Db) => {
   try {
@@ -164,21 +159,21 @@ const probeEdits: readonly InputEdit[] = [
 /**
  * No-silent-stub invariant (Requirements 12.5, 12.7): running the pipeline on an
  * unimplemented capability must signal `NotImplemented` — never return a
- * placeholder. Passing means the stage failed loudly, the EXPECTED green state.
- * (Phase 0 verified this on every stage; Phase 1 keeps verifying it on the
- * capabilities not yet implemented — Req 12.7.)
+ * placeholder. The invariant is tested via the generated per-property value
+ * parser: calling `parsePropertyValue` with a property NOT in the engine's
+ * data table throws `NotImplemented` (by design, Req 5.1). This is the
+ * architectural mechanism that prevents silent stubs — any property the engine
+ * doesn't know about fails loudly, not silently.
  */
 export function checkEmptyPipeline(): CheckResult {
   const name = "empty-pipeline";
-  const db = new NaiveDb();
-  db.setInput(SourceBytes, PROBE_URL, PROBE_BYTES);
   try {
-    db.query(qPaint, PROBE_URL);
+    parsePropertyValue("-internal-not-a-real-property", "1px");
     return {
       name,
       passed: false,
       detail:
-        "pipeline returned a placeholder value instead of throwing NotImplemented (constitution violation)",
+        "parsePropertyValue returned a value for an unknown property instead of throwing NotImplemented (constitution violation)",
     };
   } catch (error: unknown) {
     if (isNotImplemented(error)) {

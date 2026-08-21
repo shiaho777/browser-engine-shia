@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getComputedStyle property name aliases</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    background-color: rgb(1, 2, 3);
+    font-size: 21px;
+    width: 37px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_equals(cs["background-color"], "rgb(1, 2, 3)", "dashed bracket read returns the computed background-color");
+  assert_equals(cs.backgroundColor, "rgb(1, 2, 3)", "camelCase field reads the same computed value");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(1, 2, 3)", "getPropertyValue reads the same declaration data");
+}, "getComputedStyle supports dashed bracket reads for color properties");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_equals(cs["font-size"], "21px", "dashed bracket read returns the computed font-size");
+  assert_equals(cs.fontSize, "21px", "camelCase field reads the same length value");
+  assert_equals(cs.getPropertyValue("font-size"), "21px", "getPropertyValue reads the same length data");
+}, "getComputedStyle supports dashed bracket reads for length properties");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+
+  assert_true("background-color" in cs, "supported dashed CSS property names are visible through the CSSOM declaration");
+  assert_true("fontSize" in cs, "supported camelCase CSSOM aliases remain visible");
+  assert_false("not-a-real-css-property" in cs, "unknown dashed property names are not synthesized");
+  assert_equals(cs["not-a-real-css-property"], undefined, "unknown property reads remain ordinary object misses");
+}, "getComputedStyle exposes supported aliases without synthesizing unknown properties");
+</script>
+</body>

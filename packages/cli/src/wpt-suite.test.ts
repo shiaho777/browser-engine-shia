@@ -14,7 +14,13 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runWptHtml, runWptScriptFile, runWptDirectory, collectWptTests, extractScripts } from "./wpt-suite.js";
+import {
+  runWptHtml,
+  runWptScriptFile,
+  runWptDirectory,
+  collectWptTests,
+  extractScripts,
+} from "./wpt-suite.js";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "wpt-fixtures");
 
@@ -40,6 +46,79 @@ void test("runWptHtml runs a real testharness .html test and scores subtests", a
   assert.equal(report.harnessError, null);
   assert.equal(report.subtests.length, 3);
   assert.equal(report.passed, 3, JSON.stringify(report.subtests));
+});
+
+void test("runWptHtml resolves external stylesheet support resources into the cascade", async () => {
+  const html = `<!DOCTYPE html><title>external stylesheet</title>
+    <script src="/resources/testharness.js"></script>
+    <link rel="stylesheet" href="support/external.css">
+    <body><div id="target">external</div>
+    <script>
+      test(function () {
+        assert_equals(getComputedStyle(document.getElementById("target")).color, "rgb(0, 128, 255)");
+      }, "external stylesheet color");
+      test(function () {
+        assert_equals(getComputedStyle(document.getElementById("target")).getPropertyValue("width"), "64px");
+      }, "external stylesheet width");
+    </script></body>`;
+  const calls: string[] = [];
+  const report = await runWptHtml(
+    html,
+    (src) => {
+      calls.push(src);
+      return src === "wpt://doc/support/external.css" ? "#target { color: #0080ff; width: 64px }" : undefined;
+    },
+  );
+  assert.equal(report.harnessError, null);
+  assert.equal(report.passed, 2, JSON.stringify(report.subtests));
+  assert.deepEqual(calls, ["wpt://doc/support/external.css"]);
+});
+
+void test("runWptHtml resolves external stylesheets against the document base URL", async () => {
+  const html = `<!DOCTYPE html><title>base href stylesheet</title>
+    <script src="/resources/testharness.js"></script>
+    <base href="https://cdn.test/assets/">
+    <link rel="stylesheet" href="theme.css">
+    <body><div id="target">external</div>
+    <script>
+      test(function () {
+        assert_equals(getComputedStyle(document.getElementById("target")).color, "rgb(0, 128, 255)");
+      }, "base href stylesheet color");
+    </script></body>`;
+  const calls: string[] = [];
+  const report = await runWptHtml(
+    html,
+    (src) => {
+      calls.push(src);
+      return src === "https://cdn.test/assets/theme.css" ? "#target { color: #0080ff }" : undefined;
+    },
+    { documentUrl: "https://site.test/pages/index.html" },
+  );
+
+  assert.equal(report.harnessError, null);
+  assert.equal(report.passed, 1, JSON.stringify(report.subtests));
+  assert.deepEqual(calls, ["https://cdn.test/assets/theme.css"]);
+});
+
+void test("runWptHtml with trace reports the actual fine-grained WPT query graph", async () => {
+  const html = `<!DOCTYPE html><title>t</title>
+    <script src="/resources/testharness.js"></script>
+    <head><style>#x { color: red }</style></head>
+    <body><div id="x">hi</div>
+    <script>
+      test(function () {
+        assert_equals(getComputedStyle(document.getElementById("x")).color, "rgb(255, 0, 0)");
+      }, "computed style");
+    </script></body>`;
+  const report = await runWptHtml(html, undefined, { trace: true });
+  assert.equal(report.harnessError, null);
+  assert.equal(report.traceError, undefined);
+  assert.equal(report.passed, 1, JSON.stringify(report.subtests));
+  const stages = new Set(report.trace?.summaries.map((summary) => summary.stage));
+  assert.ok(stages.has("qFineSheets"));
+  assert.ok(stages.has("qFineComputed"));
+  assert.ok(stages.has("qFineLayout"));
+  assert.ok(stages.has("qFinePaint"));
 });
 
 void test("runWptHtml reports a failing subtest as FAIL (not a thrown error)", async () => {
@@ -82,6 +161,14 @@ void test("runWptDirectory runs the whole fixture suite and aggregates PASS/FAIL
   assert.ok(suite.subtests >= 7, "subtests across files were scored");
   assert.ok(suite.passed >= 7, `most fixture subtests pass: ${suite.passed}/${suite.subtests}`);
   assert.equal(suite.failed, 0, "no fixture subtest fails");
+});
+
+void test("runWptDirectory with trace aggregates per-file WPT evidence", async () => {
+  const suite = await runWptDirectory(FIXTURES, 2, { trace: true });
+  assert.equal(suite.files, 2);
+  assert.ok(suite.trace !== undefined, "suite trace is attached");
+  assert.ok(suite.trace.totalCalls > 0);
+  assert.ok(suite.trace.summaries.some((summary) => summary.stage === "qFinePaint"));
 });
 
 void test("WPT: a test that dynamically builds DOM (createElement/appendChild) now passes", async () => {

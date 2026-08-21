@@ -65,6 +65,7 @@ export interface QuadCommand {
   readonly w: number;
   readonly h: number;
   readonly fragment: Fragment;
+  readonly radius?: number;
 }
 
 /** Intersect the clip rect with this rectangle for subsequent draws. */
@@ -74,6 +75,7 @@ export interface PushClipCommand {
   readonly y: number;
   readonly w: number;
   readonly h: number;
+  readonly radius?: number;
 }
 
 /** Restore the clip to before the matching push-clip. */
@@ -96,6 +98,11 @@ export interface ClipRect {
   readonly y0: number;
   readonly x1: number;
   readonly y1: number;
+  readonly radius?: number;
+  readonly rx?: number;
+  readonly ry?: number;
+  readonly rw?: number;
+  readonly rh?: number;
 }
 
 /** Evaluate a fragment shader at local quad coordinates `(u, v)` in `[0,1]`. */
@@ -152,6 +159,60 @@ export function renderBand(cmd: CommandBuffer, y0: number, y1: number): Uint8Cla
 
 /** Apply ONE command to a band buffer, honouring the clip stack. The kernel
  * shared by the serial device, the parallel workers, and the layer executor. */
+export function roundedCover(
+  px: number,
+  py: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+): number {
+  if (!(radius > 0) || !(w > 0) || !(h > 0)) return 1;
+  const r = Math.min(radius, w * 0.5, h * 0.5);
+  if (!(r > 0)) return 1;
+  const lx = px - x;
+  const ly = py - y;
+  if (lx < 0 || ly < 0 || lx > w || ly > h) return 0;
+  let cx: number | null = null;
+  let cy: number | null = null;
+  if (lx < r && ly < r) {
+    cx = x + r;
+    cy = y + r;
+  } else if (lx > w - r && ly < r) {
+    cx = x + w - r;
+    cy = y + r;
+  } else if (lx < r && ly > h - r) {
+    cx = x + r;
+    cy = y + h - r;
+  } else if (lx > w - r && ly > h - r) {
+    cx = x + w - r;
+    cy = y + h - r;
+  } else {
+    return 1;
+  }
+  const dx = px - (cx);
+  const dy = py - (cy);
+  const d2 = dx * dx + dy * dy;
+  const inner = r - 0.5;
+  if (inner > 0 && d2 <= inner * inner) return 1;
+  const outer = r + 0.5;
+  if (d2 >= outer * outer) return 0;
+  const d = Math.sqrt(d2);
+  return Math.max(0, Math.min(1, outer - d));
+}
+
+function clipPixelCover(clip: ClipRect, px: number, py: number): number {
+  if (px < clip.x0 || px >= clip.x1 || py < clip.y0 || py >= clip.y1) return 0;
+  const r = clip.radius ?? 0;
+  if (!(r > 0)) return 1;
+  const rx = clip.rx ?? clip.x0;
+  const ry = clip.ry ?? clip.y0;
+  const rw = clip.rw ?? clip.x1 - clip.x0;
+  const rh = clip.rh ?? clip.y1 - clip.y0;
+  return roundedCover(px + 0.5, py + 0.5, rx, ry, rw, rh, r);
+}
+
 export function applyCommand(
   buf: Uint8ClampedArray,
   w: number,
@@ -173,12 +234,25 @@ export function applyCommand(
       return;
     }
     case "push-clip": {
-      clipStack.push({
+      const next: ClipRect = {
         x0: Math.max(clip.x0, Math.floor(command.x)),
         y0: Math.max(clip.y0, Math.floor(command.y)),
         x1: Math.min(clip.x1, Math.ceil(command.x + command.w)),
         y1: Math.min(clip.y1, Math.ceil(command.y + command.h)),
-      });
+      };
+      const radius = command.radius ?? 0;
+      if (radius > 0) {
+        clipStack.push({
+          ...next,
+          radius,
+          rx: command.x,
+          ry: command.y,
+          rw: command.w,
+          rh: command.h,
+        });
+      } else {
+        clipStack.push(next);
+      }
       return;
     }
     case "pop-clip": {
@@ -192,12 +266,28 @@ export function applyCommand(
       const qy0 = Math.max(clip.y0, bandY0, Math.floor(q.y));
       const qy1 = Math.min(clip.y1, bandY1, Math.ceil(q.y + q.h));
       if (x1 <= x0 || qy1 <= qy0 || q.w <= 0 || q.h <= 0) return;
+      const qr = q.radius ?? 0;
+      const clipRounded = (clip.radius ?? 0) > 0;
       for (let y = qy0; y < qy1; y += 1) {
         const v = (y + 0.5 - q.y) / q.h;
         const rowBase = (y - bandY0) * w;
         for (let x = x0; x < x1; x += 1) {
+          let cover = 1;
+          if (clipRounded) {
+            cover = clipPixelCover(clip, x, y);
+            if (cover <= 0) continue;
+          }
+          if (qr > 0) {
+            cover *= roundedCover(x + 0.5, y + 0.5, q.x, q.y, q.w, q.h, qr);
+            if (cover <= 0) continue;
+          }
           const u = (x + 0.5 - q.x) / q.w;
-          blendInto(buf, (rowBase + x) * 4, shade(q.fragment, u, v));
+          const c = shade(q.fragment, u, v);
+          if (cover < 1) {
+            blendInto(buf, (rowBase + x) * 4, { r: c.r, g: c.g, b: c.b, a: c.a * cover });
+          } else {
+            blendInto(buf, (rowBase + x) * 4, c);
+          }
         }
       }
       return;

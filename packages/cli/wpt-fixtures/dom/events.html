@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM events</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="outer"><button id="btn">go</button></div>
+<script>
+test(function () {
+  var order = [];
+  var outer = document.getElementById("outer");
+  var btn = document.getElementById("btn");
+  outer.addEventListener("click", function () { order.push("outer-capture"); }, true);
+  outer.addEventListener("click", function () { order.push("outer-bubble"); }, false);
+  btn.addEventListener("click", function () { order.push("target"); });
+  btn.click();
+  assert_array_equals(order, ["outer-capture", "target", "outer-bubble"]);
+}, "click dispatches through capture, target, and bubble listeners");
+
+test(function () {
+  var btn = document.getElementById("btn");
+  var bubbled = false;
+  document.getElementById("outer").addEventListener("click", function () { bubbled = true; });
+  btn.addEventListener("click", function (event) { event.stopPropagation(); });
+  btn.dispatchEvent(new Event("click", { bubbles: true }));
+  assert_false(bubbled);
+}, "stopPropagation halts bubbling");
+
+test(function () {
+  var btn = document.getElementById("btn");
+  btn.addEventListener("click", function (event) { event.preventDefault(); });
+  assert_false(btn.dispatchEvent(new Event("click", { bubbles: true, cancelable: true })));
+}, "preventDefault makes dispatchEvent return false for cancelable events");
+</script>
+</body>

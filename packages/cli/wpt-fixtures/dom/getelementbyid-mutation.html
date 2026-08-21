@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>getElementById after DOM mutation</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="assign-root"></main>
+<section id="rename-root"><span id="rename-old">rename</span></section>
+<section id="remove-id-root"><span id="remove-id-target">remove id</span></section>
+<section id="detach-root"><span id="detach-target">detach</span></section>
+<section id="id-old-parent"><span id="reparent-id">move</span></section>
+<section id="id-new-parent"></section>
+<script>
+test(function () {
+  var root = document.getElementById("assign-root");
+  var el = document.createElement("span");
+  root.appendChild(el);
+
+  assert_equals(document.getElementById("assigned-id"), null, "precondition: assigned id is absent");
+  el.id = "assigned-id";
+
+  assert_equals(document.getElementById("assigned-id"), el, "id setter makes a connected element findable");
+}, "getElementById observes setting id on a connected element");
+
+test(function () {
+  var el = document.getElementById("rename-old");
+
+  el.id = "rename-new";
+
+  assert_equals(document.getElementById("rename-old"), null, "old id stops resolving after id setter");
+  assert_equals(document.getElementById("rename-new"), el, "new id resolves to the same element");
+
+  el.setAttribute("id", "rename-final");
+
+  assert_equals(document.getElementById("rename-new"), null, "old id stops resolving after setAttribute");
+  assert_equals(document.getElementById("rename-final"), el, "setAttribute id resolves to the same element");
+}, "getElementById observes id changes through both id setter and setAttribute");
+
+test(function () {
+  var el = document.getElementById("remove-id-target");
+
+  assert_equals(el.id, "remove-id-target", "precondition: reflected id is present");
+  el.removeAttribute("id");
+
+  assert_equals(el.id, "", "id reflection returns empty string after removal");
+  assert_equals(document.getElementById("remove-id-target"), null, "removed id no longer resolves");
+}, "getElementById observes removeAttribute(\"id\")");
+
+test(function () {
+  var root = document.getElementById("detach-root");
+  var el = document.getElementById("detach-target");
+
+  var removed = root.removeChild(el);
+
+  assert_equals(removed, el, "removeChild returns the detached node");
+  assert_equals(el.parentNode, null, "detached node has no parent");
+  assert_equals(el.id, "detach-target", "detached wrapper keeps its id attribute");
+  assert_equals(document.getElementById("detach-target"), null, "detached element is no longer found from the document");
+}, "getElementById drops detached elements from document lookup");
+
+test(function () {
+  var oldParent = document.getElementById("id-old-parent");
+  var newParent = document.getElementById("id-new-parent");
+  var el = document.getElementById("reparent-id");
+
+  newParent.appendChild(el);
+
+  assert_equals(oldParent.children.length, 0, "old parent loses the element");
+  assert_equals(el.parentElement, newParent, "element is owned by the new parent");
+  assert_equals(document.getElementById("reparent-id"), el, "reparenting preserves document id lookup identity");
+}, "getElementById preserves element identity across reparenting");
+</script>
+</body>

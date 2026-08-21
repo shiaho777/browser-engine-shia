@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS @layer cascade layers</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  @layer base, theme;
+
+  @layer base {
+    #target { color: red; }
+  }
+
+  @layer theme {
+    #target { color: blue; }
+  }
+
+  /* Unlayered rule should override all layered rules */
+  #unlayered { color: green; }
+  @layer base {
+    #unlayered { color: red; }
+  }
+</style>
+<body>
+<div id="target"></div>
+<div id="unlayered"></div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("target"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 255)", "theme layer overrides base layer");
+}, "later-declared layer overrides earlier layer");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("unlayered"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 0)", "unlayered overrides layered");
+}, "unlayered rules override layered rules");
+</script>
+</body>

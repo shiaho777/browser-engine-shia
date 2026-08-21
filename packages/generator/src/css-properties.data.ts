@@ -17,7 +17,7 @@
  * Phase 1 subset (Requirement 14.2): color, display, width, height, margin,
  * background-color, font-size.
  */
-import { px, type Color, type DisplayValue, type Edges, type Px } from "@browser-engine/ir";
+import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { FlexDirection, FloatValue, PositionValue } from "@browser-engine/ir";
 import { defineProperty, type CssPropertyDef } from "./css-property-def.js";
 import { color, edges, integer, keyword, length, lengthOr, number, string as stringValue, transform } from "./value-grammar.js";
@@ -29,8 +29,15 @@ const BLACK: Color = { r: 0, g: 0, b: 0, a: 1 };
 const TRANSPARENT: Color = { r: 0, g: 0, b: 0, a: 0 };
 const ZERO_EDGES: Edges<Px> = { top: px(0), right: px(0), bottom: px(0), left: px(0) };
 
-/** The display outer/inner keywords supported in Phase 1 and beyond. */
-const DISPLAY_KEYWORDS: readonly DisplayValue[] = [
+/**
+ * The display outer/inner keywords accepted by the parser. Beyond the typed
+ * {@link DisplayValue} union, this includes the legacy/vendor display values
+ * (`-webkit-box`, `inline-flex`, etc.) so they PARSE instead of being silently
+ * dropped — the layout engine normalizes them to a supported branch in
+ * {@link readDisplay}. The list is typed `string[]` (not `DisplayValue[]`)
+ * precisely to admit those extra keywords.
+ */
+const DISPLAY_KEYWORDS: readonly string[] = [
   "block",
   "inline",
   "inline-block",
@@ -38,6 +45,19 @@ const DISPLAY_KEYWORDS: readonly DisplayValue[] = [
   "grid",
   "table",
   "none",
+  // Inline-level variants: parsed and normalized to their block-level counterpart's
+  // layout internally (the inline *outer* role awaits a real inline formatting context).
+  "inline-flex",
+  "inline-grid",
+  "inline-table",
+  "list-item",
+  // Legacy / vendor-prefixed flexbox values: every modern browser maps these to
+  // standard flex, so we accept them at parse time and normalize to "flex".
+  "-webkit-box",
+  "-webkit-inline-box",
+  "-ms-flexbox",
+  "-ms-inline-flexbox",
+  "-webkit-inline-flex",
 ];
 
 // ---- the rows --------------------------------------------------------------
@@ -53,18 +73,22 @@ const COLOR: CssPropertyDef<Color, Color> = defineProperty<Color, Color>({
   tsType: "Color",
 });
 
-/** `display` — not inherited; the box's display type (initial: inline). */
-const DISPLAY: CssPropertyDef<DisplayValue, DisplayValue> = defineProperty<
-  DisplayValue,
-  DisplayValue
->({
+/**
+ * `display` — not inherited; the box's display type (initial: inline). The value
+ * is stored as a `string` (not the narrower {@link DisplayValue} union) so legacy
+ * / vendor display keywords (`-webkit-box`, `inline-flex`, …) that PARSE here can
+ * be carried into ComputedStyle and normalized to a real layout branch by the
+ * layout engine's `readDisplay`. This matches how real browsers treat these
+ * values: accepted at parse time, mapped to a standard display internally.
+ */
+const DISPLAY: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "display",
   inherited: false,
   initial: "inline",
   syntax: keyword(...DISPLAY_KEYWORDS),
   computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "DisplayValue",
+  tsType: "string",
 });
 
 /** `width` — not inherited; a `<length>` or `auto` (initial: auto). */
@@ -220,19 +244,21 @@ const FLEX_DIRECTION: CssPropertyDef<FlexDirection, FlexDirection> = definePrope
 });
 
 /**
- * `grid-template-columns` — not inherited; modelled minimally as a positive
- * integer track count (initial: 0, which the layout engine reads as a single
- * column). A genuine track-list grammar is a later mechanism-level extension;
- * the integer shape suffices for the engine's current grid branch.
+ * `grid-template-columns` — not inherited; a free-form track-list string
+ * (initial: "0", which the layout engine reads as a single column). Values
+ * like "1fr 2fr", "100px 1fr", "repeat(3, 1fr)", "minmax(100px, 1fr)" are
+ * parsed by the layout engine's `parseTrackList` into per-track sizing
+ * descriptors. A bare integer (backward compat) is treated as that many
+ * equal `1fr` tracks.
  */
-const GRID_TEMPLATE_COLUMNS: CssPropertyDef<number, number> = defineProperty<number, number>({
+const GRID_TEMPLATE_COLUMNS: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "grid-template-columns",
   inherited: false,
-  initial: 0,
-  syntax: integer({ min: 0 }),
+  initial: "0",
+  syntax: stringValue(),
   computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "number",
+  tsType: "string",
   // field defaults to "gridTemplateColumns" via toCamelCase.
 });
 
@@ -506,16 +532,16 @@ const FONT_STYLE: CssPropertyDef<string, string> = defineProperty<string, string
   tsType: "string",
 });
 
-/** `line-height` — inherited; a `<number>` multiplier (initial: 1.0 normal,
- * matching the metrics shaper's one-em line box; a declared value scales it). */
-const LINE_HEIGHT: CssPropertyDef<number, number> = defineProperty<number, number>({
+/** `line-height` — inherited free-form string (initial "normal"). Layout reads
+ * unitless multipliers, px lengths, and "normal". */
+const LINE_HEIGHT: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "line-height",
   inherited: true,
-  initial: 1.0,
-  syntax: number({ min: 0 }),
+  initial: "normal",
+  syntax: stringValue(),
   computeValue: (s) => s,
-  animationType: "by-computed-value",
-  tsType: "number",
+  animationType: "discrete",
+  tsType: "string",
 });
 
 /** `text-align` — inherited; a keyword (initial: start). */
@@ -674,15 +700,23 @@ const ORDER: CssPropertyDef<number, number> = defineProperty<number, number>({
   tsType: "number",
 });
 
-/** `grid-template-rows` — not inherited; an integer track count (initial: 0). */
-const GRID_TEMPLATE_ROWS: CssPropertyDef<number, number> = defineProperty<number, number>({
+/**
+ * `grid-template-rows` — not inherited; a free-form track-list string
+ * (initial: "0", which the layout engine reads as a single row). Values
+ * like "1fr 2fr", "100px 1fr", "repeat(3, 1fr)", "minmax(100px, 1fr)" are
+ * parsed by the layout engine's `parseTrackList` into per-track sizing
+ * descriptors. A bare integer (backward compat) is treated as that many
+ * equal `1fr` rows.
+ */
+const GRID_TEMPLATE_ROWS: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "grid-template-rows",
   inherited: false,
-  initial: 0,
-  syntax: integer({ min: 0 }),
-  computeValue: (s) => s,
+  initial: "0",
+  syntax: stringValue(),
+  computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "number",
+  tsType: "string",
+  // field defaults to "gridTemplateRows" via toCamelCase.
 });
 
 /** `gap` — not inherited; a `<length>` (initial: 0). */
@@ -958,6 +992,16 @@ const OBJECT_FIT: CssPropertyDef<string, string> = defineProperty<string, string
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
+});
+
+const LINE_CLAMP: CssPropertyDef<number, number> = defineProperty<number, number>({
+  name: "line-clamp",
+  inherited: false,
+  initial: 0,
+  syntax: integer({ min: 0 }),
+  computeValue: (s) => s,
+  animationType: "discrete",
+  tsType: "number",
 });
 
 // ---- backgrounds (more longhands) -----------------------------------------
@@ -1746,6 +1790,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   USER_SELECT,
   RESIZE,
   OBJECT_FIT,
+  LINE_CLAMP,
   // Breadth expansion — batch 2: backgrounds.
   BACKGROUND_ATTACHMENT,
   BACKGROUND_CLIP,

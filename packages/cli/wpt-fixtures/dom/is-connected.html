@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Node.isConnected</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<main id="host"><span id="live">live</span><span id="old">old</span></main>
+<aside id="other"></aside>
+<script>
+test(function () {
+  var host = document.getElementById("host");
+  var live = document.getElementById("live");
+  var created = document.createElement("span");
+
+  assert_true(host.isConnected, "document element wrapper is connected");
+  assert_true(live.isConnected, "descendant wrapper is connected");
+  assert_false(created.isConnected, "created detached element starts disconnected");
+
+  host.appendChild(created);
+
+  assert_true(created.isConnected, "appendChild connects a detached element");
+}, "isConnected reflects initial connectedness and appendChild");
+
+test(function () {
+  var host = document.getElementById("host");
+  var live = document.getElementById("live");
+
+  var removed = host.removeChild(live);
+
+  assert_equals(removed, live, "removeChild returns the same wrapper");
+  assert_false(live.isConnected, "removed wrapper remains usable but disconnected");
+  assert_equals(live.parentNode, null, "removed wrapper has no parent");
+  assert_equals(document.getElementById("live"), null, "document lookup no longer finds removed node");
+}, "isConnected becomes false after removeChild detaches a node");
+
+test(function () {
+  var host = document.getElementById("host");
+  var old = document.getElementById("old");
+  var replacement = document.createElement("span");
+  replacement.id = "replacement-connected";
+
+  host.replaceChild(replacement, old);
+
+  assert_false(old.isConnected, "replaceChild disconnects the replaced node");
+  assert_true(replacement.isConnected, "replaceChild connects the replacement node");
+  assert_equals(document.getElementById("old"), null, "replaced node is no longer in document lookup");
+  assert_equals(document.getElementById("replacement-connected"), replacement, "replacement is reachable");
+}, "isConnected tracks replaceChild detach and attach");
+
+test(function () {
+  var host = document.getElementById("host");
+  var other = document.getElementById("other");
+  var moved = document.createElement("span");
+  moved.id = "moved-connected";
+  other.appendChild(moved);
+
+  assert_true(moved.isConnected, "precondition: moved node is connected under its old parent");
+
+  host.insertBefore(moved, host.firstChild);
+
+  assert_true(moved.isConnected, "insertBefore reparent keeps the moved node connected");
+  assert_equals(other.children.length, 0, "old parent no longer owns the moved node");
+  assert_equals(host.firstChild, moved, "new parent owns the moved node");
+}, "isConnected remains true while insertBefore reparents through connected parents");
+</script>
+</body>

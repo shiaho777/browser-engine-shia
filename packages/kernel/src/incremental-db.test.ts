@@ -19,7 +19,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { define, defineInput, type Db } from "./index.js";
+import { define, defineInput, type Db, type QueryTraceEvent } from "./index.js";
 import { IncrementalDb } from "./incremental-db.js";
 import { NaiveDb } from "./naive-db.js";
 
@@ -164,6 +164,28 @@ void test("independence: changing input A does not recompute a query depending o
   assert.equal(db.query(qFromB, "k"), 2);
   assert.equal(aRuns, 2, "qFromA recomputes because A changed");
   assert.equal(bRuns, 1, "qFromB stays cached: it does not depend on A");
+});
+
+void test("query observer distinguishes miss, same-revision hit, and verified hit", () => {
+  const events: QueryTraceEvent[] = [];
+  const db = new IncrementalDb({ onQuery: (event) => events.push(event) });
+  const A = defineInput<string, number>("A");
+  const B = defineInput<string, number>("B");
+  const qFromA = define<string, number>((d: Db, key) => d.getInput(A, key), "qFromA");
+
+  db.setInput(A, "k", 1);
+  db.setInput(B, "k", 2);
+
+  assert.equal(db.query(qFromA, "k"), 1);
+  assert.equal(db.query(qFromA, "k"), 1);
+  db.setInput(B, "k", 3); // bumps revision, but qFromA does not depend on B.
+  assert.equal(db.query(qFromA, "k"), 1);
+
+  assert.deepEqual(events.map((event) => event.cacheStatus), ["miss", "hit", "verified-hit"]);
+  assert.deepEqual(events.map((event) => event.queryName), ["qFromA", "qFromA", "qFromA"]);
+  assert.equal(events[0]?.dependencyCount, 1);
+  assert.equal(events[1]?.dependencyCount, 1);
+  assert.equal(events[2]?.dependencyCount, 1);
 });
 
 void test("structural keys: queries keyed by {url,node} cache by structure, not reference", () => {

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic style element clearing</title>
+  <script src="/resources/testharness.js"></script>
+  <script src="/resources/testharnessreport.js"></script>
+  <style id="sheet">#clear-target { width: 43px; color: red; background-color: blue; }</style>
+</head>
+<body>
+<div id="clear-target">dynamic style clearing</div>
+<script>
+test(function () {
+  var sheet = document.getElementById("sheet");
+  var target = document.getElementById("clear-target");
+
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "43px", "precondition: live style controls width");
+  assert_equals(cs.getPropertyValue("color"), "rgb(255, 0, 0)", "precondition: live style controls color");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(0, 0, 255)", "precondition: live style controls background");
+
+  sheet.textContent = "";
+
+  assert_equals(document.getElementById("sheet"), sheet, "the style element remains in the document");
+  assert_equals(sheet.childNodes.length, 0, "empty textContent removes the style text node");
+  cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "auto", "clearing style text removes the width declaration");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 0)", "clearing style text removes the color declaration");
+  assert_equals(
+    cs.getPropertyValue("background-color"),
+    "rgba(0, 0, 0, 0)",
+    "clearing style text removes the background declaration"
+  );
+}, "clearing style.textContent removes its live cascade rules without removing the element");
+
+test(function () {
+  var sheet = document.createElement("style");
+  var target = document.createElement("div");
+  target.id = "created-clear-target";
+  document.querySelector("body").appendChild(target);
+  document.querySelector("head").appendChild(sheet);
+
+  sheet.textContent = "#created-clear-target { width: 51px; color: #0080ff; }";
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "51px", "created style applies before clearing");
+
+  sheet.textContent = "";
+
+  assert_equals(document.querySelector("head").lastChild, sheet, "the empty style element stays attached");
+  assert_equals(sheet.textContent, "", "the style element has empty text");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "created style no longer controls width");
+  assert_equals(
+    getComputedStyle(target).getPropertyValue("color"),
+    "rgb(0, 0, 0)",
+    "created style no longer controls color"
+  );
+}, "clearing a dynamically inserted style element drops its parsed rules");
+</script>
+</body>
+</html>

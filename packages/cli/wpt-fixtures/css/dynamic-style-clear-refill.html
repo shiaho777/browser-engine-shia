@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Dynamic style clear and refill</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style id="refill-sheet">#refill-target { width: 31px; color: red; }</style>
+</head>
+<body>
+<div id="refill-target">refill target</div>
+<script>
+test(function () {
+  var sheet = document.getElementById("refill-sheet");
+  var target = document.getElementById("refill-target");
+
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "31px", "precondition: original rule applies");
+  assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(255, 0, 0)", "precondition: original color applies");
+
+  sheet.textContent = "";
+
+  assert_equals(document.getElementById("refill-sheet"), sheet, "cleared style remains attached");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "clearing removes old width");
+  assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "clearing removes old color");
+
+  sheet.textContent = "#refill-target { height: 23px; background-color: #0080ff; }";
+
+  assert_equals(document.getElementById("refill-sheet"), sheet, "refilled style is still the same element");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "old width rule does not come back after refill");
+  assert_equals(getComputedStyle(target).getPropertyValue("height"), "23px", "refilled style contributes new height");
+  assert_equals(
+    getComputedStyle(target).getPropertyValue("background-color"),
+    "rgb(0, 128, 255)",
+    "refilled style contributes new background"
+  );
+}, "attached style element can be cleared and refilled with different rules");
+
+test(function () {
+  var sheet = document.createElement("style");
+  var target = document.createElement("div");
+  target.id = "created-refill-target";
+  document.querySelector("head").appendChild(sheet);
+  document.querySelector("body").appendChild(target);
+
+  sheet.textContent = "#created-refill-target { width: 44px; color: blue; }";
+
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "44px", "created style applies before clear");
+  assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 255)", "created style color applies before clear");
+
+  sheet.textContent = "";
+
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "clearing created style removes width");
+  assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "clearing created style removes color");
+
+  sheet.textContent = "#created-refill-target { width: 52px; height: 29px; }";
+
+  assert_equals(document.querySelector("head").lastChild, sheet, "created style remains attached after refill");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "52px", "refill replaces width with the new rule");
+  assert_equals(getComputedStyle(target).getPropertyValue("height"), "29px", "refill applies a new height rule");
+  assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "old color rule stays removed after refill");
+}, "dynamically inserted style element can be cleared and refilled");
+</script>
+</body>
+</html>

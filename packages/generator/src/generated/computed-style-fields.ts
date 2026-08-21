@@ -5,7 +5,7 @@
  *
  * Regenerate with `npm run generate --workspace @browser-engine/generator`.
  */
-import type { Color, DisplayValue, Edges, FlexDirection, FloatValue, PositionValue, Px } from "@browser-engine/ir";
+import type { Color, Edges, FlexDirection, FloatValue, PositionValue, Px } from "@browser-engine/ir";
 import type { LengthOrAuto, LengthSizing, TransformValue } from "../value-grammar.js";
 
 /**
@@ -15,7 +15,7 @@ import type { LengthOrAuto, LengthSizing, TransformValue } from "../value-gramma
  */
 export interface GeneratedComputedStyleFields {
   readonly color: Color;
-  readonly display: DisplayValue;
+  readonly display: string;
   readonly width: LengthOrAuto;
   readonly height: LengthOrAuto;
   readonly margin: Edges<Px>;
@@ -28,7 +28,7 @@ export interface GeneratedComputedStyleFields {
   readonly bottom: LengthOrAuto;
   readonly left: LengthOrAuto;
   readonly flexDirection: FlexDirection;
-  readonly gridTemplateColumns: number;
+  readonly gridTemplateColumns: string;
   readonly opacity: number;
   readonly transform: TransformValue;
   readonly zIndex: number;
@@ -59,7 +59,7 @@ export interface GeneratedComputedStyleFields {
   readonly fontFamily: string;
   readonly fontWeight: number;
   readonly fontStyle: string;
-  readonly lineHeight: number;
+  readonly lineHeight: string;
   readonly textAlign: string;
   readonly textDecorationLine: string;
   readonly textTransform: string;
@@ -74,7 +74,7 @@ export interface GeneratedComputedStyleFields {
   readonly flexShrink: number;
   readonly flexBasis: LengthOrAuto;
   readonly order: number;
-  readonly gridTemplateRows: number;
+  readonly gridTemplateRows: string;
   readonly gap: Px;
   readonly borderTopWidth: Px;
   readonly borderRightWidth: Px;
@@ -102,6 +102,7 @@ export interface GeneratedComputedStyleFields {
   readonly userSelect: string;
   readonly resize: string;
   readonly objectFit: string;
+  readonly lineClamp: number;
   readonly backgroundAttachment: string;
   readonly backgroundClip: string;
   readonly backgroundOrigin: string;
@@ -445,6 +446,7 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "userSelect",
   "resize",
   "objectFit",
+  "lineClamp",
   "backgroundAttachment",
   "backgroundClip",
   "backgroundOrigin",

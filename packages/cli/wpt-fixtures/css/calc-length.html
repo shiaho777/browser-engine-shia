@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS calc() resolves length values</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #abs {
+    width: calc(100px + 50px);
+  }
+  #mul {
+    width: calc(3 * 50px);
+  }
+  #div {
+    width: calc(300px / 4);
+  }
+  #parens {
+    width: calc((100px + 50px) * 2);
+  }
+  #mixed {
+    font-size: 20px;
+    width: calc(100px + 2em);
+  }
+  #sub {
+    width: calc(200px - 80px);
+  }
+</style>
+<body>
+<div id="abs"></div>
+<div id="mul"></div>
+<div id="div"></div>
+<div id="parens"></div>
+<div id="mixed"></div>
+<div id="sub"></div>
+<script>
+test(function () {
+  assert_equals(document.getElementById("abs").getBoundingClientRect().width, 150, "calc(100px + 50px) = 150px");
+}, "calc() addition with absolute units");
+
+test(function () {
+  assert_equals(document.getElementById("mul").getBoundingClientRect().width, 150, "calc(3 * 50px) = 150px");
+}, "calc() multiplication");
+
+test(function () {
+  assert_equals(document.getElementById("div").getBoundingClientRect().width, 75, "calc(300px / 4) = 75px");
+}, "calc() division");
+
+test(function () {
+  assert_equals(document.getElementById("parens").getBoundingClientRect().width, 300, "calc((100px + 50px) * 2) = 300px");
+}, "calc() with parentheses");
+
+test(function () {
+  assert_equals(document.getElementById("mixed").getBoundingClientRect().width, 140, "calc(100px + 2em) = 140px with font-size 20px");
+}, "calc() with em resolves against font-size");
+
+test(function () {
+  assert_equals(document.getElementById("sub").getBoundingClientRect().width, 120, "calc(200px - 80px) = 120px");
+}, "calc() subtraction");
+</script>
+</body>

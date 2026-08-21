@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic style element text mutations</title>
+  <script src="/resources/testharness.js"></script>
+  <script src="/resources/testharnessreport.js"></script>
+  <style id="sheet">#dynamic-style-target { width: 32px; color: red; }</style>
+</head>
+<body>
+<div id="dynamic-style-target">dynamic style</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("dynamic-style-target"));
+  assert_equals(cs.getPropertyValue("width"), "32px", "initial style text controls width");
+  assert_equals(cs.getPropertyValue("color"), "rgb(255, 0, 0)", "initial style text controls color");
+}, "initial style element text participates in the cascade");
+
+test(function () {
+  document.getElementById("sheet").textContent =
+    "#dynamic-style-target { width: 48px; color: #0080ff; background-color: red; }";
+
+  var cs = getComputedStyle(document.getElementById("dynamic-style-target"));
+  assert_equals(cs.getPropertyValue("width"), "48px", "textContent replacement updates width");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "textContent replacement updates color");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(255, 0, 0)", "new declaration appears");
+}, "replacing style.textContent updates the live cascade");
+
+test(function () {
+  var sheet = document.createElement("style");
+  sheet.appendChild(document.createTextNode("#appended-style-target { width: 56px; color: blue; }"));
+  document.querySelector("head").appendChild(sheet);
+
+  var target = document.createElement("div");
+  target.id = "appended-style-target";
+  document.querySelector("body").appendChild(target);
+
+  var cs = getComputedStyle(target);
+  assert_equals(cs.getPropertyValue("width"), "56px", "appended style text controls a later element");
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 255)", "appended style text controls color");
+}, "appended style text node participates in the cascade");
+</script>
+</body>
+</html>

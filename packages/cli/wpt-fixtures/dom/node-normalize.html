@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Node normalize</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="merge-host"><span id="merge-anchor">A</span></section>
+<section id="boundary-host"><span id="left">L</span><!--gap--><span id="nested"></span><span id="right">R</span></section>
+<section id="noop-host">already<span>normal</span></section>
+<script>
+test(function () {
+  var host = document.getElementById("merge-host");
+  var anchor = document.getElementById("merge-anchor");
+  host.insertBefore(document.createTextNode("a"), anchor);
+  host.insertBefore(document.createTextNode(""), anchor);
+  host.insertBefore(document.createTextNode("b"), anchor);
+  host.appendChild(document.createTextNode(""));
+  host.appendChild(document.createTextNode("c"));
+
+  host.normalize();
+
+  assert_equals(host.textContent, "abAc", "visible text is preserved in tree order");
+  assert_equals(host.childNodes.length, 3, "empty text nodes are removed and adjacent text nodes merge");
+  assert_equals(host.childNodes[0].textContent, "ab", "leading adjacent text run is merged");
+  assert_equals(host.childNodes[1], anchor, "element boundary remains between text runs");
+  assert_equals(host.childNodes[2].textContent, "c", "trailing text remains after the element boundary");
+}, "normalize merges adjacent text nodes and removes empty text nodes");
+
+test(function () {
+  var host = document.getElementById("boundary-host");
+  var left = document.getElementById("left");
+  var nested = document.getElementById("nested");
+  var right = document.getElementById("right");
+  host.insertBefore(document.createTextNode("a"), left);
+  host.insertBefore(document.createTextNode("b"), left);
+  host.insertBefore(document.createTextNode("c"), right);
+  host.insertBefore(document.createTextNode("d"), right);
+  nested.appendChild(document.createTextNode("x"));
+  nested.appendChild(document.createTextNode(""));
+  nested.appendChild(document.createTextNode("y"));
+
+  host.normalize();
+
+  assert_equals(host.childNodes[0].textContent, "ab", "text before the left element merges");
+  assert_equals(host.childNodes[1], left, "left element boundary is preserved");
+  assert_equals(host.childNodes[2].textContent, "gap", "comment boundary is preserved");
+  assert_equals(host.childNodes[3], nested, "nested element boundary is preserved");
+  assert_equals(nested.childNodes.length, 1, "normalize recurses into descendants");
+  assert_equals(nested.firstChild.textContent, "xy", "descendant text run is merged");
+  assert_equals(host.childNodes[4].textContent, "cd", "text after nested element merges until the right element");
+  assert_equals(host.childNodes[5], right, "right element boundary is preserved");
+}, "normalize recurses while leaving element and comment boundaries intact");
+
+test(function () {
+  var host = document.getElementById("noop-host");
+  var before = host.childNodes.length + ":" + host.textContent;
+
+  host.normalize();
+  host.normalize();
+
+  assert_equals(host.childNodes.length + ":" + host.textContent, before, "already-normal subtree stays stable");
+  assert_equals(host.children.length, 1, "element traversal is unchanged by no-op normalize");
+}, "normalize is stable for an already-normal subtree");
+</script>
+</body>

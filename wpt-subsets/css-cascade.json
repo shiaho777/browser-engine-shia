@@ -3,9 +3,27 @@
   "owner": "cascade",
   "root": "packages/cli/wpt-fixtures",
   "files": [
+    "css/attribute-selectors.html",
+    "css/base-href-dynamic-stylesheet.html",
+    "css/base-href-stylesheet.html",
+    "css/box-sizing.html",
+    "css/cascade-layers.html",
+    "css/cascade-origin.html",
     "css/cascade-specificity.html",
+    "css/cssom-computed-style.html",
+    "css/dynamic-style-clear.html",
+    "css/dynamic-style-clear-refill.html",
+    "css/dynamic-style-element.html",
+    "css/dynamic-style-removal.html",
+    "css/dynamic-external-stylesheet.html",
+    "css/external-stylesheet.html",
+    "css/has-selector.html",
     "css/inheritance-initial.html",
-    "css/selector-cascade.html"
+    "css/nth-selectors.html",
+    "css/not-state-pseudo.html",
+    "css/selector-cascade.html",
+    "css/sibling-combinators.html",
+    "css/supports-query.html"
   ],
-  "baselinePassCount": 9
+  "baselinePassCount": 64
 }

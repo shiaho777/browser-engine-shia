@@ -38,12 +38,25 @@ export interface StyleRule {
   readonly specificity: Specificity;
   /** source order, for tie-break */
   readonly order: number;
+  /**
+   * The cascade layer path this rule belongs to (e.g. `["theme", "buttons"]`
+   * for a rule inside `@layer theme { @layer buttons { ... } }`). `undefined`
+   * means the rule is UNLAYERED (higher cascade precedence than any layered
+   * rule). CSS Cascading 5 §7.
+   */
+  readonly layer?: readonly string[] | undefined;
 }
 
 /** The parsed stylesheet. Nominally branded. */
 export type StyleSheet = Branded<
   {
     readonly rules: readonly StyleRule[];
+    /**
+     * The cascade layer declaration order for this sheet — an array of layer
+     * paths. Layers declared earlier have LOWER cascade precedence (CSS
+     * Cascading 5 §7.3). `undefined` when no `@layer` declarations are present.
+     */
+    readonly layerOrder?: readonly (readonly string[])[] | undefined;
   },
   "StyleSheet"
 >;

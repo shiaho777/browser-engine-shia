@@ -10,8 +10,14 @@ import { fileURLToPath } from "node:url";
 
 import { computeLiveMetrics } from "../metrics.js";
 import { scanRepositorySources } from "../scan.js";
-import { buildSnapshot, renderBenchmarkMarkdown } from "../report.js";
+import {
+  buildSnapshot,
+  renderBenchmarkJson,
+  renderBenchmarkMarkdown,
+  renderEvidenceDashboardHtml,
+} from "../report.js";
 import { liveWptPassCount } from "../self-test.js";
+import { collectExecutionEvidence } from "../evidence.js";
 
 /** Resolve the repository root from this file's location (packages/benchmark/dist/bin). */
 function repoRoot(): string {
@@ -20,19 +26,26 @@ function repoRoot(): string {
   return path.resolve(here, "..", "..", "..", "..");
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const root = repoRoot();
   const files = scanRepositorySources(root);
   const wptPassCount = liveWptPassCount();
-  const metrics = computeLiveMetrics(files, wptPassCount);
+  const evidence = await collectExecutionEvidence(root);
+  const metrics = computeLiveMetrics(files, wptPassCount, evidence);
   const snapshot = buildSnapshot(metrics);
   const markdown = renderBenchmarkMarkdown(snapshot);
+  const json = renderBenchmarkJson(snapshot);
+  const dashboard = renderEvidenceDashboardHtml(snapshot);
 
   const outPath = path.join(root, "BENCHMARK.md");
+  const jsonPath = path.join(root, "benchmark-evidence.json");
+  const dashboardPath = path.join(root, "evidence-dashboard.html");
   writeFileSync(outPath, markdown);
+  writeFileSync(jsonPath, json);
+  writeFileSync(dashboardPath, dashboard);
   console.log(
-    `wrote ${outPath} — handWritten=${metrics.handWrittenLines}, features=${metrics.platformFeatureCount}, compat/LOC=${metrics.compatPerLoc?.toFixed(4) ?? "—"}`,
+    `wrote ${outPath}, ${jsonPath}, and ${dashboardPath} — handWritten=${metrics.handWrittenLines}, features=${metrics.platformFeatureCount}, compat/LOC=${metrics.compatPerLoc?.toFixed(4) ?? "—"}`,
   );
 }
 
-main();
+await main();

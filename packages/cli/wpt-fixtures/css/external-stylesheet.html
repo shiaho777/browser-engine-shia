@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>External stylesheet cascade support resource</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<link rel="stylesheet" href="support/external-cascade.css">
+<body>
+<div id="external-target">external stylesheet</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("external-target"));
+  assert_equals(cs.getPropertyValue("color"), "rgb(0, 128, 255)", "external color applies");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(0, 255, 0)", "external background applies");
+}, "external stylesheet support resource participates in the cascade");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("external-target"));
+  assert_equals(cs.getPropertyValue("width"), "64px", "external layout-affecting declaration applies");
+}, "external stylesheet support resource exposes resolved lengths");
+</script>
+</body>

@@ -6,7 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "browser-engine": "./dist/index.js"
+    "browser-engine": "./bin/browser-engine.js"
   },
   "exports": {
     ".": "./dist/index.js"
@@ -16,18 +16,19 @@
     "test": "tsc --build && node --test dist/*.test.js"
   },
   "dependencies": {
+    "@browser-engine/backend": "0.0.0",
+    "@browser-engine/cascade": "0.0.0",
+    "@browser-engine/css-parser": "0.0.0",
+    "@browser-engine/font": "0.0.0",
+    "@browser-engine/guest": "0.0.0",
+    "@browser-engine/html-parser": "0.0.0",
     "@browser-engine/ir": "0.0.0",
     "@browser-engine/kernel": "0.0.0",
-    "@browser-engine/html-parser": "0.0.0",
-    "@browser-engine/css-parser": "0.0.0",
-    "@browser-engine/cascade": "0.0.0",
     "@browser-engine/layout": "0.0.0",
     "@browser-engine/paint": "0.0.0",
-    "@browser-engine/font": "0.0.0",
-    "@browser-engine/backend": "0.0.0",
-    "@browser-engine/guest": "0.0.0",
     "@browser-engine/scoreboard": "0.0.0",
-    "@browser-engine/test-harness": "0.0.0"
+    "@browser-engine/test-harness": "0.0.0",
+    "jpeg-js": "^0.4.4"
   },
   "devDependencies": {
     "fast-check": "4.8.0"

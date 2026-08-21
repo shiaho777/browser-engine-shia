@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM Element getAttributeNames</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<div id="x" DATA-FIRST="a" class="box" data-second="b"></div>
+<script>
+test(function () {
+  var x = document.getElementById("x");
+
+  assert_array_equals(
+    x.getAttributeNames(),
+    ["id", "data-first", "class", "data-second"],
+    "parser-created attributes are returned in insertion order with HTML-normalized names"
+  );
+}, "getAttributeNames returns parser/insertion order");
+
+test(function () {
+  var x = document.getElementById("x");
+
+  x.setAttribute("DATA-LATE", "c");
+  assert_equals(x.getAttribute("data-late"), "c", "setAttribute normalizes HTML attribute names");
+  assert_true(x.hasAttribute("data-late"), "hasAttribute observes the normalized attribute name");
+  assert_array_equals(
+    x.getAttributeNames(),
+    ["id", "data-first", "class", "data-second", "data-late"],
+    "new attributes append at the end"
+  );
+}, "getAttributeNames observes attributes added by setAttribute");
+
+test(function () {
+  var x = document.getElementById("x");
+
+  x.removeAttribute("CLASS");
+  assert_false(x.hasAttribute("class"), "removeAttribute normalizes HTML attribute names");
+  assert_array_equals(
+    x.getAttributeNames(),
+    ["id", "data-first", "data-second", "data-late"],
+    "removed attributes no longer appear"
+  );
+}, "getAttributeNames observes removed attributes");
+
+test(function () {
+  var x = document.getElementById("x");
+
+  x.toggleAttribute("DATA-FLAG", true);
+  assert_array_equals(
+    x.getAttributeNames(),
+    ["id", "data-first", "data-second", "data-late", "data-flag"],
+    "toggleAttribute inserts normalized names at the end"
+  );
+}, "getAttributeNames reflects normalized boolean attributes");
+</script>
+</body>

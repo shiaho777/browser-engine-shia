@@ -1,0 +1,122 @@
+[
+  {
+    "name": "needs-triage",
+    "color": "ededed",
+    "description": "Needs owner, phase, and evidence path classification."
+  },
+  {
+    "name": "good first issue",
+    "color": "7057ff",
+    "description": "Small, real compatibility or evidence task suitable for a new contributor."
+  },
+  {
+    "name": "compatibility",
+    "color": "1d76db",
+    "description": "Web-platform behavior, WPT coverage, or compatibility regression work."
+  },
+  {
+    "name": "performance",
+    "color": "fbca04",
+    "description": "Runtime cost, recomputation, cache, resource, raster, or dashboard performance work."
+  },
+  {
+    "name": "open-source",
+    "color": "0e8a16",
+    "description": "Contributor velocity, workflow, docs, templates, dashboards, or governance."
+  },
+  {
+    "name": "rfc",
+    "color": "5319e7",
+    "description": "Requires an architecture decision before implementation."
+  },
+  {
+    "name": "evidence",
+    "color": "006b75",
+    "description": "Public evidence, benchmark, trace, dashboard, or artifact work."
+  },
+  {
+    "name": "wpt",
+    "color": "0052cc",
+    "description": "Official WPT, WPT-format fixtures, maintained subsets, or pass-count gates."
+  },
+  {
+    "name": "subset:dom-core",
+    "color": "c2e0c6",
+    "description": "Maintained WPT subset: dom-core."
+  },
+  {
+    "name": "subset:css-cascade",
+    "color": "c2e0c6",
+    "description": "Maintained WPT subset: css-cascade."
+  },
+  {
+    "name": "stage:parser",
+    "color": "bfdadc",
+    "description": "HTML/CSS parser ownership."
+  },
+  {
+    "name": "stage:cascade",
+    "color": "bfdadc",
+    "description": "Selector, cascade, inheritance, and computed value ownership."
+  },
+  {
+    "name": "stage:layout",
+    "color": "bfdadc",
+    "description": "FragmentTree and layout algorithm ownership."
+  },
+  {
+    "name": "stage:paint",
+    "color": "bfdadc",
+    "description": "DisplayList, paint, and compositing ownership."
+  },
+  {
+    "name": "stage:backend",
+    "color": "bfdadc",
+    "description": "Raster, PNG, GPU/software backend, and surfaces."
+  },
+  {
+    "name": "stage:guest",
+    "color": "bfdadc",
+    "description": "DOM, WebIDL, JS runtime, event loop, fetch, and FontFace."
+  },
+  {
+    "name": "stage:network",
+    "color": "bfdadc",
+    "description": "URL/resource loading, fetch policy, origin, and browser services."
+  },
+  {
+    "name": "stage:harness",
+    "color": "bfdadc",
+    "description": "WPT runner, testharness, manifests, reftests, and regression gates."
+  },
+  {
+    "name": "phase:1-wpt-war-room",
+    "color": "d4c5f9",
+    "description": "Phase 1: official WPT workflow and subset gates."
+  },
+  {
+    "name": "phase:2-css-mechanisms",
+    "color": "d4c5f9",
+    "description": "Phase 2: CSS data/mechanism completeness."
+  },
+  {
+    "name": "phase:3-layout",
+    "color": "d4c5f9",
+    "description": "Phase 3: layout engine deepening."
+  },
+  {
+    "name": "phase:5-runtime",
+    "color": "d4c5f9",
+    "description": "Phase 5: DOM, JS, WebIDL, event loop, and fetch runtime."
+  },
+  {
+    "name": "phase:8-performance",
+    "color": "d4c5f9",
+    "description": "Phase 8: measurable performance and incrementality leadership."
+  },
+  {
+    "name": "phase:9-open-source",
+    "color": "d4c5f9",
+    "description": "Phase 9: contributor trust, workflow, dashboard, and governance."
+  }
+]

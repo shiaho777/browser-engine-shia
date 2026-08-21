@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS attribute selectors</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  [data-exists] { color: rgb(1, 2, 3); }
+  [data-kind="primary"] { width: 41px; }
+  [class~="token"] { height: 13px; }
+  [lang|="en"] { background-color: rgb(4, 5, 6); }
+  [href^="/docs"] { color: rgb(7, 8, 9); }
+  [href$=".html"] { width: 52px; }
+  [href*="guide"] { height: 23px; }
+  [data-mode="LOUD" i] { background-color: rgb(10, 11, 12); }
+  [data-missing] { width: 99px; }
+</style>
+<body>
+  <div id="exists" data-exists>exists</div>
+  <div id="exact" data-kind="primary">exact</div>
+  <div id="token" class="alpha token beta">token</div>
+  <div id="hyphen" lang="en-US">hyphen</div>
+  <a id="prefix" href="/docs/start.txt">prefix</a>
+  <a id="suffix" href="/other/page.html">suffix</a>
+  <a id="substring" href="/docs/guide/start.txt">substring</a>
+  <div id="ci" data-mode="loud">case-insensitive</div>
+  <div id="absent">absent</div>
+<script>
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("exists")).getPropertyValue("color"),
+    "rgb(1, 2, 3)"
+  );
+}, "attribute presence selector matches elements carrying the attribute");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("exact")).getPropertyValue("width"),
+    "41px"
+  );
+}, "attribute exact-value selector matches the declared value");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("token")).getPropertyValue("height"),
+    "13px"
+  );
+}, "attribute token selector matches a whitespace-separated token");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("hyphen")).getPropertyValue("background-color"),
+    "rgb(4, 5, 6)"
+  );
+}, "attribute hyphen selector matches a prefix followed by '-'");
+
+test(function () {
+  assert_equals(getComputedStyle(document.getElementById("prefix")).getPropertyValue("color"), "rgb(7, 8, 9)");
+  assert_equals(getComputedStyle(document.getElementById("suffix")).getPropertyValue("width"), "52px");
+  assert_equals(getComputedStyle(document.getElementById("substring")).getPropertyValue("height"), "23px");
+}, "attribute prefix, suffix, and substring selectors match");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("ci")).getPropertyValue("background-color"),
+    "rgb(10, 11, 12)"
+  );
+}, "attribute selector i flag matches ASCII case-insensitively");
+
+test(function () {
+  assert_equals(
+    getComputedStyle(document.getElementById("absent")).getPropertyValue("width"),
+    "auto"
+  );
+}, "attribute selectors do not match when the attribute is absent");
+</script>
+</body>

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration setProperty empty value removal</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3);
+    width: 11px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+  el.style.setProperty("color", "");
+
+  assert_equals(el.style.getPropertyValue("color"), "", "empty value removes the inline declaration");
+  assert_equals(el.getAttribute("style"), "width: 42px", "style attribute drops the removed declaration");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed color falls back to the author rule");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "42px", "unremoved inline declaration still wins");
+}, "setProperty with an empty value removes an existing declaration");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "width: 42px";
+  el.style.setProperty("missing-property", "");
+
+  assert_equals(el.style.getPropertyValue("missing-property"), "", "missing declaration still reads as empty");
+  assert_equals(el.getAttribute("style"), "width: 42px", "missing empty-value write leaves existing declarations alone");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "42px", "existing inline declarations remain effective");
+}, "setProperty with an empty value leaves a missing declaration absent");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+  el.style.setProperty("color", "");
+  el.style.setProperty("color", "rgb(3, 4, 5)");
+
+  assert_equals(el.style.getPropertyValue("color"), "rgb(3, 4, 5)", "color can be written after empty-value removal");
+  assert_equals(el.getAttribute("style"), "width: 42px; color: rgb(3, 4, 5)", "style attribute reflects the restored declaration");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(3, 4, 5)", "restored inline color wins again");
+}, "setProperty can restore a declaration after empty-value removal");
+</script>
+</body>

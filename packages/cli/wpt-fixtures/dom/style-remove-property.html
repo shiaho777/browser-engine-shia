@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration removeProperty return value</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    color: rgb(1, 2, 3);
+    width: 11px;
+    height: 7px;
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+  var removed = el.style.removeProperty("color");
+
+  assert_equals(removed, "rgb(9, 8, 7)", "removeProperty returns the removed inline value");
+  assert_equals(el.style.getPropertyValue("color"), "", "removed property no longer reads through style");
+  assert_equals(el.getAttribute("style"), "width: 42px", "style attribute reflects the removed declaration");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed color falls back after inline removal");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "42px", "unremoved inline property remains effective");
+}, "removeProperty returns the old value and removes the declaration");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "width: 42px";
+  var removed = el.style.removeProperty("missing-property");
+
+  assert_equals(removed, "", "removeProperty returns empty string for a missing declaration");
+  assert_equals(el.getAttribute("style"), "width: 42px", "missing removal leaves style attribute unchanged");
+  assert_equals(el.style.getPropertyValue("width"), "42px", "missing removal leaves existing declarations readable");
+}, "removeProperty returns empty string for missing properties without disturbing style");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
+
+  assert_equals(el.style.removeProperty("color"), "rgb(9, 8, 7)", "first removal returns old color");
+  assert_equals(el.style.removeProperty("color"), "", "second removal returns empty string");
+  assert_equals(el.getAttribute("style"), "width: 42px", "second removal does not change remaining declarations");
+}, "removeProperty is idempotent after the declaration is gone");
+</script>
+</body>

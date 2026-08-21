@@ -80,12 +80,259 @@ export function parseDisplay(
 export interface SpecifiedLength {
   readonly kind: "specified-length";
   readonly value: number;
-  readonly unit: "em" | "rem" | "vw" | "vh" | "vmin" | "vmax";
+  readonly unit: "em" | "rem" | "vw" | "vh" | "vmin" | "vmax" | "%";
 }
 
 /** Narrow a value to a {@link SpecifiedLength} (an unresolved relative length). */
 export function isSpecifiedLength(v: unknown): v is SpecifiedLength {
   return typeof v === "object" && v !== null && (v as { kind?: unknown }).kind === "specified-length";
+}
+
+// ---------------------------------------------------------------------------
+// calc() support (CSS Values 4 §10).
+// ---------------------------------------------------------------------------
+
+/**
+ * A node in a `calc()` expression AST. Each leaf is either a resolved `Px`
+ * (absolute length already in px) or a {@link SpecifiedLength} (relative,
+ * resolved by the cascade). Internal nodes are `+`/`-`/`*`/`/` operations.
+ */
+export type CalcNode =
+  | { readonly type: "px"; readonly value: number }
+  | { readonly type: "len"; readonly value: number; readonly unit: SpecifiedLength["unit"] }
+  | { readonly type: "num"; readonly value: number }
+  | { readonly type: "add"; readonly left: CalcNode; readonly right: CalcNode }
+  | { readonly type: "sub"; readonly left: CalcNode; readonly right: CalcNode }
+  | { readonly type: "mul"; readonly left: CalcNode; readonly right: CalcNode }
+  | { readonly type: "div"; readonly left: CalcNode; readonly right: CalcNode };
+
+/**
+ * A `calc()` expression that cannot be fully resolved at parse time because it
+ * contains relative-length operands. The cascade resolves it to `Px` once the
+ * `em`/`rem`/`vw`/`vh`/`vmin`/`vmax` context is known.
+ */
+export interface SpecifiedCalc {
+  readonly kind: "specified-calc";
+  readonly ast: CalcNode;
+}
+
+/** Narrow a value to a {@link SpecifiedCalc} (an unresolved calc() expression). */
+export function isSpecifiedCalc(v: unknown): v is SpecifiedCalc {
+  return typeof v === "object" && v !== null && (v as { kind?: unknown }).kind === "specified-calc";
+}
+
+/**
+ * Tokenize a `calc()` inner expression into numbers, units, operators, and
+ * parentheses. Whitespace is collapsed; `+` and `-` need surrounding whitespace
+ * per spec (to disambiguate from signs), but `*` and `/` do not.
+ */
+function tokenizeCalc(expr: string): string[] | null {
+  const tokens: string[] = [];
+  let i = 0;
+  const len = expr.length;
+  while (i < len) {
+    const ch = expr[i];
+    if (ch === undefined) break;
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f") {
+      i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === ")") {
+      tokens.push(ch);
+      i += 1;
+      continue;
+    }
+    // * and / are single-char operators.
+    if (ch === "*" || ch === "/") {
+      tokens.push(ch);
+      i += 1;
+      continue;
+    }
+    // + and - are operators ONLY when preceded by whitespace or at the start
+    // of a sub-expression; otherwise they are part of a signed number.
+    if (ch === "+" || ch === "-") {
+      const prev = tokens[tokens.length - 1];
+      const isOperator =
+        prev === undefined || prev === "(" ||
+        prev === "+" || prev === "-" || prev === "*" || prev === "/";
+      if (isOperator) {
+        // Could be a sign on the next number. Peek ahead: if the next non-space
+        // char is a digit or dot, treat this as part of a signed number.
+        let j = i + 1;
+        while (j < len && (expr[j] === " " || expr[j] === "\t")) j += 1;
+        const nextCh = expr[j];
+        if (nextCh !== undefined && ((nextCh >= "0" && nextCh <= "9") || nextCh === ".")) {
+          // Signed number — fall through to number parsing.
+        } else {
+          tokens.push(ch);
+          i += 1;
+          continue;
+        }
+      } else {
+        tokens.push(ch);
+        i += 1;
+        continue;
+      }
+    }
+    // Number (possibly signed) + optional unit.
+    const numMatch = /^[-+]?(?:\d+\.?\d*|\.\d+)/.exec(expr.slice(i));
+    if (numMatch !== null) {
+      const numStr = numMatch[0];
+      let j = i + numStr.length;
+      // Optional unit.
+      const unitMatch = /^[a-z%]+/.exec(expr.slice(j));
+      const unitStr = unitMatch !== null ? unitMatch[0] : "";
+      if (unitStr.length > 0) j += unitStr.length;
+      tokens.push(numStr + unitStr);
+      i = j;
+      continue;
+    }
+    return null; // unrecognized token
+  }
+  return tokens;
+}
+
+/** Parser state for recursive-descent parsing of calc() expressions. */
+interface CalcParser {
+  readonly tokens: readonly string[];
+  pos: number;
+}
+
+/** Peek the current token without consuming. */
+function peek(p: CalcParser): string | undefined {
+  return p.tokens[p.pos];
+}
+
+/** Consume and return the current token. */
+function consume(p: CalcParser): string | undefined {
+  return p.tokens[p.pos++];
+}
+
+/**
+ * Parse a `calc()` expression with standard operator precedence:
+ * `*` and `/` bind tighter than `+` and `-`. Parentheses group.
+ * Returns the AST root or `null` on a parse error.
+ */
+function parseCalcExpr(p: CalcParser): CalcNode | null {
+  return parseAddSub(p);
+}
+
+/** Parse addition and subtraction (lowest precedence). */
+function parseAddSub(p: CalcParser): CalcNode | null {
+  let left = parseMulDiv(p);
+  if (left === null) return null;
+  while (peek(p) === "+" || peek(p) === "-") {
+    const op = consume(p)!;
+    const right = parseMulDiv(p);
+    if (right === null) return null;
+    left = op === "+" ? { type: "add", left, right } : { type: "sub", left, right };
+  }
+  return left;
+}
+
+/** Parse multiplication and division (higher precedence). */
+function parseMulDiv(p: CalcParser): CalcNode | null {
+  let left = parsePrimary(p);
+  if (left === null) return null;
+  while (peek(p) === "*" || peek(p) === "/") {
+    const op = consume(p)!;
+    const right = parsePrimary(p);
+    if (right === null) return null;
+    left = op === "*" ? { type: "mul", left, right } : { type: "div", left, right };
+  }
+  return left;
+}
+
+/** Parse a primary: a number+unit, or a parenthesized sub-expression. */
+function parsePrimary(p: CalcParser): CalcNode | null {
+  const tok = peek(p);
+  if (tok === undefined) return null;
+  if (tok === "(") {
+    consume(p); // consume (
+    const inner = parseCalcExpr(p);
+    if (peek(p) !== ")") return null;
+    consume(p); // consume )
+    return inner;
+  }
+  // A number + optional unit.
+  const match = /^([-+]?(?:\d+\.?\d*|\.\d+))([a-z%]*)$/.exec(tok);
+  if (match === null) return null;
+  consume(p);
+  const n = Number(match[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = match[2] ?? "";
+  if (unit === "") {
+    return { type: "num", value: n };
+  }
+  const factor = ABSOLUTE_PX_PER_UNIT[unit];
+  if (factor !== undefined) {
+    return { type: "px", value: n * factor };
+  }
+  if (unit === "em" || unit === "rem" || unit === "vw" || unit === "vh" || unit === "vmin" || unit === "vmax") {
+    return { type: "len", value: n, unit };
+  }
+  return null; // unsupported unit
+}
+
+/**
+ * Try to evaluate a calc() AST to a pure number (when all leaves are `px` or
+ * `num`). Returns `null` if the AST contains relative-length leaves that need
+ * cascade context to resolve.
+ */
+function tryEvalCalc(ast: CalcNode): number | SpecifiedCalc {
+  switch (ast.type) {
+    case "px":
+      return ast.value;
+    case "num":
+      return ast.value;
+    case "len":
+      return { kind: "specified-calc", ast };
+    case "add": {
+      const l = tryEvalCalc(ast.left);
+      const r = tryEvalCalc(ast.right);
+      if (typeof l === "number" && typeof r === "number") return l + r;
+      return { kind: "specified-calc", ast };
+    }
+    case "sub": {
+      const l = tryEvalCalc(ast.left);
+      const r = tryEvalCalc(ast.right);
+      if (typeof l === "number" && typeof r === "number") return l - r;
+      return { kind: "specified-calc", ast };
+    }
+    case "mul": {
+      const l = tryEvalCalc(ast.left);
+      const r = tryEvalCalc(ast.right);
+      if (typeof l === "number" && typeof r === "number") return l * r;
+      return { kind: "specified-calc", ast };
+    }
+    case "div": {
+      const l = tryEvalCalc(ast.left);
+      const r = tryEvalCalc(ast.right);
+      if (typeof l === "number" && typeof r === "number" && r !== 0) return l / r;
+      return { kind: "specified-calc", ast };
+    }
+  }
+}
+
+/**
+ * Parse a `calc(...)` expression string (without the `calc` prefix — just the
+ * inner expression). Returns a {@link SpecifiedCalc} (if it contains relative
+ * lengths) or a resolved `Px` (if all operands are absolute). Returns `null`
+ * on a parse failure.
+ */
+function parseCalcExpression(expr: string): Px | SpecifiedCalc | null {
+  const tokens = tokenizeCalc(expr);
+  if (tokens === null || tokens.length === 0) return null;
+  const parser: CalcParser = { tokens, pos: 0 };
+  const ast = parseCalcExpr(parser);
+  if (ast === null) return null;
+  // All tokens must be consumed.
+  if (parser.pos !== tokens.length) return null;
+  const result = tryEvalCalc(ast);
+  if (typeof result === "number") {
+    return px(result);
+  }
+  return result;
 }
 
 /**
@@ -107,12 +354,24 @@ const ABSOLUTE_PX_PER_UNIT: Readonly<Record<string, number>> = {
  * `mm`/`Q`) and a bare `0` resolve to a branded {@link Px} immediately; the
  * font-relative units `em`/`rem` cannot be resolved without context, so they
  * return a {@link SpecifiedLength} the cascade resolves once the font size is
- * known. An unknown unit, or a missing unit on a non-zero number, fails.
+ * known. A `calc()` expression is parsed into an AST; if all operands are
+ * absolute it resolves immediately to `Px`, otherwise it returns a
+ * {@link SpecifiedCalc} the cascade resolves. An unknown unit, or a missing
+ * unit on a non-zero number, fails.
  */
-export function parseLength(input: string): ParseResult<Px | SpecifiedLength> {
+export function parseLength(input: string): ParseResult<Px | SpecifiedLength | SpecifiedCalc> {
   const token = normalize(input).toLowerCase();
   if (token === "0") {
     return ok(px(0));
+  }
+  // calc() expression.
+  if (token.startsWith("calc(") && token.endsWith(")")) {
+    const inner = input.trim().slice(5, -1); // preserve original case for units
+    const result = parseCalcExpression(inner);
+    if (result === null) {
+      return err(`invalid calc() expression "${input.trim()}"`);
+    }
+    return ok(result);
   }
   const match = /^(-?(?:\d+\.?\d*|\.\d+))([a-z%]+)$/.exec(token);
   if (match === null) {
@@ -127,7 +386,7 @@ export function parseLength(input: string): ParseResult<Px | SpecifiedLength> {
   if (factor !== undefined) {
     return ok(px(n * factor));
   }
-  if (unit === "em" || unit === "rem" || unit === "vw" || unit === "vh" || unit === "vmin" || unit === "vmax") {
+  if (unit === "em" || unit === "rem" || unit === "vw" || unit === "vh" || unit === "vmin" || unit === "vmax" || unit === "%") {
     return ok({ kind: "specified-length", value: n, unit });
   }
   return err(`unsupported <length> unit "${unit}" in "${input.trim()}"`);
@@ -141,7 +400,7 @@ export function parseLength(input: string): ParseResult<Px | SpecifiedLength> {
 export function parseLengthOrKeyword(
   input: string,
   keywords: readonly string[],
-): ParseResult<LengthOrAuto | SpecifiedLength> {
+): ParseResult<LengthOrAuto | SpecifiedLength | SpecifiedCalc> {
   const token = normalize(input).toLowerCase();
   if (keywords.includes(token)) {
     return ok(token as LengthOrAuto);
@@ -160,12 +419,13 @@ export function parseLengthOrKeyword(
  *   - `a b c`       → top=a, right=left=b, bottom=c
  *   - `a b c d`     → top=a, right=b, bottom=c, left=d
  */
-export function parseEdgesLength(input: string): ParseResult<Edges<Px | SpecifiedLength>> {
-  const tokens = normalize(input).split(" ").filter((t) => t.length > 0);
+export function parseEdgesLength(input: string): ParseResult<Edges<Px | SpecifiedLength | SpecifiedCalc>> {
+  // Split on top-level spaces, respecting parentheses (calc() contains spaces).
+  const tokens = splitEdgeTokens(normalize(input));
   if (tokens.length < 1 || tokens.length > 4) {
     return err(`expected 1 to 4 <length> values, got ${tokens.length}`);
   }
-  const lengths: (Px | SpecifiedLength)[] = [];
+  const lengths: (Px | SpecifiedLength | SpecifiedCalc)[] = [];
   for (const token of tokens) {
     const len = parseLength(token);
     if (!len.ok) {
@@ -174,12 +434,43 @@ export function parseEdgesLength(input: string): ParseResult<Edges<Px | Specifie
     lengths.push(len.value);
   }
   const [a, b = a, c = a, d = b] = lengths as [
-    Px | SpecifiedLength,
-    (Px | SpecifiedLength)?,
-    (Px | SpecifiedLength)?,
-    (Px | SpecifiedLength)?,
+    Px | SpecifiedLength | SpecifiedCalc,
+    (Px | SpecifiedLength | SpecifiedCalc)?,
+    (Px | SpecifiedLength | SpecifiedCalc)?,
+    (Px | SpecifiedLength | SpecifiedCalc)?,
   ];
   return ok({ top: a, right: b, bottom: c, left: d });
+}
+
+/**
+ * Split a 1-to-4 edge value on top-level spaces, respecting parentheses so
+ * `calc(10px + 5px)` is treated as a single token. After `normalize`, runs of
+ * whitespace are single spaces; we split on a space that is NOT inside `()`.
+ */
+function splitEdgeTokens(normalized: string): string[] {
+  const tokens: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === undefined) break;
+    if (ch === "(") {
+      depth += 1;
+      current += ch;
+    } else if (ch === ")") {
+      if (depth > 0) depth -= 1;
+      current += ch;
+    } else if (ch === " " && depth === 0) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) tokens.push(current);
+  return tokens;
 }
 
 // ---- integer / number ------------------------------------------------------

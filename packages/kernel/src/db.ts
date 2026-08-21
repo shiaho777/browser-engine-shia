@@ -59,6 +59,33 @@ export interface QueryDef<K, V> {
   readonly __phantom?: readonly [K, V];
 }
 
+// ---------------------------------------------------------------------------
+// Query tracing (read-only diagnostics)
+// ---------------------------------------------------------------------------
+
+/**
+ * A query execution observed by a backend. This is a read-only diagnostic event:
+ * it exposes what ran, how long it took, whether the value came from cache, and
+ * the number of immediate dependencies captured for the query. It deliberately
+ * does NOT expose a mutation or invalidation hook.
+ */
+export interface QueryTraceEvent {
+  readonly query: QueryDef<unknown, unknown>;
+  readonly queryName: string;
+  readonly key: unknown;
+  readonly durationMs: number;
+  readonly dependencyCount: number;
+  readonly cacheStatus: "miss" | "hit" | "verified-hit";
+}
+
+/** Observer called synchronously after a query execution or cache hit. */
+export type QueryTraceObserver = (event: QueryTraceEvent) => void;
+
+/** Optional constructor bag for kernel backends that can emit query traces. */
+export interface TraceOptions {
+  readonly onQuery?: QueryTraceObserver;
+}
+
 /**
  * Module-private carrier for a {@link QueryDef}'s compute function.
  *

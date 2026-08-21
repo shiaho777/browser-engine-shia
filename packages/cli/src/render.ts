@@ -40,9 +40,10 @@ import { encodeSurfaceToPng, renderDisplayListOnGpu } from "@browser-engine/back
 
 import { qPaint, SourceBytes, type Url } from "./pipeline.js";
 import { documentStylesheets } from "./stylesheets.js";
-import { collectImages } from "./images.js";
-import { cacheLoader, defaultFetch, loadResources, type FetchFn } from "./loader.js";
+import { collectImages, tryDecode } from "./images.js";
+import { cacheLoader, defaultFetch, discoverSubresources, documentBaseUrl, loadResourcesWithTrace, resolveUrl, type FetchFn } from "./loader.js";
 import { pipelineGlyphSource, pipelineShaper } from "./fonts.js";
+import { createStageTraceCollector, type StageTrace, type StageTraceSummary } from "./stage-trace.js";
 
 /**
  * The default screenshot canvas size, in device pixels. Phase 1 has no viewport
@@ -59,6 +60,32 @@ export interface RenderResult {
   readonly png: Uint8Array;
   readonly width: number;
   readonly height: number;
+  readonly trace?: StageTrace;
+  readonly resourceTrace?: ResourceTrace;
+}
+
+/** Options for in-memory rendering. */
+export interface RenderOptions {
+  /** Attach a per-query stage trace to the returned result. */
+  readonly trace?: boolean;
+}
+
+/** Stable resource-loaded-page evidence for async URL renders. */
+export interface ResourceTrace {
+  readonly url: string;
+  readonly rootBytes: number;
+  readonly discoveredResources: readonly string[];
+  readonly loadedResources: readonly string[];
+  readonly missingResources: readonly string[];
+  readonly loadedBytes: number;
+  readonly stylesheetCount: number;
+  readonly authorStylesheetCount: number;
+  readonly authorRuleCount: number;
+  readonly authorDeclarationCount: number;
+  readonly decodedImageCount: number;
+  readonly displayCommands: number;
+  readonly imagePaintCount: number;
+  readonly paintOps: readonly string[];
 }
 
 /**
@@ -69,9 +96,14 @@ export interface RenderResult {
  * @param htmlBytes the document's raw source bytes (seeded as `SourceBytes`).
  * @param url the document address / cache key (defaults to `render://input`).
  */
-export function renderHtmlToPng(htmlBytes: Uint8Array, url: Url = "render://input"): RenderResult {
+export function renderHtmlToPng(
+  htmlBytes: Uint8Array,
+  url: Url = "render://input",
+  options: RenderOptions = {},
+): RenderResult {
   // 1. Seed the pipeline's sole leaf input and drive parse → … → paint.
-  const db = new NaiveDb();
+  const collector = options.trace === true ? createStageTraceCollector() : undefined;
+  const db = new NaiveDb(collector === undefined ? {} : { onQuery: collector.onQuery });
   db.setInput(SourceBytes, url, htmlBytes);
   const displayList = db.query(qPaint, url);
 
@@ -82,7 +114,9 @@ export function renderHtmlToPng(htmlBytes: Uint8Array, url: Url = "render://inpu
 
   // 3. Encode the rendered pixels to PNG bytes.
   const png = encodeSurfaceToPng(surface);
-  return { png, width: surface.width, height: surface.height };
+  return collector === undefined
+    ? { png, width: surface.width, height: surface.height }
+    : { png, width: surface.width, height: surface.height, trace: collector.trace() };
 }
 
 /**
@@ -102,6 +136,7 @@ export function renderHtmlToPng(htmlBytes: Uint8Array, url: Url = "render://inpu
 export async function renderUrlToPng(
   url: string,
   fetchFn: FetchFn = defaultFetch,
+  options: RenderOptions = {},
 ): Promise<RenderResult> {
   const rootBytes = await fetchFn(url);
   if (rootBytes === undefined) {
@@ -110,8 +145,10 @@ export async function renderUrlToPng(
 
   // Parse, then fetch the document's external subresources into a cache.
   const dom = parseHtml(rootBytes);
-  const cache = await loadResources(dom, url, fetchFn);
-  const load = cacheLoader(cache, url);
+  const baseUrl = documentBaseUrl(dom, url);
+  const discoveredResources = discoverSubresources(dom, url);
+  const resourceLoad = await loadResourcesWithTrace(dom, url, fetchFn);
+  const load = cacheLoader(resourceLoad.cache, baseUrl);
 
   // Drive the pure synchronous pipeline with cache-backed loaders. (The async
   // URL path composes the stages directly rather than via the kernel queries,
@@ -119,11 +156,60 @@ export async function renderUrlToPng(
   const sheets = documentStylesheets(dom, load);
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   const images = collectImages(dom, load);
-  const displayList = paint(layout(dom, styleOf, { shaper: pipelineShaper }), styleOf, (node) => images.get(node));
+  // A memoized `background-image: url(...)` resolver. CSS background images live
+  // on the style, not the DOM, so we resolve each url() against the document
+  // base URL, look the bytes up in the pre-fetched resource cache, and decode.
+  // Failed lookups are cached as `undefined` so a repeated url() is not re-decoded.
+  const bgImageCache = new Map<string, import("@browser-engine/ir").DecodedImage | undefined>();
+  const imageBySrc = (src: string): import("@browser-engine/ir").DecodedImage | undefined => {
+    if (bgImageCache.has(src)) {
+      return bgImageCache.get(src);
+    }
+    const resolved = resolveUrl(src, baseUrl) ?? src;
+    const bytes = resourceLoad.cache.get(resolved) ?? resourceLoad.cache.get(src);
+    const decoded = bytes === undefined ? undefined : tryDecode(bytes);
+    bgImageCache.set(src, decoded);
+    return decoded;
+  };
+  const displayList = paint(layout(dom, styleOf, { shaper: pipelineShaper }), styleOf, (node) => images.get(node), {
+    imageBySrc,
+  });
+  const authorSheets = sheets.slice(1);
+  const authorRuleCount = authorSheets.reduce((sum, sheet) => sum + sheet.rules.length, 0);
+  const authorDeclarationCount = authorSheets.reduce(
+    (sum, sheet) => sum + sheet.rules.reduce((ruleSum, rule) => ruleSum + rule.declarations.length, 0),
+    0,
+  );
 
   const { width, height } = surfaceSizeFor(displayList);
   const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource);
-  return { png: encodeSurfaceToPng(surface), width: surface.width, height: surface.height };
+  const png = encodeSurfaceToPng(surface);
+  if (options.trace !== true) {
+    return { png, width: surface.width, height: surface.height };
+  }
+  const loadedResources = resourceLoad.events.filter((event) => event.status === "loaded");
+  const missingResources = resourceLoad.events.filter((event) => event.status === "missing");
+  return {
+    png,
+    width: surface.width,
+    height: surface.height,
+    resourceTrace: Object.freeze({
+      url,
+      rootBytes: rootBytes.byteLength,
+      discoveredResources: Object.freeze([...discoveredResources].sort()),
+      loadedResources: Object.freeze(loadedResources.map((event) => event.url).sort()),
+      missingResources: Object.freeze(missingResources.map((event) => event.url).sort()),
+      loadedBytes: loadedResources.reduce((sum, event) => sum + event.byteLength, 0),
+      stylesheetCount: sheets.length,
+      authorStylesheetCount: authorSheets.length,
+      authorRuleCount,
+      authorDeclarationCount,
+      decodedImageCount: images.size,
+      displayCommands: displayList.commands.length,
+      imagePaintCount: displayList.commands.filter((cmd) => cmd.op === "image").length,
+      paintOps: Object.freeze([...new Set(displayList.commands.map((cmd) => cmd.op))].sort()),
+    }),
+  };
 }
 
 
@@ -175,6 +261,7 @@ export function surfaceSizeFor(list: DisplayList): { width: number; height: numb
 interface RenderArgs {
   readonly input: string;
   readonly output: string;
+  readonly trace: boolean;
 }
 
 /**
@@ -186,11 +273,16 @@ interface RenderArgs {
 export function parseRenderArgs(argv: readonly string[]): RenderArgs {
   let input: string | undefined;
   let output: string | undefined;
+  let trace = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "-o" || arg === "--output") {
       output = argv[i + 1];
       i += 1;
+    } else if (arg === "--trace") {
+      trace = true;
+    } else if (arg !== undefined && arg.startsWith("-")) {
+      throw new Error(`render: unknown option ${arg}`);
     } else if (arg !== undefined && !arg.startsWith("-")) {
       input ??= arg;
     }
@@ -201,7 +293,7 @@ export function parseRenderArgs(argv: readonly string[]): RenderArgs {
   if (output === undefined) {
     throw new Error("render: missing -o <out.png> argument (usage: render <input.html> -o <out.png>)");
   }
-  return { input, output };
+  return { input, output, trace };
 }
 
 /**
@@ -222,17 +314,70 @@ export async function runRender(argv: readonly string[]): Promise<number> {
     let result: RenderResult;
     if (isUrl) {
       // Fetch the document (and its subresources) from the network, then render.
-      result = await renderUrlToPng(args.input);
+      result = await renderUrlToPng(args.input, defaultFetch, { trace: args.trace });
       writeFileSync(args.output, result.png);
     } else {
-      result = renderFileToPng(args.input, args.output);
+      const htmlBytes = new Uint8Array(readFileSync(args.input));
+      result = renderHtmlToPng(htmlBytes, `file://${args.input}`, { trace: args.trace });
+      writeFileSync(args.output, result.png);
     }
     console.log(
       `rendered ${args.input} → ${args.output} (${result.width}x${result.height}, ${result.png.length} bytes)`,
     );
+    if (result.trace !== undefined) {
+      console.log(formatStageTrace(result.trace));
+    }
+    if (result.resourceTrace !== undefined) {
+      console.log(formatResourceTrace(result.resourceTrace));
+    }
     return 0;
   } catch (error: unknown) {
     console.error(`render failed: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
+}
+
+/** Human-readable resource-loaded URL render evidence for `render URL --trace`. */
+export function formatResourceTrace(trace: ResourceTrace): string {
+  return [
+    "resource trace:",
+    `url=${trace.url}`,
+    `rootBytes=${trace.rootBytes}`,
+    `discovered=${trace.discoveredResources.length} loaded=${trace.loadedResources.length} missing=${trace.missingResources.length} loadedBytes=${trace.loadedBytes}`,
+    `stylesheets=${trace.stylesheetCount} authorSheets=${trace.authorStylesheetCount} authorRules=${trace.authorRuleCount} authorDeclarations=${trace.authorDeclarationCount}`,
+    `decodedImages=${trace.decodedImageCount} displayCommands=${trace.displayCommands} imagePaints=${trace.imagePaintCount}`,
+    `paintOps=${trace.paintOps.join(",") || "none"}`,
+    `loadedResources=${trace.loadedResources.join(",") || "none"}`,
+    `missingResources=${trace.missingResources.join(",") || "none"}`,
+  ].join("\n");
+}
+
+/** Human-readable render trace report for `render --trace`. */
+export function formatStageTrace(trace: StageTrace): string {
+  const lines = [
+    "stage trace:",
+    `total calls=${String(trace.totalCalls)} recomputes=${String(trace.totalRecomputes)} cacheHits=${String(trace.totalCacheHits)} durationMs=${formatMs(trace.totalDurationMs)}`,
+    "stage calls recomputes cacheHits verifiedHits deps durationMs maxMs",
+  ];
+  for (const summary of trace.summaries) {
+    lines.push(formatStageSummary(summary));
+  }
+  return lines.join("\n");
+}
+
+function formatStageSummary(summary: StageTraceSummary): string {
+  return [
+    summary.stage,
+    String(summary.calls),
+    String(summary.recomputes),
+    String(summary.cacheHits),
+    String(summary.verifiedCacheHits),
+    String(summary.totalDependencyCount),
+    formatMs(summary.totalDurationMs),
+    formatMs(summary.maxDurationMs),
+  ].join(" ");
+}
+
+function formatMs(value: number): string {
+  return value.toFixed(3);
 }

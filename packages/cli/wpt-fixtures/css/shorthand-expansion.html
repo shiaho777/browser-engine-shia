@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS shorthand expansion</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #border-shorthand {
+    border: 1px solid red;
+    height: 10px;
+  }
+  #border-top {
+    border-top: 2px dashed blue;
+    height: 10px;
+  }
+  #flex-shorthand {
+    display: flex;
+    width: 300px;
+  }
+  #grow { flex: 2; }
+  #fixed { flex: none; width: 50px; }
+</style>
+<body>
+<div id="border-shorthand"></div>
+<div id="border-top"></div>
+<div id="flex-shorthand">
+  <div id="grow"></div>
+  <div id="fixed"></div>
+</div>
+<script>
+test(function () {
+  var cs = getComputedStyle(document.getElementById("border-shorthand"));
+  assert_equals(cs.getPropertyValue("border-top-width"), "1px", "border shorthand expands border-top-width");
+  assert_equals(cs.getPropertyValue("border-top-style"), "solid", "border shorthand expands border-top-style");
+}, "border shorthand expands to per-edge longhands");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("border-top"));
+  assert_equals(cs.getPropertyValue("border-top-width"), "2px", "border-top shorthand expands width");
+  assert_equals(cs.getPropertyValue("border-top-style"), "dashed", "border-top shorthand expands style");
+  assert_equals(cs.getPropertyValue("border-left-style"), "none", "border-top does not affect other edges");
+}, "border-top shorthand expands only the top edge");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("grow"));
+  assert_equals(cs.getPropertyValue("flex-grow"), "2", "flex shorthand expands flex-grow");
+  assert_equals(cs.getPropertyValue("flex-shrink"), "1", "flex shorthand default shrink is 1");
+}, "flex: 2 expands to grow=2, shrink=1, basis=0%");
+
+test(function () {
+  var cs = getComputedStyle(document.getElementById("fixed"));
+  assert_equals(cs.getPropertyValue("flex-grow"), "0", "flex: none expands flex-grow to 0");
+  assert_equals(cs.getPropertyValue("flex-shrink"), "0", "flex: none expands flex-shrink to 0");
+}, "flex: none expands to 0 0 auto");
+</script>
+</body>

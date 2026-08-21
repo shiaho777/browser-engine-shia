@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { checkWptRegression, type WptRegressionResult } from "@browser-engine/scoreboard";
 
 import { runWptFiles, type WptSuiteReport } from "./wpt-suite.js";
+import type { WptSuiteOptions } from "./wpt-suite.js";
 
 /** The on-disk JSON shape under `wpt-subsets/*.json`. */
 export interface WptSubsetManifest {
@@ -81,11 +82,12 @@ export function collectWptSubsetManifestFiles(dir: string): readonly string[] {
  */
 export async function runWptSubsetManifest(
   manifest: WptSubsetManifest,
-  options: { readonly repoRoot?: string; readonly wptRootOverride?: string } = {},
+  options: { readonly repoRoot?: string; readonly wptRootOverride?: string; readonly trace?: boolean } = {},
 ): Promise<WptSubsetManifestRun> {
   const baseRoot = options.wptRootOverride ?? options.repoRoot ?? REPO_ROOT;
   const root = path.resolve(baseRoot, manifest.root);
-  const report = await runWptFiles(root, manifest.files);
+  const suiteOptions: WptSuiteOptions = options.trace === true ? { trace: true } : {};
+  const report = await runWptFiles(root, manifest.files, suiteOptions);
   const regression = checkWptRegression(manifest.baselinePassCount, report.passed);
   return {
     manifest,
@@ -99,7 +101,7 @@ export async function runWptSubsetManifest(
 /** Load and run every manifest in a directory. */
 export async function runWptSubsetManifestDir(
   manifestDir: string = defaultWptSubsetDir(),
-  options: { readonly repoRoot?: string; readonly wptRootOverride?: string } = {},
+  options: { readonly repoRoot?: string; readonly wptRootOverride?: string; readonly trace?: boolean } = {},
 ): Promise<WptSubsetManifestRunSummary> {
   const runs: WptSubsetManifestRun[] = [];
   for (const file of collectWptSubsetManifestFiles(manifestDir)) {

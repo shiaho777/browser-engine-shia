@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid fr units and track sizing</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #fr-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    width: 300px;
+  }
+  #fr-grid > div { height: 20px; }
+  #fixed-fr {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    width: 300px;
+  }
+  #fixed-fr > div { height: 20px; }
+  #repeat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    width: 300px;
+  }
+  #repeat-grid > div { height: 20px; }
+</style>
+<body>
+<div id="fr-grid"><div id="a1"></div><div id="a2"></div></div>
+<div id="fixed-fr"><div id="b1"></div><div id="b2"></div></div>
+<div id="repeat-grid"><div id="c1"></div><div id="c2"></div><div id="c3"></div></div>
+<script>
+test(function () {
+  assert_equals(document.getElementById("a1").getBoundingClientRect().width, 100, "1fr track = 100px");
+  assert_equals(document.getElementById("a2").getBoundingClientRect().width, 200, "2fr track = 200px");
+}, "grid fr units distribute proportionally");
+
+test(function () {
+  assert_equals(document.getElementById("b1").getBoundingClientRect().width, 100, "fixed track = 100px");
+  assert_equals(document.getElementById("b2").getBoundingClientRect().width, 200, "fr track gets remaining 200px");
+}, "grid fixed + fr tracks");
+
+test(function () {
+  assert_equals(document.getElementById("c1").getBoundingClientRect().width, 100, "repeat track 1 = 100px");
+  assert_equals(document.getElementById("c2").getBoundingClientRect().width, 100, "repeat track 2 = 100px");
+  assert_equals(document.getElementById("c3").getBoundingClientRect().width, 100, "repeat track 3 = 100px");
+}, "grid repeat(3, 1fr) creates 3 equal tracks");
+</script>
+</body>

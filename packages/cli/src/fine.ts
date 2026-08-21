@@ -47,17 +47,20 @@ import {
   define,
   defineInput,
   type InputSlot,
+  type QueryTraceObserver,
   type QueryDef,
 } from "@browser-engine/kernel";
 import { parseHtml } from "@browser-engine/html-parser";
-import { cascade } from "@browser-engine/cascade";
+import { cascade, cascadeWithRuleIndex, buildRuleIndex } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
 
-import { documentStylesheets } from "./stylesheets.js";
+import { documentStylesheets, type SheetLoader } from "./stylesheets.js";
 import { collectImages } from "./images.js";
+import { isActiveStylesheetLink } from "./link-rel.js";
+import { cacheLoader, documentBaseUrl, resolveUrl } from "./loader.js";
 import type { NodeRef, Url } from "./pipeline.js";
-import { withAttribute, withText, withNewNode, withAppendChild, withInsertBefore, withRemoveChild } from "./live.js";
+
 import { pipelineShaper } from "./fonts.js";
 
 /**
@@ -74,8 +77,16 @@ export const NodeAttrs: InputSlot<string, ReadonlyMap<string, string>> =
   defineInput<string, ReadonlyMap<string, string>>("FineNodeAttrs");
 /** The document root node id (a tiny per-document input the facade reads). */
 export const DocRoot: InputSlot<Url, NodeId> = defineInput<Url, NodeId>("FineDocRoot");
+/**
+ * External stylesheet bytes loaded by the wiring layer before the pure query
+ * graph runs. Keys are the raw `href` values from the DOM; callers that need
+ * URL/base resolution do it before seeding this input.
+ */
+export const FineExternalSheets: InputSlot<Url, ReadonlyMap<string, Uint8Array>> =
+  defineInput<Url, ReadonlyMap<string, Uint8Array>>("FineExternalSheets");
 
 const EMPTY_ATTRS: ReadonlyMap<string, string> = new Map();
+const EMPTY_EXTERNAL_SHEETS: ReadonlyMap<string, Uint8Array> = new Map();
 
 /** The memo key for a node's input slots. */
 function nodeKey(url: Url, node: NodeId): string {
@@ -129,16 +140,43 @@ function domFacade(
 }
 
 /** `qFineSheets` — collect stylesheets from the live (full) DOM facade. */
-export const qFineSheets = define((db, url: Url) => documentStylesheets(domFacade(db, url, false)), "qFineSheets");
+export const qFineSheets = define((db, url: Url) => {
+  const externalSheets = db.getInput(FineExternalSheets, url);
+  const dom = domFacade(db, url, false);
+  return documentStylesheets(dom, cacheLoader(externalSheets, documentBaseUrl(dom, url)));
+}, "qFineSheets");
 
 /**
  * `qFineComputed` — the cascade for one node, reading the DOM through the full
  * per-node facade so its dependency footprint is the node + its ancestors only.
  */
+export const qFineRuleIndex: QueryDef<
+  Url,
+  { readonly index: ReturnType<typeof buildRuleIndex>; readonly layerOrder: readonly (readonly string[])[] | undefined }
+> = define((db, url: Url) => {
+  const sheets = db.query(qFineSheets, url);
+  const origins: readonly ("ua" | "author")[] = sheets.map((_, i) => (i === 0 ? "ua" : "author"));
+  const layerOrder: (readonly string[])[] = [];
+  for (const sheet of sheets) {
+    if (sheet.layerOrder) {
+      for (const layer of sheet.layerOrder) {
+        if (!layerOrder.some((l) => l.join(".") === layer.join("."))) {
+          layerOrder.push(layer);
+        }
+      }
+    }
+  }
+  return Object.freeze({
+    index: buildRuleIndex(sheets, origins, layerOrder.length > 0 ? layerOrder : undefined),
+    layerOrder: layerOrder.length > 0 ? layerOrder : undefined,
+  });
+}, "qFineRuleIndex");
+
 export const qFineComputed: QueryDef<NodeRef, ReturnType<typeof cascade>> = define((db, ref: NodeRef) => {
   const dom = domFacade(db, ref.url, false);
-  const sheets = db.query(qFineSheets, ref.url);
-  return cascade(dom, sheets, ref.node);
+  const { index, layerOrder } = db.query(qFineRuleIndex, ref.url);
+  const cache = new Map<NodeId, ReturnType<typeof cascade>>();
+  return cascadeWithRuleIndex(dom, index, ref.node, undefined, layerOrder, cache);
 }, "qFineComputed");
 
 /**
@@ -157,9 +195,13 @@ const LAYOUT_FIELDS: ReadonlySet<string> = new Set([
   "borderWidth", "borderStyle",
   "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
   "borderTopStyle", "borderRightStyle", "borderBottomStyle", "borderLeftStyle",
-  "boxSizing", "position", "top", "right", "bottom", "left", "float",
-  "flexDirection", "gridTemplateColumns",
+  "boxSizing", "position", "top", "right", "bottom", "left", "float", "clear",
+  "flexDirection", "flexGrow", "flexShrink", "flexBasis", "flexWrap",
+  "justifyContent", "alignItems", "alignSelf", "alignContent", "order",
+  "gap", "columnGap", "rowGap",
+  "gridTemplateColumns", "gridTemplateRows",
   "lineHeight", "textAlign", "whiteSpace", "letterSpacing", "wordSpacing",
+  "textIndent", "wordBreak", "overflowWrap",
 ]);
 
 /** Project a full ComputedStyle to ONLY its layout-relevant fields (frozen). */
@@ -208,6 +250,17 @@ export const qFinePaint: QueryDef<Url, DisplayList> = define((db, url: Url) => {
 
 const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
 
+/** Options for {@link FineSession}. */
+export interface FineSessionOptions {
+  /** Read-only query observer for trace/profiling evidence. */
+  readonly onQuery?: QueryTraceObserver;
+  /**
+   * Optional sync stylesheet resource loader supplied by the wiring layer.
+   * Called during session construction, never from inside a query.
+   */
+  readonly loadExternalSheet?: SheetLoader;
+}
+
 /**
  * A fine-grained incremental document session. Same API surface as
  * {@link import("./live.js").LiveSession}, but the DOM is decomposed into
@@ -215,24 +268,35 @@ const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
  * the edited node.
  */
 export class FineSession {
-  readonly #db = new IncrementalDb();
+  readonly #db: IncrementalDb;
   readonly #url: Url;
+  #loadExternalSheet: SheetLoader | undefined;
   #dom: DomTree;
+  #nodes: Map<NodeId, DomNode>;
+  #root: NodeId;
+  #pendingStructSeeds: Set<NodeId> = new Set();
+  #pendingAttrSeeds: Set<NodeId> = new Set();
   /** Next free node id for created nodes (one past the current maximum). */
   #nextId: number;
 
-  constructor(html: string, url: Url = "fine://doc") {
+  constructor(html: string, url: Url = "fine://doc", options: FineSessionOptions = {}) {
+    this.#db = new IncrementalDb(options.onQuery === undefined ? {} : { onQuery: options.onQuery });
     this.#url = url;
-    this.#dom = parseHtml(encode(html));
+    this.#loadExternalSheet = options.loadExternalSheet;
+    const parsed = parseHtml(encode(html));
+    this.#root = parsed.root;
+    this.#nodes = new Map(parsed.nodes);
+    this.#dom = { root: this.#root, nodes: this.#nodes } as unknown as DomTree;
     let max = 0;
-    for (const id of this.#dom.nodes.keys()) max = Math.max(max, Number(id));
+    for (const id of this.#nodes.keys()) max = Math.max(max, Number(id));
     this.#nextId = max + 1;
     this.#seed(this.#dom);
   }
 
-  /** Seed the document root + every node's structure and attributes as inputs. */
+  /** Seed the document root + every node's structure/attrs + external sheets. */
   #seed(dom: DomTree): void {
     this.#db.setInput(DocRoot, this.#url, dom.root);
+    this.#syncExternalSheets();
     for (const [id, node] of dom.nodes) {
       this.#db.setInput(NodeStruct, nodeKey(this.#url, id), structOf(node));
       this.#db.setInput(NodeAttrs, nodeKey(this.#url, id), node.attrs ?? EMPTY_ATTRS);
@@ -244,6 +308,16 @@ export class FineSession {
     return this.#dom;
   }
 
+  /** The immutable document URL that keys this session. */
+  get url(): Url {
+    return this.#url;
+  }
+
+  /** The current effective base URL exposed to resource loading and guest DOM APIs. */
+  get baseUrl(): string {
+    return this.#documentBaseUrl();
+  }
+
   /** Diagnostic: total compute-fn executions so far. */
   get recomputeCount(): number {
     return this.#db.recomputeCount;
@@ -251,6 +325,7 @@ export class FineSession {
 
   /** Render the current document to a DisplayList (incrementally). */
   render(): DisplayList {
+    this.#flushSeeds();
     return this.#db.query(qFinePaint, this.#url);
   }
 
@@ -261,42 +336,93 @@ export class FineSession {
    * invalidation); a layout-affecting mutation returns a fresh one.
    */
   layoutTree(): ReturnType<typeof layout> {
+    this.#flushSeeds();
     return this.#db.query(qFineLayout, this.#url);
   }
 
   /** The current ComputedStyle of a node (via the kernel). */
   computed(node: NodeId): ReturnType<typeof cascade> {
+    this.#flushSeeds();
     return this.#db.query(qFineComputed, { url: this.#url, node });
   }
 
-  /** Mutate the text of a text node (re-seeds only that node's STRUCTURE input). */
+  setExternalSheetLoader(loader: SheetLoader | undefined): void {
+    this.#loadExternalSheet = loader;
+    this.#syncExternalSheets();
+  }
+
   setText(node: NodeId, text: string): void {
-    this.#dom = withText(this.#dom, node, text);
-    const updated = this.#dom.nodes.get(node);
-    if (updated !== undefined) {
+    const existing = this.#nodes.get(node);
+    if (existing === undefined) return;
+    const updated: DomNode = { ...existing, text };
+    this.#nodes.set(node, updated);
+    this.#seedStruct(node);
+  }
+
+  setAttribute(node: NodeId, name: string, value: string): void {
+    const previousBaseUrl = this.#documentBaseUrl();
+    const existing = this.#nodes.get(node);
+    if (existing === undefined || existing.kind !== "element") return;
+    const attrs = new Map(existing.attrs ?? []);
+    attrs.set(name, value);
+    const updated: DomNode = { ...existing, attrs };
+    this.#nodes.set(node, updated);
+    this.#seedAttrs(node);
+    this.#syncExternalSheetsIfAttributeMutation(updated, name, previousBaseUrl);
+  }
+
+  removeAttribute(node: NodeId, name: string): void {
+    const previousBaseUrl = this.#documentBaseUrl();
+    const existing = this.#nodes.get(node);
+    if (existing === undefined || existing.kind !== "element") return;
+    const attrs = new Map(existing.attrs ?? []);
+    attrs.delete(name);
+    const updated: DomNode = { ...existing, attrs };
+    this.#nodes.set(node, updated);
+    this.#seedAttrs(node);
+    this.#syncExternalSheetsIfAttributeMutation(updated, name, previousBaseUrl);
+  }
+
+  #seedNode(node: NodeId): void {
+    this.#pendingStructSeeds.add(node);
+    this.#pendingAttrSeeds.add(node);
+  }
+
+  #seedStruct(node: NodeId): void {
+    this.#pendingStructSeeds.add(node);
+  }
+
+  #seedAttrs(node: NodeId): void {
+    this.#pendingAttrSeeds.add(node);
+  }
+
+  #flushSeeds(): void {
+    if (this.#pendingStructSeeds.size === 0 && this.#pendingAttrSeeds.size === 0) return;
+    for (const node of this.#pendingStructSeeds) {
+      const updated = this.#nodes.get(node);
+      if (updated === undefined) continue;
       this.#db.setInput(NodeStruct, nodeKey(this.#url, node), structOf(updated));
     }
-  }
-
-  /** Mutate an element's attribute (re-seeds ONLY that node's ATTRS input, so
-   * a paint-only attribute change never invalidates layout). */
-  setAttribute(node: NodeId, name: string, value: string): void {
-    this.#dom = withAttribute(this.#dom, node, name, value);
-    const updated = this.#dom.nodes.get(node);
-    if (updated !== undefined) {
+    for (const node of this.#pendingAttrSeeds) {
+      const updated = this.#nodes.get(node);
+      if (updated === undefined) continue;
       this.#db.setInput(NodeAttrs, nodeKey(this.#url, node), updated.attrs ?? EMPTY_ATTRS);
     }
+    this.#pendingStructSeeds.clear();
+    this.#pendingAttrSeeds.clear();
   }
 
-  /** Re-seed one node's structure + attribute inputs from the current DOM. */
-  #seedNode(node: NodeId): void {
-    const updated = this.#dom.nodes.get(node);
-    if (updated === undefined) return;
-    this.#db.setInput(NodeStruct, nodeKey(this.#url, node), structOf(updated));
-    this.#db.setInput(NodeAttrs, nodeKey(this.#url, node), updated.attrs ?? EMPTY_ATTRS);
+  #detachChild(child: NodeId): void {
+    const c = this.#nodes.get(child);
+    if (c === undefined || c.parent === null) return;
+    const old = this.#nodes.get(c.parent);
+    if (old === undefined) return;
+    this.#nodes.set(old.id, {
+      ...old,
+      children: old.children.filter((id) => id !== child),
+    });
   }
 
-  /** Create a detached element node (`document.createElement`); returns its id. */
   createElement(tag: string): NodeId {
     const id = nodeId(this.#nextId);
     this.#nextId += 1;
@@ -308,43 +434,170 @@ export class FineSession {
       children: [],
       parent: null,
     };
-    this.#dom = withNewNode(this.#dom, node);
+    this.#nodes.set(id, node);
     this.#seedNode(id);
     return id;
   }
 
-  /** Create a detached text node (`document.createTextNode`); returns its id. */
   createTextNode(text: string): NodeId {
     const id = nodeId(this.#nextId);
     this.#nextId += 1;
     const node: DomNode = { id, kind: "text", text, children: [], parent: null };
-    this.#dom = withNewNode(this.#dom, node);
+    this.#nodes.set(id, node);
     this.#seedNode(id);
     return id;
   }
 
-  /** Append `child` as the last child of `parent` (`Node.appendChild`). */
+  createComment(text: string): NodeId {
+    const id = nodeId(this.#nextId);
+    this.#nextId += 1;
+    const node: DomNode = { id, kind: "comment", text, children: [], parent: null };
+    this.#nodes.set(id, node);
+    this.#seedNode(id);
+    return id;
+  }
+
   appendChild(parent: NodeId, child: NodeId): void {
-    const oldParent = this.#dom.nodes.get(child)?.parent ?? null;
-    this.#dom = withAppendChild(this.#dom, parent, child);
-    this.#seedNode(parent);
-    this.#seedNode(child);
-    if (oldParent !== null && oldParent !== parent) this.#seedNode(oldParent);
+    const previousBaseUrl = this.#documentBaseUrl();
+    const p = this.#nodes.get(parent);
+    const c = this.#nodes.get(child);
+    if (p === undefined || c === undefined || parent === child) return;
+    const oldParent = c.parent;
+    this.#detachChild(child);
+    const freshParent = this.#nodes.get(parent);
+    if (freshParent === undefined) return;
+    this.#nodes.set(parent, {
+      ...freshParent,
+      children: [...freshParent.children.filter((id) => id !== child), child],
+    });
+    this.#nodes.set(child, { ...c, parent });
+    this.#seedStruct(parent);
+    this.#seedStruct(child);
+    if (oldParent !== null && oldParent !== parent) this.#seedStruct(oldParent);
+    this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
   }
 
-  /** Insert `child` before `ref` among `parent`'s children (`Node.insertBefore`). */
   insertBefore(parent: NodeId, child: NodeId, ref: NodeId | null): void {
-    const oldParent = this.#dom.nodes.get(child)?.parent ?? null;
-    this.#dom = withInsertBefore(this.#dom, parent, child, ref);
-    this.#seedNode(parent);
-    this.#seedNode(child);
-    if (oldParent !== null && oldParent !== parent) this.#seedNode(oldParent);
+    const previousBaseUrl = this.#documentBaseUrl();
+    const p = this.#nodes.get(parent);
+    const c = this.#nodes.get(child);
+    if (p === undefined || c === undefined || parent === child) return;
+    const oldParent = c.parent;
+    this.#detachChild(child);
+    const freshParent = this.#nodes.get(parent);
+    if (freshParent === undefined) return;
+    const kids = freshParent.children.filter((id) => id !== child);
+    const at = ref === null ? kids.length : kids.indexOf(ref);
+    const idx = at < 0 ? kids.length : at;
+    this.#nodes.set(parent, {
+      ...freshParent,
+      children: [...kids.slice(0, idx), child, ...kids.slice(idx)],
+    });
+    this.#nodes.set(child, { ...c, parent });
+    this.#seedStruct(parent);
+    this.#seedStruct(child);
+    if (oldParent !== null && oldParent !== parent) this.#seedStruct(oldParent);
+    this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
   }
 
-  /** Remove `child` from `parent` (`Node.removeChild`); child becomes detached. */
   removeChild(parent: NodeId, child: NodeId): void {
-    this.#dom = withRemoveChild(this.#dom, parent, child);
-    this.#seedNode(parent);
-    this.#seedNode(child);
+    const previousBaseUrl = this.#documentBaseUrl();
+    const p = this.#nodes.get(parent);
+    const c = this.#nodes.get(child);
+    if (p === undefined || c === undefined) return;
+    this.#nodes.set(parent, {
+      ...p,
+      children: p.children.filter((id) => id !== child),
+    });
+    this.#nodes.set(child, { ...c, parent: null });
+    this.#seedStruct(parent);
+    this.#seedStruct(child);
+    this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
   }
+
+  /** Recompute the external stylesheet input from the current DOM. */
+  #syncExternalSheets(): void {
+    this.#db.setInput(FineExternalSheets, this.#url, loadExternalStylesheets(this.#dom, this.#url, this.#loadExternalSheet));
+  }
+
+  /** The document's current effective base URL for resolving external resources. */
+  #documentBaseUrl(): string {
+    return documentBaseUrl(this.#dom, this.#url);
+  }
+
+  /** Rescan stylesheet resources only for mutations that can change external sheet URLs. */
+  #syncExternalSheetsIfAttributeMutation(node: DomNode | undefined, name: string, previousBaseUrl: string): void {
+    if (
+      this.#documentBaseUrl() !== previousBaseUrl ||
+      node?.kind === "element" &&
+      node.tag === "link" &&
+      (name === "href" || name === "rel" || name === "disabled" || name === "media")
+    ) {
+      this.#syncExternalSheets();
+    }
+  }
+
+  /** Rescan when moving/removing a stylesheet link or changing the document base URL. */
+  #syncExternalSheetsIfSubtreeMutationCanAffectResources(node: NodeId, previousBaseUrl: string): void {
+    if (this.#documentBaseUrl() !== previousBaseUrl || subtreeHasStylesheetLink(this.#dom, node)) {
+      this.#syncExternalSheets();
+    }
+  }
+}
+
+/** Load the external stylesheets currently referenced by the parsed document. */
+function loadExternalStylesheets(
+  dom: DomTree,
+  documentUrl: string,
+  loadExternal?: SheetLoader,
+): ReadonlyMap<string, Uint8Array> {
+  if (loadExternal === undefined) {
+    return EMPTY_EXTERNAL_SHEETS;
+  }
+  const baseUrl = documentBaseUrl(dom, documentUrl);
+  const sheets = new Map<string, Uint8Array>();
+  const visit = (id: NodeId): void => {
+    const node = dom.nodes.get(id);
+    if (node === undefined) {
+      return;
+    }
+    if (!isActiveStylesheetLink(node)) {
+      for (const child of node.children) {
+        visit(child);
+      }
+      return;
+    }
+    const href = node.attrs?.get("href");
+    if (href !== undefined && href.length > 0 && !isDataUrl(href)) {
+      const abs = resolveUrl(href, baseUrl);
+      if (abs !== null) {
+        const bytes = loadExternal(abs);
+        if (bytes !== undefined) {
+          sheets.set(abs, bytes);
+        }
+      }
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(dom.root);
+  return sheets.size === 0 ? EMPTY_EXTERNAL_SHEETS : sheets;
+}
+
+/** Whether a subtree contains at least one stylesheet link element. */
+function subtreeHasStylesheetLink(dom: DomTree, id: NodeId): boolean {
+  const node = dom.nodes.get(id);
+  if (node === undefined) return false;
+  if (node.kind === "element" && node.tag === "link") return true;
+  if (node.children.length === 0) return false;
+  for (const child of node.children) {
+    if (subtreeHasStylesheetLink(dom, child)) return true;
+  }
+  return false;
+}
+
+/** URL schemes are ASCII case-insensitive. */
+function isDataUrl(href: string): boolean {
+  return href.slice(0, 5).toLowerCase() === "data:";
 }

@@ -72,6 +72,7 @@ export type {
 } from "./value-grammar.js";
 export {
   err,
+  isSpecifiedCalc,
   isSpecifiedLength,
   ok,
   parseColor,
@@ -85,7 +86,11 @@ export {
   parseString,
   parseTransform,
 } from "./value-runtime.js";
-export type { ParseResult, SpecifiedLength } from "./value-runtime.js";
+export type { CalcNode, ParseResult, SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";
+
+// ---- CSS shorthand expansion (ROADMAP Phase 2) ----------------------------
+export { expandShorthand, expandDeclarations } from "./shorthand-expansion.js";
+export type { ExpandedDeclaration, ShorthandExpander } from "./shorthand-expansion.js";
 
 // ---- the emitters (the "code generation" half) ----------------------------
 export {

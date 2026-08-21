@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSSStyleDeclaration property name normalization</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #target {
+    background-color: rgb(1, 2, 3);
+  }
+</style>
+<body>
+<div id="target">target</div>
+<script>
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.backgroundColor = "rgb(9, 8, 7)";
+
+  assert_equals(el.style.getPropertyValue("background-color"), "rgb(9, 8, 7)", "camelCase writes the dashed declaration");
+  assert_equals(el.style.backgroundColor, "rgb(9, 8, 7)", "camelCase reads the declaration back");
+  assert_equals(el.style["background-color"], "rgb(9, 8, 7)", "dashed property access reads the same declaration");
+  assert_equals(el.getAttribute("style"), "background-color: rgb(9, 8, 7)", "style attribute serializes the dashed property name");
+  assert_equals(getComputedStyle(el).getPropertyValue("background-color"), "rgb(9, 8, 7)", "normalized inline declaration participates in computed style");
+}, "camelCase CSSOM property writes normalize to dashed CSS property names");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "";
+  el.style["background-color"] = "rgb(3, 4, 5)";
+
+  assert_equals(el.style.backgroundColor, "rgb(3, 4, 5)", "camelCase reads a dashed property write");
+  assert_equals(el.style.getPropertyValue("background-color"), "rgb(3, 4, 5)", "dashed write updates getPropertyValue");
+  assert_equals(el.getAttribute("style"), "background-color: rgb(3, 4, 5)", "style attribute keeps the dashed property name");
+}, "dashed CSSOM property writes are visible through camelCase aliases");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "background-color: rgb(9, 8, 7); width: 42px";
+  el.style.backgroundColor = "";
+
+  assert_equals(el.style.backgroundColor, "", "empty camelCase assignment removes the declaration");
+  assert_equals(el.style.getPropertyValue("background-color"), "", "removed declaration no longer reads through getPropertyValue");
+  assert_equals(el.getAttribute("style"), "width: 42px", "empty alias assignment removes only the normalized declaration");
+  assert_equals(getComputedStyle(el).getPropertyValue("background-color"), "rgb(1, 2, 3)", "computed style falls back after alias removal");
+}, "empty CSSOM property alias assignment removes the normalized declaration");
+
+test(function () {
+  var el = document.getElementById("target");
+
+  el.style.cssText = "width: 42px";
+  el.style.notARealCssProperty = "12px";
+
+  assert_equals(el.style.getPropertyValue("not-a-real-css-property"), "", "unknown aliases do not create CSS declarations");
+  assert_equals(el.getAttribute("style"), "width: 42px", "style attribute is unchanged by unknown alias writes");
+  assert_equals(el.style.notARealCssProperty, "12px", "unknown expando properties remain ordinary JS properties");
+}, "unknown CSSOM property aliases do not synthesize declarations");
+</script>
+</body>

@@ -51,7 +51,7 @@ void test("Req 3.1/3.2: real cascade surfaces flex-direction under camelCase fle
 void test("Req 3.1/3.2: real cascade surfaces grid-template-columns as gridTemplateColumns", () => {
   const cs = cascadeFirstElement("<div></div>", "div { display: grid; grid-template-columns: 3 }");
   assert.equal(cs["display"], "grid");
-  assert.equal(cs["gridTemplateColumns"], 3);
+  assert.equal(cs["gridTemplateColumns"], "3");
 });
 
 void test("Req 3.1/3.2: real cascade surfaces position + insets", () => {
@@ -87,7 +87,7 @@ void test("Req 3.3: undeclared new properties fall back to their initial value",
   assert.equal(cs["position"], "static");
   assert.equal(cs["float"], "none");
   assert.equal(cs["flexDirection"], "row");
-  assert.equal(cs["gridTemplateColumns"], 0);
+  assert.equal(cs["gridTemplateColumns"], "0");
   assert.equal(cs["opacity"], 1);
   assert.equal(cs["transform"], "none");
   assert.equal(cs["zIndex"], 0);

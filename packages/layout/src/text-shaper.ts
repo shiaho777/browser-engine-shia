@@ -53,6 +53,11 @@ import type { Px } from "@browser-engine/ir";
 export interface ShapingFont {
   /** The computed `font-size`, in CSS pixels — the per-em the metric scales by. */
   readonly fontSize: Px;
+  /** Computed font-weight (100–900); absent ⇒ 400. */
+  readonly fontWeight?: number;
+  /** The font's ascent in em units (for baseline placement). Optional: shapers
+   * that don't provide it default to 0.8 × fontSize. */
+  readonly ascentEm?: number;
 }
 
 /**

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>:has() relative selector</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  div:has(span) { color: red; }
+  div:has(.special) { background-color: blue; }
+  div:has(p) { color: green; }
+</style>
+<body>
+<div id="has-span"><span>child</span></div>
+<div id="has-special"><span class="special">special</span></div>
+<div id="no-match"><p>paragraph</p></div>
+<div id="empty"></div>
+<script>
+test(function () {
+  // div:has(span) matches #has-span (has a span descendant)
+  var cs = getComputedStyle(document.getElementById("has-span"));
+  assert_equals(cs.color, "rgb(255, 0, 0)", "div:has(span) matches div with span child");
+}, ":has(span) matches element with span descendant");
+
+test(function () {
+  // div:has(.special) matches #has-special (has a .special descendant)
+  var cs = getComputedStyle(document.getElementById("has-special"));
+  assert_equals(cs.backgroundColor, "rgb(0, 0, 255)", "div:has(.special) matches div with .special child");
+}, ":has(.special) matches element with .special descendant");
+
+test(function () {
+  // div:has(span) does NOT match #no-match (has p, not span)
+  // But div:has(p) DOES match #no-match
+  var cs = getComputedStyle(document.getElementById("no-match"));
+  assert_equals(cs.color, "rgb(0, 128, 0)", "div:has(p) matches div with p child");
+}, ":has(p) matches element with p descendant");
+
+test(function () {
+  // #empty has no descendants → no :has() rule matches
+  var cs = getComputedStyle(document.getElementById("empty"));
+  assert_equals(cs.color, "rgb(0, 0, 0)", ":has() does not match element with no descendants");
+}, ":has() does not match empty element");
+</script>
+</body>

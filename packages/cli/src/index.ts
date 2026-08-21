@@ -68,11 +68,23 @@ export {
   renderUrlToPng,
   surfaceSizeFor,
   parseRenderArgs,
+  formatStageTrace,
+  formatResourceTrace,
   runRender,
   DEFAULT_CANVAS_WIDTH,
   DEFAULT_CANVAS_HEIGHT,
   type RenderResult,
+  type RenderOptions,
+  type ResourceTrace,
 } from "./render.js";
+export {
+  StageTraceCollector,
+  createStageTraceCollector,
+  type PipelineStage,
+  type StageTrace,
+  type StageTraceEvent,
+  type StageTraceSummary,
+} from "./stage-trace.js";
 
 export {
   collectStylesheets,
@@ -80,17 +92,27 @@ export {
 } from "./stylesheets.js";
 export {
   collectImages,
+  collectImagesAsync,
+  warmDecodeImageBytes,
+  collectFirstImageNodes,
+  imageSourceCandidates,
   type ImageLoader,
+  type AsyncImageLoader,
 } from "./images.js";
 export {
   loadResources,
+  loadResourcesWithTrace,
   discoverSubresources,
   resolveUrl,
   cacheLoader,
   defaultFetch,
+  documentBaseUrl,
   type FetchFn,
   type ResourceCache,
+  type ResourceLoadEvent,
+  type ResourceLoadResult,
 } from "./loader.js";
+export { pipelineShaper, pipelineGlyphSource, pipelinePrimaryFontName, pipelineFaces } from "./fonts.js";
 
 // ---- M3: the live document session (DOM mutation → incremental re-render) ---
 export {
@@ -102,11 +124,15 @@ export {
   qLivePaint,
   withText,
   withAttribute,
+  withRemoveAttribute,
+  withNewNode,
+  withAppendChild,
 } from "./live.js";
 
 // ---- M4: fine-grained incremental session (per-node inputs, O(changed) recalc) ---
 export {
   FineSession,
+  FineExternalSheets,
   NodeStruct,
   NodeAttrs,
   DocRoot,
@@ -133,6 +159,7 @@ export {
   collectWptTests,
   extractScripts,
   type WptSuiteReport,
+  type WptSuiteOptions,
   type ResourceResolver,
 } from "./wpt-suite.js";
 export {
@@ -159,7 +186,16 @@ export {
 } from "./wpt-subsets-run.js";
 
 // ---- Deterministic event loop + async fetch (real event-loop semantics) ----
-export { runEventDriven, runEventDrivenReal, type EventDrivenRun } from "./event-loop.js";
+export {
+  runEventDriven,
+  runEventDrivenReal,
+  runScriptsOnSession,
+  runScriptsOnSessionReal,
+  type EventDrivenRun,
+  type GuestBrowserFetch,
+  type ScriptNetworkOptions,
+} from "./event-loop.js";
+export { runModuleScripts, isEsmSupported, type ModuleEntry, type ModuleRunResult } from "./esm-runner.js";
 
 // ---- UA + document stylesheet collection -----------------------------------
 export { documentStylesheets, uaStylesheet } from "./stylesheets.js";
@@ -198,6 +234,26 @@ export {
   runPhase2WptSubset,
   type Phase2ScoreboardOptions,
 } from "./phase2.js";
+
+// ---- §7.9 Phase 5-7 WPT subset + real-site smoke set ----------------------
+export {
+  PHASE3_CAPABILITIES,
+  PHASE3_GROUPS,
+  PHASE3_GROUP_NAMES,
+  PHASE3_WPT_SUBSET,
+  PHASE3_TARGET_PASS_RATE,
+  PHASE3_WPT_BASELINE,
+  PHASE3_SMOKE_TESTS,
+  assertZeroSilentStubs,
+  computePhase3Scoreboard,
+  phase3PassRate,
+  probeSilentStubs,
+  runPhase3WptSubset,
+  runSmokeTests,
+  type Phase3ScoreboardOptions,
+  type SilentStubReport,
+  type SmokeTest,
+} from "./phase3.js";
 
 /**
  * Run the Phase 0 check gate and print a human-readable report. Returns the

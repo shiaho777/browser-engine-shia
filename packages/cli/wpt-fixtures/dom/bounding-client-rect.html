@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element getBoundingClientRect geometry</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #box {
+    width: 50px;
+    height: 30px;
+    padding-top: 10px;
+    padding-right: 10px;
+    padding-bottom: 10px;
+    padding-left: 10px;
+    border-top-width: 2px;
+    border-right-width: 2px;
+    border-bottom-width: 2px;
+    border-left-width: 2px;
+    border-top-style: solid;
+    border-right-style: solid;
+    border-bottom-style: solid;
+    border-left-style: solid;
+  }
+  #hidden {
+    display: none;
+    width: 99px;
+    height: 99px;
+  }
+</style>
+<body>
+<div id="box"></div>
+<div id="hidden"></div>
+<script>
+test(function () {
+  var rect = document.getElementById("box").getBoundingClientRect();
+  assert_equals(rect.width, 74, "content width + horizontal padding + horizontal border");
+  assert_equals(rect.height, 54, "content height + vertical padding + vertical border");
+}, "getBoundingClientRect returns the laid-out border-box size");
+
+test(function () {
+  var rect = document.getElementById("box").getBoundingClientRect();
+  assert_equals(rect.left, rect.x, "left aliases x");
+  assert_equals(rect.top, rect.y, "top aliases y");
+  assert_equals(rect.right, rect.left + rect.width, "right is derived from left + width");
+  assert_equals(rect.bottom, rect.top + rect.height, "bottom is derived from top + height");
+}, "getBoundingClientRect exposes derived DOMRect edges");
+
+test(function () {
+  var rect = document.getElementById("hidden").getBoundingClientRect();
+  assert_equals(rect.x, 0);
+  assert_equals(rect.y, 0);
+  assert_equals(rect.width, 0);
+  assert_equals(rect.height, 0);
+}, "getBoundingClientRect returns a zero rect for display none");
+</script>
+</body>

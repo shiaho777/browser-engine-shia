@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>DOM createElement and appendChild</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #made { width: 37px; height: 19px; background-color: rgb(1, 2, 3); }
+</style>
+<body>
+<main id="root"></main>
+<script>
+test(function () {
+  var el = document.createElement("section");
+  el.id = "made";
+  el.className = "created";
+  el.setAttribute("data-k", "v");
+  document.getElementById("root").appendChild(el);
+
+  var found = document.getElementById("made");
+  assert_true(found !== null, "created element is findable by id");
+  assert_equals(found.tagName, "SECTION");
+  assert_equals(found.getAttribute("data-k"), "v");
+  assert_equals(document.querySelector(".created"), found);
+}, "createElement + appendChild makes an element queryable");
+
+test(function () {
+  var made = document.getElementById("made");
+  made.appendChild(document.createTextNode("hello"));
+  assert_equals(made.textContent, "hello");
+  assert_equals(document.querySelector("#root").children.length, 1);
+}, "createTextNode + appendChild contributes readable text");
+
+test(function () {
+  var made = document.getElementById("made");
+  var cs = getComputedStyle(made);
+  assert_equals(cs.getPropertyValue("width"), "37px");
+  assert_equals(cs.getPropertyValue("height"), "19px");
+  assert_equals(cs.getPropertyValue("background-color"), "rgb(1, 2, 3)");
+}, "created element participates in cascade and layout");
+</script>
+</body>

@@ -15,7 +15,23 @@ import local from "./tools/eslint-rules/index.js";
  */
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/node_modules/**", "**/*.config.js", "tools/**", "**/scripts/**", "**/wpt-fixtures/**"],
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/*.config.js",
+      "tools/**",
+      "**/scripts/**",
+      "**/wpt-fixtures/**",
+      // Machine-local working directories (never committed).
+      "artifacts/**",
+      ".codebuddy/**",
+      ".zcode/**",
+      // Plain-JS runtime glue outside the typed source tree (bin launchers,
+      // Electron main process, preload bridge).
+      "**/bin/**",
+      "packages/app/electron/**",
+      "packages/app/preload/**",
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

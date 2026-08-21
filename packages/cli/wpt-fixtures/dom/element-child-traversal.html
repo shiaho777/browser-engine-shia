@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element firstElementChild and lastElementChild</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<section id="mixed">leading<span id="first">first</span><em id="last">last</em>trailing</section>
+<section id="empty">text only</section>
+<section id="old-parent"><b id="moved">moved</b></section>
+<section id="new-parent"><i id="ref">ref</i></section>
+<script>
+test(function () {
+  var mixed = document.getElementById("mixed");
+  var empty = document.getElementById("empty");
+
+  assert_equals(mixed.firstChild.textContent, "leading", "precondition: firstChild is a text node");
+  assert_equals(mixed.lastChild.textContent, "trailing", "precondition: lastChild is a text node");
+  assert_equals(mixed.firstElementChild, document.getElementById("first"), "firstElementChild skips leading text");
+  assert_equals(mixed.lastElementChild, document.getElementById("last"), "lastElementChild skips trailing text");
+  assert_equals(empty.firstElementChild, null, "text-only element has no first element child");
+  assert_equals(empty.lastElementChild, null, "text-only element has no last element child");
+}, "firstElementChild and lastElementChild ignore text nodes at the edges");
+
+test(function () {
+  var host = document.createElement("section");
+  var first = document.createElement("span");
+  var last = document.createElement("strong");
+
+  first.id = "append-first-edge";
+  last.id = "append-last-edge";
+  host.appendChild(document.createTextNode("left"));
+  host.appendChild(first);
+  host.appendChild(document.createTextNode("middle"));
+  host.appendChild(last);
+  host.appendChild(document.createTextNode("right"));
+  document.getElementById("mixed").appendChild(host);
+
+  assert_equals(host.firstChild.textContent, "left", "precondition: firstChild remains text");
+  assert_equals(host.lastChild.textContent, "right", "precondition: lastChild remains text");
+  assert_equals(host.firstElementChild, first, "appendChild exposes the first element child");
+  assert_equals(host.lastElementChild, last, "appendChild exposes the last element child");
+
+  host.removeChild(first);
+
+  assert_equals(host.firstElementChild, last, "removeChild advances firstElementChild to the next element");
+  assert_equals(host.lastElementChild, last, "removeChild keeps lastElementChild on the remaining element");
+
+  host.removeChild(last);
+
+  assert_equals(host.firstElementChild, null, "removing every element clears firstElementChild");
+  assert_equals(host.lastElementChild, null, "removing every element clears lastElementChild");
+}, "element child traversal follows appendChild and removeChild");
+
+test(function () {
+  var host = document.createElement("section");
+  var oldFirst = document.createElement("span");
+  var oldLast = document.createElement("em");
+  var replacement = document.createElement("strong");
+
+  host.appendChild(document.createTextNode("left"));
+  host.appendChild(oldFirst);
+  host.appendChild(oldLast);
+  host.appendChild(document.createTextNode("right"));
+  document.getElementById("mixed").appendChild(host);
+
+  assert_equals(host.firstElementChild, oldFirst, "precondition: old first element is first");
+  assert_equals(host.lastElementChild, oldLast, "precondition: old last element is last");
+
+  host.replaceChild(replacement, oldFirst);
+
+  assert_equals(host.firstElementChild, replacement, "replaceChild updates firstElementChild");
+  assert_equals(host.lastElementChild, oldLast, "replaceChild leaves lastElementChild when the tail is unchanged");
+
+  host.replaceChild(document.createTextNode("tail text"), oldLast);
+
+  assert_equals(host.firstElementChild, replacement, "replacing the last element with text preserves the first element");
+  assert_equals(host.lastElementChild, replacement, "replacing the last element with text moves lastElementChild back");
+}, "element child traversal follows replaceChild");
+
+test(function () {
+  var oldParent = document.getElementById("old-parent");
+  var newParent = document.getElementById("new-parent");
+  var moved = document.getElementById("moved");
+  var ref = document.getElementById("ref");
+
+  oldParent.appendChild(document.createTextNode("old tail"));
+  newParent.insertBefore(document.createTextNode("new head"), ref);
+
+  assert_equals(oldParent.firstElementChild, moved, "precondition: old parent starts with moved element");
+  assert_equals(oldParent.lastElementChild, moved, "precondition: old parent ends with moved element");
+  assert_equals(newParent.firstElementChild, ref, "precondition: new parent starts with reference element");
+
+  newParent.insertBefore(moved, ref);
+
+  assert_equals(oldParent.firstElementChild, null, "reparenting clears old parent's firstElementChild");
+  assert_equals(oldParent.lastElementChild, null, "reparenting clears old parent's lastElementChild");
+  assert_equals(newParent.firstElementChild, moved, "insertBefore reparent updates new firstElementChild");
+  assert_equals(newParent.lastElementChild, ref, "insertBefore reparent leaves the reference as lastElementChild");
+}, "element child traversal follows insertBefore reparenting");
+</script>
+</body>

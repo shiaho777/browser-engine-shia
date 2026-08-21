@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Float clear and margin collapse</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #float-clear-container {
+    width: 200px;
+  }
+  #float-left {
+    float: left;
+    width: 50px;
+    height: 50px;
+  }
+  #after-clear {
+    clear: both;
+    width: 100px;
+    height: 20px;
+  }
+
+  #margin-collapse-container {
+    width: 200px;
+  }
+  #mc-child1 {
+    margin-bottom: 20px;
+    width: 100px;
+    height: 30px;
+  }
+  #mc-child2 {
+    margin-bottom: 10px;
+    width: 100px;
+    height: 30px;
+  }
+</style>
+<body>
+<div id="float-clear-container">
+  <div id="float-left"></div>
+  <div id="after-clear"></div>
+</div>
+<div id="margin-collapse-container">
+  <div id="mc-child1"></div>
+  <div id="mc-child2"></div>
+</div>
+<script>
+test(function () {
+  // float-left is 50px tall; after-clear has clear:both so it starts below the float
+  var fl = document.getElementById("float-left").getBoundingClientRect();
+  var ac = document.getElementById("after-clear").getBoundingClientRect();
+  assert_true(ac.y >= fl.y + fl.height - 1, "cleared element starts at or below float bottom");
+}, "clear: both moves element below floated elements");
+
+test(function () {
+  // margin collapse: child1 margin-bottom 20, child2 margin-bottom 10
+  // The gap between child1's border bottom and child2's border top should be
+  // the margin-bottom of child1 (20px) since child2 has no margin-top.
+  var c1 = document.getElementById("mc-child1").getBoundingClientRect();
+  var c2 = document.getElementById("mc-child2").getBoundingClientRect();
+  var gap = c2.y - (c1.y + c1.height);
+  assert_equals(gap, 20, "margin-bottom of child1 creates 20px gap");
+}, "margin-bottom creates space between siblings");
+</script>
+</body>

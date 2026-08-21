@@ -103,7 +103,22 @@ export const qSheets: QueryDef<Url, readonly StyleSheet[]> = define((db, url) =>
 export const qComputed: QueryDef<NodeRef, ComputedStyle> = define((db, ref) => {
   const dom = db.query(qDom, ref.url);
   const sheets = db.query(qSheets, ref.url);
-  return cascade(dom, sheets, ref.node);
+  // The first sheet is the UA default stylesheet (lowest precedence); the rest
+  // are author sheets. Origin-aware cascade ensures UA rules never override
+  // author rules regardless of specificity (CSS Cascade 4 §6.3).
+  const origins: readonly ("ua" | "author")[] = sheets.map((_, i) => (i === 0 ? "ua" : "author"));
+  // Collect layer order from all sheets (first declaration wins per layer).
+  const layerOrder: (readonly string[])[] = [];
+  for (const sheet of sheets) {
+    if (sheet.layerOrder) {
+      for (const layer of sheet.layerOrder) {
+        if (!layerOrder.some((l) => l.join(".") === layer.join("."))) {
+          layerOrder.push(layer);
+        }
+      }
+    }
+  }
+  return cascade(dom, sheets, ref.node, undefined, origins, layerOrder.length > 0 ? layerOrder : undefined);
 }, "qComputed");
 
 /**

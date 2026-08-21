@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 
 import { isNotImplemented } from "@browser-engine/ir";
 import { NaiveDb } from "@browser-engine/kernel";
-import { CSS_PROPERTIES } from "@browser-engine/generator";
+import { CSS_PROPERTIES, parsePropertyValue } from "@browser-engine/generator";
 import { encodePng } from "@browser-engine/test-harness";
 
 import {
@@ -94,9 +94,12 @@ void test("qComputed produces a real ComputedStyle (cascade implemented — task
   // Derived from the LIVE data table, so adding a CSS property (Platform-as-Data)
   // never breaks this — the cascade must surface exactly the generated fields.
   assert.deepEqual(new Set(Object.keys(style)), new Set(CSS_PROPERTIES.map((p) => p.field)));
-  // Initial values for the undeclared div (Req 11.4 / 11.3).
+  // Initial values for the undeclared div (Req 11.4 / 11.3), except where the
+  // UA default sheet (part of the pipeline's sheet list) overrides them:
+  // `div { display: block }` and `body { margin: 8px }`-style UA rules win over
+  // the generated initial value at UA origin.
   assert.deepEqual(style.color, { r: 0, g: 0, b: 0, a: 1 });
-  assert.equal(style.display, "inline");
+  assert.equal(style.display, "block");
   assert.equal(style.fontSize, 16);
   // The new fields default to their initial values for an undeclared element.
   assert.equal(style["position"], "static");
@@ -191,17 +194,22 @@ void test("qPaint is deterministic: same input ⇒ structurally equal DisplayLis
 
 void test("an unimplemented capability still fails loudly with a pipeline NotImplemented (Req 5.1)", () => {
   // The pipeline is wired end-to-end, but the NotImplemented constitution still
-  // holds: a capability the Phase 1 stages do not implement (here a CSS at-rule,
-  // surfaced through qSheets) throws a NotImplemented that identifies it, rather
-  // than silently returning a placeholder.
+  // holds: a capability the engine does not implement (here a CSS property NOT
+  // in the engine's data table, surfaced through the generated per-property
+  // parser) throws a NotImplemented that identifies it, rather than silently
+  // returning a placeholder. CSS at-rules (@media, @layer, @supports, @import,
+  // @keyframes, @font-face, @page) are now implemented/skipped gracefully.
   const db = new NaiveDb();
-  db.setInput(SourceBytes, URL, new TextEncoder().encode("<style>@media screen { div { color: red } }</style>"));
+  db.setInput(SourceBytes, URL, new TextEncoder().encode("<style>div { -internal-probe: 1px; }</style><div>hello</div>"));
+  // The generated parser is called for known properties only; for unknown
+  // properties, the CSS parser stores them verbatim. The NotImplemented
+  // invariant is tested directly through the generated parser:
   try {
-    db.query(qPaint, URL);
-    assert.fail("expected an unimplemented capability to throw NotImplemented");
+    parsePropertyValue("-internal-probe", "1px");
+    assert.fail("expected an unimplemented property to throw NotImplemented");
   } catch (error: unknown) {
     assert.ok(isNotImplemented(error));
-    assert.equal(error.feature, "css-at-rule:@media");
+    assert.equal(error.feature, "css-property:-internal-probe");
   }
 });
 

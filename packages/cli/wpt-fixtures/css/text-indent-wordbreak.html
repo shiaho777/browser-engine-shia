@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Text indent and word break</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #indent {
+    text-indent: 30px;
+    width: 200px;
+    font-size: 16px;
+  }
+
+  #break {
+    word-break: break-all;
+    width: 60px;
+    font-size: 16px;
+  }
+
+  #overflow {
+    overflow-wrap: break-word;
+    width: 60px;
+    font-size: 16px;
+  }
+</style>
+<body>
+<div id="indent">first line indented second line not indented enough text</div>
+<div id="break">abcdefghijklmnopqrstuvwxyz</div>
+<div id="overflow">verylongwordthatshouldbreak</div>
+<script>
+test(function () {
+  // text-indent: 30px indents the first line
+  var el = document.getElementById("indent");
+  var rect = el.getBoundingClientRect();
+  // The first line should start at x=30 (text-indent)
+  // We can't easily measure glyph positions via DOM API, but the box width should be 200px
+  assert_equals(rect.width, 200, "indented element has correct width");
+}, "text-indent does not change the box width");
+
+test(function () {
+  // word-break: break-all should allow the long word to wrap within 60px
+  var el = document.getElementById("break");
+  var rect = el.getBoundingClientRect();
+  // With break-all, the content wraps to multiple lines, so height > 16px (one line)
+  assert_true(rect.height > 16, "word-break: break-all wraps long text to multiple lines");
+}, "word-break: break-all allows mid-word breaking");
+
+test(function () {
+  // overflow-wrap: break-word should allow long words to break
+  var el = document.getElementById("overflow");
+  var rect = el.getBoundingClientRect();
+  assert_true(rect.height > 16, "overflow-wrap: break-word wraps long text");
+}, "overflow-wrap: break-word breaks long words");
+</script>
+</body>
