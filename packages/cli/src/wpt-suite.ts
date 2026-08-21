@@ -29,6 +29,7 @@ import {
   AbortController,
   AbortSignal,
   CustomEvent,
+  DOMException,
   Event,
   EventTarget,
   FocusEvent,
@@ -97,12 +98,16 @@ function buildAsyncHarness(): AsyncHarness {
     message: error instanceof Error ? error.message : String(error),
   });
 
-  /** The per-test tool object (`t`) the real harness binds as `this`. */
+  /** The per-test tool object (`t`): the real harness binds it as `this` AND
+   * passes it as the first test argument. */
   interface TestTools {
     step(f: unknown, ...args: unknown[]): unknown;
     step_func(f: unknown): (...args: unknown[]) => unknown;
     step_func_done(f: unknown): (...args: unknown[]) => void;
     unreached_func(msg?: unknown): () => void;
+    timeout(): void;
+    set_timeout(f: unknown, ms?: unknown): void;
+    step_timeout(f: unknown, ms?: unknown): number | undefined;
     done(): void;
     add_cleanup(f: unknown): void;
   }
@@ -130,6 +135,18 @@ function buildAsyncHarness(): AsyncHarness {
       unreached_func(msg) {
         return () => finish("FAIL", `unreached: ${String(msg)}`);
       },
+      timeout() {
+        finish("FAIL", "Test timed out");
+      },
+      set_timeout(f, ms) {
+        if (typeof f === "function") setTimeout(() => tools.step(f), Number(ms) || 0);
+      },
+      step_timeout(f, ms) {
+        if (typeof f !== "function") return undefined;
+        return setTimeout(() => {
+          tools.step(f);
+        }, Number(ms) || 0) as unknown as number;
+      },
       done() {
         finish("PASS", null);
       },
@@ -149,7 +166,7 @@ function buildAsyncHarness(): AsyncHarness {
       outcome.message ??= message;
     });
     try {
-      (func as (this: TestTools) => void).call(tools);
+      (func as (this: TestTools, t: TestTools) => void).call(tools, tools);
     } catch (e) {
       const c = classify(e);
       push(n, c.status, c.message);
@@ -297,6 +314,7 @@ export async function runWptHtml(
   sandbox["InputEvent"] = InputEvent;
   sandbox["AbortController"] = AbortController;
   sandbox["AbortSignal"] = AbortSignal;
+  sandbox["DOMException"] = DOMException;
   const windowTarget = new EventTarget();
   sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
   sandbox["removeEventListener"] = windowTarget.removeEventListener.bind(windowTarget);
