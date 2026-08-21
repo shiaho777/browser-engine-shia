@@ -24,6 +24,7 @@ import { evaluateDimensions } from "./dimensions.js";
 import {
   buildBenchmarkJsonReport,
   buildSnapshot,
+  omitRenderedPngBytes,
   renderBenchmarkJson,
   renderBenchmarkMarkdown,
   renderEvidenceDashboardHtml,
@@ -1889,8 +1890,11 @@ void test("machine-readable benchmark evidence is generated from the same snapsh
   assert.equal(report.schemaVersion, 1);
   assert.equal(report.generatedBy, "@browser-engine/benchmark");
   assert.equal(report.deterministic, true);
-  assert.deepEqual(parsed, report);
-  assert.deepEqual(parsed.metrics, snap.metrics);
+  // The serialized report omits rendered-PNG byte lengths (platform-dependent —
+  // see omitRenderedPngBytes), so compare against the same omission applied to
+  // the in-memory report.
+  assert.deepEqual(parsed, omitRenderedPngBytes(report));
+  assert.deepEqual(parsed.metrics, omitRenderedPngBytes(snap.metrics));
   assert.deepEqual(parsed.dimensions, snap.dimensions);
   assert.equal(parsed.metrics.executionEvidence?.resourceLoadedPage.missingResources, 1);
   assert.equal(parsed.metrics.executionEvidence?.realSiteSmoke.passed, 2);
@@ -2080,7 +2084,7 @@ void test("Req 4.1/4.2/4.3/4.4/4.6: the report carries all required sections", (
   assert.match(md, /External resources: 3 discovered, 2 loaded, 1 missing/);
   assert.match(md, /Decoded images: 1/);
   assert.match(md, /Paint ops: image, rect/);
-  assert.match(md, /PNG output: 800x600, 3511 bytes/);
+  assert.match(md, /PNG output: 800x600/);
   assert.match(md, /Missing-image-only resources: 1 discovered, 0 loaded, 1 missing/);
   assert.match(md, /Missing-image-only decoded images: 0/);
   assert.match(md, /Missing-image-only painted image: no/);

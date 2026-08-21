@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 46548,
+    "handWrittenLines": 46620,
     "generatedLines": 5439,
-    "testLines": 25693,
-    "totalLines": 77680,
+    "testLines": 25787,
+    "totalLines": 77846,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0009667440061871616,
-    "mechanismDensity": 19.16301452264329,
+    "compatPerLoc": 0.0009652509652509653,
+    "mechanismDensity": 19.133419133419135,
     "executionEvidence": {
       "subsetCount": 3,
       "files": 90,
@@ -224,7 +224,6 @@
         ],
         "width": 800,
         "height": 600,
-        "pngBytes": 10379,
         "missingImage": {
           "url": "https://benchmark.test/missing-image.html",
           "discoveredResources": 1,
@@ -236,8 +235,7 @@
           "displayCommands": 2,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 10887
+          ]
         },
         "invalidImage": {
           "url": "https://benchmark.test/invalid-image.html",
@@ -250,8 +248,7 @@
           "displayCommands": 2,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 10887
+          ]
         },
         "duplicateResource": {
           "url": "https://benchmark.test/duplicate-resource.html",
@@ -266,8 +263,7 @@
           "displayCommands": 2,
           "paintOps": [
             "image"
-          ],
-          "pngBytes": 10484
+          ]
         },
         "duplicateStylesheet": {
           "url": "https://benchmark.test/duplicate-stylesheet.html",
@@ -288,8 +284,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "dataUrlNoNetwork": {
           "url": "https://benchmark.test/data-url-resource.html",
@@ -307,8 +302,7 @@
             "image",
             "rect",
             "text"
-          ],
-          "pngBytes": 10506
+          ]
         },
         "dataUrlStylesheetCharset": {
           "percentUtf8": {
@@ -330,8 +324,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "base64Utf8": {
             "url": "https://benchmark.test/data-url-charset-base64-stylesheet.html",
@@ -352,8 +345,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "unsupportedCharset": {
             "url": "https://benchmark.test/data-url-charset-unsupported-stylesheet.html",
@@ -373,8 +365,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           }
         },
         "dataUrlStylesheetSourceOrder": {
@@ -399,8 +390,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 10486
+            ]
           },
           "dataUrlAfterExternal": {
             "url": "https://benchmark.test/external-before-data-url-stylesheet.html",
@@ -423,8 +413,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 10486
+            ]
           }
         },
         "externalInlineStylesheetSourceOrder": {
@@ -448,8 +437,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 10486
+            ]
           },
           "externalAfterInline": {
             "url": "https://benchmark.test/inline-before-external-stylesheet.html",
@@ -471,8 +459,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 10486
+            ]
           }
         },
         "invalidDataImage": {
@@ -489,8 +476,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10823
+          ]
         },
         "invalidDataStylesheet": {
           "url": "https://benchmark.test/invalid-data-stylesheet.html",
@@ -508,8 +494,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "nonCssDataStylesheet": {
           "url": "https://benchmark.test/non-css-data-stylesheet.html",
@@ -527,8 +512,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "noHrefStylesheet": {
           "url": "https://benchmark.test/no-href-stylesheet.html",
@@ -547,8 +531,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 11164
+          ]
         },
         "emptyHrefStylesheet": {
           "url": "https://benchmark.test/empty-href-stylesheet.html",
@@ -566,8 +549,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "fragmentHrefStylesheet": {
           "url": "https://benchmark.test/fragment-href-stylesheet.html",
@@ -585,8 +567,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "queryHrefStylesheet": {
           "url": "https://benchmark.test/query-href-stylesheet.html?old=1#frag",
@@ -604,8 +585,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "protocolRelativeStylesheet": {
           "url": "https://benchmark.test/protocol-relative-stylesheet.html",
@@ -624,8 +604,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "whitespaceRelStylesheet": {
           "url": "https://benchmark.test/whitespace-rel-stylesheet.html",
@@ -650,8 +629,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "duplicateRelStylesheet": {
           "url": "https://benchmark.test/duplicate-rel-stylesheet.html",
@@ -676,8 +654,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "whitespaceHrefStylesheet": {
           "url": "https://benchmark.test/whitespace-href-stylesheet.html",
@@ -700,8 +677,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "controlCharacterHrefStylesheet": {
           "url": "https://benchmark.test/control-character-href-stylesheet.html",
@@ -725,8 +701,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "baseHrefSubresource": {
           "url": "https://benchmark.test/pages/base-href-subresource.html",
@@ -756,7 +731,6 @@
             "rect",
             "text"
           ],
-          "pngBytes": 9771,
           "paintedBackgroundRed": true,
           "paintedImageBlue": true
         },
@@ -784,8 +758,7 @@
           "paintOps": [
             "rect",
             "text"
-          ],
-          "pngBytes": 10486
+          ]
         },
         "alternateStylesheet": {
           "url": "https://benchmark.test/alternate-stylesheet.html",
@@ -803,8 +776,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "disabledStylesheet": {
           "url": "https://benchmark.test/disabled-stylesheet.html",
@@ -822,8 +794,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "printMediaStylesheet": {
           "url": "https://benchmark.test/print-media-stylesheet.html",
@@ -841,8 +812,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "stylesheetMediaList": {
           "empty": {
@@ -863,8 +833,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "whitespaceOnly": {
             "media": "   ",
@@ -884,8 +853,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "matchingList": {
             "media": "print, screen",
@@ -905,8 +873,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "spacedMatchingList": {
             "media": " print , screen ",
@@ -926,8 +893,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "emptyItemBeforeScreen": {
             "media": ", screen",
@@ -947,8 +913,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "emptyItemAfterScreen": {
             "media": "screen,",
@@ -968,8 +933,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "emptyItemsOnly": {
             "media": ",",
@@ -988,8 +952,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unsupportedThenScreen": {
             "media": "(dynamic-range: high), screen",
@@ -1009,8 +972,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "unsupportedOnly": {
             "media": "(dynamic-range: high)",
@@ -1029,8 +991,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unknownTypeThenScreen": {
             "media": "projection, screen",
@@ -1050,8 +1011,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "unknownTypeOnly": {
             "media": "projection",
@@ -1070,8 +1030,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "uppercaseScreen": {
             "media": "SCREEN",
@@ -1091,8 +1050,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "mixedCaseOnlyScreen": {
             "media": "Only Screen",
@@ -1112,8 +1070,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "spacedOnlyScreen": {
             "media": "only   screen",
@@ -1133,8 +1090,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "uppercasePrint": {
             "media": "PRINT",
@@ -1153,8 +1109,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "all": {
             "media": "all",
@@ -1174,8 +1129,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "onlyAll": {
             "media": "only all",
@@ -1195,8 +1149,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "notAll": {
             "media": "not all",
@@ -1215,8 +1168,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "spacedNotAll": {
             "media": "not   all",
@@ -1235,8 +1187,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "notPrint": {
             "media": "not print",
@@ -1256,8 +1207,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "spacedNotPrint": {
             "media": "not   print",
@@ -1277,8 +1227,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "onlyPrint": {
             "media": "only print",
@@ -1297,8 +1246,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "spacedOnlyPrint": {
             "media": "only   print",
@@ -1317,8 +1265,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           }
         },
         "stylesheetMediaFeature": {
@@ -1340,8 +1287,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "uppercaseScreenMinWidth": {
             "media": "screen and (MIN-WIDTH: 1px)",
@@ -1361,8 +1307,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "decimalScreenMinWidth": {
             "media": "screen and (min-width: 799.5px)",
@@ -1382,8 +1327,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "spacedScreenMinWidth": {
             "media": "screen  and  ( min-width : 1px )",
@@ -1403,8 +1347,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "bareMinWidth": {
             "media": "(min-width: 1px)",
@@ -1424,8 +1367,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "allMinWidth": {
             "media": "all and (min-width: 1px)",
@@ -1445,8 +1387,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "allMaxWidth": {
             "media": "all and (max-width: 1px)",
@@ -1465,8 +1406,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "onlyAllMinWidth": {
             "media": "only all and (min-width: 1px)",
@@ -1486,8 +1426,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "unsupportedRangeWidth": {
             "media": "screen and (width >= 1px)",
@@ -1506,8 +1445,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unsupportedRangeThenScreen": {
             "media": "(width >= 1px), screen",
@@ -1527,8 +1465,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "unsupportedCalcMinWidth": {
             "media": "screen and (min-width: calc(1px))",
@@ -1547,8 +1484,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unsupportedHover": {
             "media": "screen and (hover: hover)",
@@ -1567,8 +1503,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "invalidEmptyFeature": {
             "media": "screen and ()",
@@ -1587,8 +1522,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unsupportedBooleanWidth": {
             "media": "screen and (width)",
@@ -1607,8 +1541,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "unknownFeature": {
             "media": "screen and (unknown-feature)",
@@ -1627,8 +1560,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "invalidEmptyFeatureThenScreen": {
             "media": "screen and (), screen",
@@ -1648,8 +1580,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "screenMaxWidth": {
             "media": "screen and (max-width: 1px)",
@@ -1668,8 +1599,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "decimalScreenMaxWidth": {
             "media": "screen and (max-width: 799.5px)",
@@ -1688,8 +1618,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "spacedScreenMaxWidth": {
             "media": "screen  and  ( max-width : 1px )",
@@ -1708,8 +1637,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "screenMinHeight": {
             "media": "screen and (min-height: 1px)",
@@ -1729,8 +1657,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "screenMaxHeight": {
             "media": "screen and (max-height: 1px)",
@@ -1749,8 +1676,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "screenExactWidth": {
             "media": "screen and (width: 800px)",
@@ -1770,8 +1696,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "decimalScreenExactWidth": {
             "media": "screen and (width: 800.0px)",
@@ -1791,8 +1716,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "screenExactHeight": {
             "media": "screen and (height: 600px)",
@@ -1812,8 +1736,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "screenExactHeightMiss": {
             "media": "screen and (height: 1px)",
@@ -1832,8 +1755,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "negatedMatchingFeature": {
             "media": "not screen and (min-width: 1px)",
@@ -1852,8 +1774,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "negatedMissingFeature": {
             "media": "not screen and (max-width: 1px)",
@@ -1873,8 +1794,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           }
         },
         "stylesheetOrientationMedia": {
@@ -1896,8 +1816,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "uppercaseLandscape": {
             "media": "screen and (ORIENTATION: LANDSCAPE)",
@@ -1917,8 +1836,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "portrait": {
             "media": "screen and (orientation: portrait)",
@@ -1937,8 +1855,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           },
           "uppercasePortrait": {
             "media": "screen and (ORIENTATION: PORTRAIT)",
@@ -1957,8 +1874,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           }
         },
         "stylesheetCombinedMediaFeature": {
@@ -1980,8 +1896,7 @@
             "paintOps": [
               "rect",
               "text"
-            ],
-            "pngBytes": 11164
+            ]
           },
           "laterMiss": {
             "media": "screen and (min-width: 1px) and (orientation: portrait)",
@@ -2000,8 +1915,7 @@
             "displayCommands": 1,
             "paintOps": [
               "text"
-            ],
-            "pngBytes": 11347
+            ]
           }
         },
         "invalidExternalStylesheet": {
@@ -2019,8 +1933,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         },
         "missingStylesheet": {
           "url": "https://benchmark.test/missing-stylesheet.html",
@@ -2037,8 +1950,7 @@
           "displayCommands": 1,
           "paintOps": [
             "text"
-          ],
-          "pngBytes": 11347
+          ]
         }
       },
       "realSiteSmoke": {
@@ -2077,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 46548,
-      "ourDisplay": "46,548 lines",
+      "ourValue": 46620,
+      "ourDisplay": "46,620 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2091,12 +2003,12 @@
         "confidence": "cited"
       },
       "verdict": "WIN",
-      "rationale": "Our hand-written surface is ~773× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+      "rationale": "Our hand-written surface is ~772× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
     },
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0009667440061871616,
+      "ourValue": 0.0009652509652509653,
       "ourDisplay": "0.0010 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2115,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 19.16301452264329,
-      "ourDisplay": "19.16 features/kloc",
+      "ourValue": 19.133419133419135,
+      "ourDisplay": "19.13 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 46,548 hand-written lines = 19.16 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 46,620 hand-written lines = 19.13 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",

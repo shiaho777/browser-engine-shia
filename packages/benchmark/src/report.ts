@@ -41,9 +41,34 @@ export function buildBenchmarkJsonReport(snapshot: BenchmarkSnapshot): Benchmark
   });
 }
 
+/**
+ * Rendered-PNG byte lengths are platform-dependent: text goes through system
+ * font fallback, so macOS and Linux rasterize the same document into different
+ * anti-aliased pixels (and thus different compressed sizes). The live collector
+ * exposes them for tests; the COMMITTED evidence artifacts omit them so
+ * `npm run evidence` reproduces byte-for-byte on any platform.
+ */
+export function omitRenderedPngBytes<T>(value: T): T {
+  if (Array.isArray(value)) {
+    const list = value as unknown[];
+    return list.map((item) => omitRenderedPngBytes(item)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "pngBytes") {
+        continue;
+      }
+      copy[key] = omitRenderedPngBytes(item);
+    }
+    return copy as T;
+  }
+  return value;
+}
+
 /** Render machine-readable evidence from the same deterministic snapshot. */
 export function renderBenchmarkJson(snapshot: BenchmarkSnapshot): string {
-  return `${JSON.stringify(buildBenchmarkJsonReport(snapshot), null, 2)}\n`;
+  return `${JSON.stringify(omitRenderedPngBytes(buildBenchmarkJsonReport(snapshot)), null, 2)}\n`;
 }
 
 /** Render a static, dependency-free evidence dashboard from the benchmark snapshot. */
@@ -248,7 +273,7 @@ export function renderEvidenceDashboardHtml(snapshot: BenchmarkSnapshot): string
             ["Missing stylesheet author declarations", evidence.resourceLoadedPage.missingStylesheet.authorDeclarationCount],
             ["Missing stylesheet background", yesNo(evidence.resourceLoadedPage.missingStylesheet.paintedBackground)],
             ["Paint ops", evidence.resourceLoadedPage.paintOps.join(", ") || "—"],
-            ["PNG output", `${evidence.resourceLoadedPage.width}x${evidence.resourceLoadedPage.height}, ${evidence.resourceLoadedPage.pngBytes} bytes`],
+            ["PNG output", `${evidence.resourceLoadedPage.width}x${evidence.resourceLoadedPage.height}`],
           ],
         ),
         section(
@@ -623,7 +648,7 @@ export function renderBenchmarkMarkdown(snapshot: BenchmarkSnapshot): string {
     lines.push(`- Decoded images: ${page.decodedImageCount}`);
     lines.push(`- Display commands: ${page.displayCommands}`);
     lines.push(`- Paint ops: ${page.paintOps.join(", ") || "—"}`);
-    lines.push(`- PNG output: ${page.width}x${page.height}, ${page.pngBytes} bytes`);
+    lines.push(`- PNG output: ${page.width}x${page.height}`);
     lines.push(`- Missing-image-only URL: ${page.missingImage.url}`);
     lines.push(
       `- Missing-image-only resources: ${page.missingImage.discoveredResources} discovered, ${page.missingImage.loadedResources} loaded, ${page.missingImage.missingResources} missing`,
