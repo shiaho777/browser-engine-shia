@@ -25,6 +25,7 @@ import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
+import { AbortController, AbortSignal, CustomEvent, Event, EventTarget } from "@browser-engine/guest";
 import type { WptReport, WptSubtest } from "./wpt.js";
 
 /** Aggregate result of running a directory of WPT tests. */
@@ -231,6 +232,20 @@ export async function runWptHtml(
   sandbox["self"] = sandbox;
   sandbox["globalThis"] = sandbox;
   sandbox["window"] = sandbox;
+  // Real event-platform constructors: tests build targets and synthetic events
+  // directly (`new EventTarget()`, `new Event("x")`), and abortable listener
+  // options need the abort surface (DOM §3.2). The sandbox itself is the
+  // `window` object and Window implements EventTarget, so the window-level
+  // listener methods dispatch through an internal target.
+  sandbox["EventTarget"] = EventTarget;
+  sandbox["Event"] = Event;
+  sandbox["CustomEvent"] = CustomEvent;
+  sandbox["AbortController"] = AbortController;
+  sandbox["AbortSignal"] = AbortSignal;
+  const windowTarget = new EventTarget();
+  sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
+  sandbox["removeEventListener"] = windowTarget.removeEventListener.bind(windowTarget);
+  sandbox["dispatchEvent"] = windowTarget.dispatchEvent.bind(windowTarget);
 
   let harnessError: string | null = null;
   vm.createContext(sandbox);
@@ -387,11 +402,24 @@ export async function runWptFiles(
   let errored = 0;
 
   for (const file of files) {
-    const [relative, report] = await runWptFile(
-      root,
-      file,
-      collector === undefined ? {} : { trace: true },
-    );
+    const relative = path.relative(root, path.isAbsolute(file) ? file : path.join(root, file)).split(path.sep).join("/");
+    let report: WptReport;
+    try {
+      [, report] = await runWptFile(
+        root,
+        file,
+        collector === undefined ? {} : { trace: true },
+      );
+    } catch (error) {
+      // One file's escaped exception (e.g. a throw inside a timer callback the
+      // harness cannot observe) must not kill the whole suite run.
+      report = {
+        subtests: [{ name: "(harness)", status: "ERROR", message: error instanceof Error ? error.message : String(error) }],
+        passed: 0,
+        failed: 0,
+        harnessError: error instanceof Error ? error.message : String(error),
+      };
+    }
     byFile.set(relative, report);
     if (collector !== undefined) {
       replayTrace(report.trace, collector);

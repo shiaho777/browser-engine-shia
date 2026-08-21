@@ -323,6 +323,10 @@ export class EventTargetImpl {
     const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
     const once = typeof options === "boolean" ? false : (options?.once ?? false);
     const passive = typeof options === "boolean" ? false : (options?.passive ?? false);
+    const signal = typeof options === "boolean" ? undefined : options?.signal;
+
+    // DOM §3.2: an already-aborted signal means the listener is never added.
+    if (signal?.aborted) return;
 
     let entries = this.#listeners.get(type);
     if (entries === undefined) {
@@ -334,6 +338,9 @@ export class EventTargetImpl {
       if (e.listener === listener && e.capture === capture) return;
     }
     entries.push({ type, listener: listener as EventListenerCallback, capture, once, passive });
+    signal?.addEventListener("abort", () => {
+      this.removeEventListener(type, listener, capture);
+    }, { once: true });
   }
 
   removeEventListener(type: string, listener: unknown, options?: AddEventListenerOptions | boolean): void {
@@ -443,6 +450,11 @@ export interface AddEventListenerOptions {
   capture?: boolean;
   once?: boolean;
   passive?: boolean;
+  /** Structurally typed so the event system does not import the abort module. */
+  signal?: {
+    readonly aborted: boolean;
+    addEventListener(type: string, listener: () => void, options?: { once?: boolean }): void;
+  };
 }
 
 // ---------------------------------------------------------------------------
