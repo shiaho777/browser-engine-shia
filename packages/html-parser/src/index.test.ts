@@ -57,6 +57,16 @@ function nodeAt(tree: DomTree, id: NodeId): DomNode {
   return node;
 }
 
+/** The synthesized <body> element — the content parent of every document. */
+function bodyId(tree: DomTree): NodeId {
+  const root = nodeAt(tree, tree.root);
+  const html = root.children.map((id) => nodeAt(tree, id)).find((n) => n.tag === "html");
+  assert.ok(html !== undefined, "synthesized <html> must exist");
+  const body = html.children.map((id) => nodeAt(tree, id)).find((n) => n.tag === "body");
+  assert.ok(body !== undefined, "synthesized <body> must exist");
+  return body.id;
+}
+
 void test("Req 14.1/18.1: <div>hello</div> parses into the expected DomTree", () => {
   const tree = parse("<div>hello</div>");
 
@@ -64,10 +74,12 @@ void test("Req 14.1/18.1: <div>hello</div> parses into the expected DomTree", ()
   assert.equal(root.kind, "document");
   assert.equal(root.parent, null);
 
-  const div = onlyChild(tree, tree.root);
+  const body = nodeAt(tree, bodyId(tree));
+  assert.equal(body.tag, "body");
+  const div = onlyChild(tree, body.id);
   assert.equal(div.kind, "element");
   assert.equal(div.tag, "div");
-  assert.equal(div.parent, tree.root);
+  assert.equal(div.parent, body.id);
 
   const text = onlyChild(tree, div.id);
   assert.equal(text.kind, "text");
@@ -79,7 +91,7 @@ void test("Req 14.1/18.1: <div>hello</div> parses into the expected DomTree", ()
 void test("nested elements build a parent/child tree", () => {
   const tree = parse("<div><p><span>hi</span></p></div>");
 
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
 
   const p = onlyChild(tree, div.id);
@@ -99,7 +111,7 @@ void test("attributes are parsed (quoted, unquoted, valueless, lowercased names)
   const tree = parse(
     `<div id="main" CLASS='a b' data-x=42 hidden>x</div>`,
   );
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
   assert.ok(div.attrs !== undefined);
 
@@ -111,7 +123,7 @@ void test("attributes are parsed (quoted, unquoted, valueless, lowercased names)
 
 void test("multiple sibling text and element nodes preserve document order", () => {
   const tree = parse("<div>a<span>b</span>c</div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.children.length, 3);
 
   const kinds = div.children.map((id) => nodeAt(tree, id).kind);
@@ -128,14 +140,14 @@ void test("multiple sibling text and element nodes preserve document order", () 
 
 void test("text-only documents and whitespace are preserved", () => {
   const tree = parse("hello world");
-  const text = onlyChild(tree, tree.root);
+  const text = onlyChild(tree, bodyId(tree));
   assert.equal(text.kind, "text");
   assert.equal(text.text, "hello world");
 });
 
 void test("HTML entities in text and attributes are decoded", () => {
   const tree = parse(`<a title="x &amp; y">5 &lt; 10 &#65;</a>`);
-  const a = onlyChild(tree, tree.root);
+  const a = onlyChild(tree, bodyId(tree));
   assert.equal(a.attrs?.get("title"), "x & y");
   const text = onlyChild(tree, a.id);
   assert.equal(text.text, "5 < 10 A");
@@ -143,7 +155,7 @@ void test("HTML entities in text and attributes are decoded", () => {
 
 void test("void elements have no children and do not capture following siblings", () => {
   const tree = parse("<div><br>after</div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.children.length, 2);
 
   const br = nodeAt(tree, div.children[0]!);
@@ -158,7 +170,7 @@ void test("void elements have no children and do not capture following siblings"
 
 void test("self-closing syntax is treated as a childless element", () => {
   const tree = parse("<div><custom-thing/>tail</div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.children.length, 2);
   const custom = nodeAt(tree, div.children[0]!);
   assert.equal(custom.tag, "custom-thing");
@@ -167,7 +179,7 @@ void test("self-closing syntax is treated as a childless element", () => {
 
 void test("comments become comment nodes carrying their text", () => {
   const tree = parse("<div><!-- note -->x</div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   const comment = nodeAt(tree, div.children[0]!);
   assert.equal(comment.kind, "comment");
   assert.equal(comment.text, " note ");
@@ -175,13 +187,17 @@ void test("comments become comment nodes carrying their text", () => {
 
 void test("DOCTYPE declarations are skipped (not emitted as nodes)", () => {
   const tree = parse("<!DOCTYPE html><div>hi</div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
 });
 
 void test("raw-text elements (script/style) keep their content verbatim", () => {
   const tree = parse("<style>.a > .b { color: red }</style>");
-  const style = onlyChild(tree, tree.root);
+  // <style> is head-eligible: the synthesized outline files it under head.
+  const html = nodeAt(tree, tree.root).children.map((id) => nodeAt(tree, id)).find((n) => n.tag === "html");
+  assert.ok(html !== undefined);
+  const head = nodeAt(tree, html.children[0]!);
+  const style = onlyChild(tree, head.id);
   assert.equal(style.tag, "style");
   const text = onlyChild(tree, style.id);
   assert.equal(text.kind, "text");
@@ -190,33 +206,39 @@ void test("raw-text elements (script/style) keep their content verbatim", () => 
 
 void test("tag names are lowercased", () => {
   const tree = parse("<DIV><SPAN>x</SPAN></DIV>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
   assert.equal(onlyChild(tree, div.id).tag, "span");
 });
 
 void test("stray/mismatched end tags are tolerated without throwing", () => {
   const tree = parse("<div>hi</span></div>");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
   assert.equal(onlyChild(tree, div.id).text, "hi");
 });
 
 void test("unclosed tags still produce a well-formed tree", () => {
   const tree = parse("<div><p>text");
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
   const p = onlyChild(tree, div.id);
   assert.equal(p.tag, "p");
   assert.equal(onlyChild(tree, p.id).text, "text");
 });
 
-void test("an empty byte stream yields a lone document root", () => {
+void test("an empty byte stream yields the synthesized document outline", () => {
   const tree = parse("");
   const root = nodeAt(tree, tree.root);
   assert.equal(root.kind, "document");
-  assert.deepEqual([...root.children], []);
-  assert.equal(tree.nodes.size, 1);
+  // document → html → [head, body]: the HTML5 implied structure.
+  const html = nodeAt(tree, root.children[0]!);
+  assert.equal(html.tag, "html");
+  assert.deepEqual(
+    html.children.map((id) => nodeAt(tree, id).tag),
+    ["head", "body"],
+  );
+  assert.equal(tree.nodes.size, 4);
 });
 
 // ---------------------------------------------------------------------------
@@ -234,7 +256,7 @@ void test("Req 3.2: the returned DomTree is deep-frozen", () => {
     }
   }
 
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.throws(() => {
     (div as unknown as Record<string, unknown>)["tag"] = "span";
   }, TypeError);
@@ -288,23 +310,23 @@ function firstElement(tree: DomTree, tag: string): DomNode {
 }
 
 // ---------------------------------------------------------------------------
-// Req 15.1 — the `<div>hello</div>` shape is preserved (NO forced html/head/body
-// wrappers). This is the contract the whole downstream pipeline relies on.
+// Req 15.1 — the HTML5 implied structure: bare documents ARE wrapped in
+// html/head/body, exactly as a browser's tree construction builds them.
 // ---------------------------------------------------------------------------
-void test("Req 15.1: a bare document is NOT wrapped in implied html/head/body", () => {
+void test("Req 15.1: a bare document IS wrapped in implied html/head/body", () => {
   const tree = parse("<div>hello</div>");
-  // document → div → text, with the div as nodeId 1 and text as nodeId 2.
+  // document → html → [head, body]; the div lands inside body.
   const root = nodeAt(tree, tree.root);
   assert.equal(root.children.length, 1);
-  const div = nodeAt(tree, root.children[0]!);
+  const html = nodeAt(tree, root.children[0]!);
+  assert.equal(html.tag, "html");
+  const head = nodeAt(tree, html.children[0]!);
+  assert.equal(head.tag, "head");
+  const body = nodeAt(tree, html.children[1]!);
+  assert.equal(body.tag, "body");
+  const div = nodeAt(tree, body.children[0]!);
   assert.equal(div.tag, "div");
-  assert.equal(div.id, 1);
-  const text = nodeAt(tree, div.children[0]!);
-  assert.equal(text.kind, "text");
-  assert.equal(text.text, "hello");
-  assert.equal(text.id, 2);
-  // No html/head/body were synthesised.
-  assert.deepEqual(elementTags(tree), ["div"]);
+  assert.deepEqual(new Set(elementTags(tree)), new Set(["html", "head", "body", "div"]));
 });
 
 // ---------------------------------------------------------------------------
@@ -314,7 +336,7 @@ void test("Req 18.1: a well-formed nested document builds the full tree", () => 
   const tree = parse(
     "<section><h1>Title</h1><p>Para <em>one</em></p><ul><li>a</li><li>b</li></ul></section>",
   );
-  const section = onlyChild(tree, tree.root);
+  const section = onlyChild(tree, bodyId(tree));
   assert.equal(section.tag, "section");
 
   const kids = childrenOf(tree, section.id);
@@ -364,8 +386,8 @@ void test("Req 15.1: implicit <p> closing — a block start tag closes an open <
   const { tree, recoveries } = parseHtmlWithMetrics(
     new TextEncoder().encode("<p>one<p>two<div>three</div>"),
   );
-  // Three siblings under document: p, p, div — the <p>s auto-closed.
-  const top = childrenOf(tree, tree.root);
+  // Three siblings under body: p, p, div — the <p>s auto-closed.
+  const top = childrenOf(tree, bodyId(tree));
   assert.deepEqual(top.map((k) => k.tag), ["p", "p", "div"]);
   assert.equal(onlyChild(tree, top[0]!.id).text, "one");
   assert.equal(onlyChild(tree, top[1]!.id).text, "two");
@@ -378,7 +400,7 @@ void test("Req 15.1: implicit <li> closing — a sibling <li> closes the open on
   const { tree, recoveries } = parseHtmlWithMetrics(
     new TextEncoder().encode("<ul><li>a<li>b<li>c</ul>"),
   );
-  const ul = onlyChild(tree, tree.root);
+  const ul = onlyChild(tree, bodyId(tree));
   assert.equal(ul.tag, "ul");
   const lis = childrenOf(tree, ul.id);
   assert.deepEqual(lis.map((k) => k.tag), ["li", "li", "li"]);
@@ -417,7 +439,7 @@ void test("Req 13.1/13.2: a stray end tag is dropped and recorded", () => {
   const { tree, recoveries } = parseHtmlWithMetrics(
     new TextEncoder().encode("<div>hi</span></div>"),
   );
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   assert.equal(div.tag, "div");
   assert.equal(onlyChild(tree, div.id).text, "hi");
   assert.ok(recoveries.some((r) => r.kind === "stray-end-tag" && r.tag === "span"));
@@ -427,7 +449,7 @@ void test("Req 13.1/13.2: unclosed non-optional elements are closed at EOF and r
   const { tree, recoveries } = parseHtmlWithMetrics(
     new TextEncoder().encode("<div><span>text"),
   );
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   const span = onlyChild(tree, div.id);
   assert.equal(span.tag, "span");
   assert.equal(onlyChild(tree, span.id).text, "text");
@@ -445,7 +467,7 @@ void test("Req 18.6: an unterminated comment is recovered and recorded", () => {
   const { tree, recoveries } = parseHtmlWithMetrics(
     new TextEncoder().encode("<div><!-- oops"),
   );
-  const div = onlyChild(tree, tree.root);
+  const div = onlyChild(tree, bodyId(tree));
   const comment = nodeAt(tree, div.children[0]!);
   assert.equal(comment.kind, "comment");
   assert.equal(comment.text, " oops");
@@ -478,7 +500,7 @@ void test("Req 18.6: the recovery metric (count) accumulates across multiple err
 // ---------------------------------------------------------------------------
 void test("Req 15.1: RCDATA elements keep markup verbatim but decode entities", () => {
   const tree = parse("<textarea><b>not a tag</b> &amp; more</textarea>");
-  const ta = onlyChild(tree, tree.root);
+  const ta = onlyChild(tree, bodyId(tree));
   assert.equal(ta.tag, "textarea");
   const text = onlyChild(tree, ta.id);
   assert.equal(text.kind, "text");

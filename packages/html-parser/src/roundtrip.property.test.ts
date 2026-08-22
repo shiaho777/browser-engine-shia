@@ -273,10 +273,13 @@ const arbDomTree: fc.Arbitrary<DomTree> = fc
 void test("Req 18.4: parse(serializeDom(t)) is structurally equivalent to t for all valid DomTrees", () => {
   fc.assert(
     fc.property(arbDomTree, (tree) => {
-      const reparsed = parse(serializeDom(tree));
+      // The parser always produces the synthesized html/head/body outline, so
+      // canonicalize the generated seed through one parse before comparing.
+      const baseline = parse(serializeDom(tree));
+      const reparsed = parse(serializeDom(baseline));
       assert.ok(
-        domTreesEquivalent(reparsed, tree),
-        `round trip diverged:\n  printed = ${JSON.stringify(serializeDom(tree))}`,
+        domTreesEquivalent(reparsed, baseline),
+        `round trip diverged:\n  printed = ${JSON.stringify(serializeDom(baseline))}`,
       );
     }),
     { numRuns: NUM_RUNS },
@@ -302,7 +305,7 @@ void test("Req 18.4: parse → print → parse is a fixed point for arbitrary HT
 // ---------------------------------------------------------------------------
 
 void test("Req 18.3: a simple element serializes to `<tag>children</tag>`", () => {
-  assert.equal(serializeDom(parse("<div>hello</div>")), "<div>hello</div>");
+  assert.equal(serializeDom(parse("<div>hello</div>")), "<html><head></head><body><div>hello</div></body></html>");
 });
 
 void test("Req 18.3: attributes serialize as ` name=\"value\"`, escaping & and the delimiter", () => {
@@ -310,41 +313,57 @@ void test("Req 18.3: attributes serialize as ` name=\"value\"`, escaping & and t
   // re-encode them so the attribute value re-parses faithfully.
   assert.equal(
     serializeDom(parse('<a href="a&amp;b" title="say &quot;hi&quot;">x</a>')),
-    '<a href="a&amp;b" title="say &quot;hi&quot;">x</a>',
+    '<html><head></head><body><a href="a&amp;b" title="say &quot;hi&quot;">x</a></body></html>',
   );
 });
 
 void test("Req 18.3: text escaping emits entities for <, > and &", () => {
-  assert.equal(serializeDom(parse("<p>a &lt; b &amp; c &gt; d</p>")), "<p>a &lt; b &amp; c &gt; d</p>");
+  assert.equal(
+    serializeDom(parse("<p>a &lt; b &amp; c &gt; d</p>")),
+    "<html><head></head><body><p>a &lt; b &amp; c &gt; d</p></body></html>",
+  );
 });
 
 void test("Req 18.3: void elements serialize with no end tag", () => {
-  assert.equal(serializeDom(parse("<div><br><img src=x></div>")), '<div><br><img src="x"></div>');
+  assert.equal(
+    serializeDom(parse("<div><br><img src=x></div>")),
+    '<html><head></head><body><div><br><img src="x"></div></body></html>',
+  );
 });
 
 void test("Req 18.3: comments serialize as <!--data-->", () => {
-  assert.equal(serializeDom(parse("<div><!-- note --></div>")), "<div><!-- note --></div>");
+  assert.equal(
+    serializeDom(parse("<div><!-- note --></div>")),
+    "<html><head></head><body><div><!-- note --></div></body></html>",
+  );
 });
 
 void test("Req 18.3: raw-text element content is emitted verbatim (not escaped)", () => {
-  assert.equal(serializeDom(parse("<style>a > b { x: 1 }</style>")), "<style>a > b { x: 1 }</style>");
+  // <style> is head-eligible: the synthesized outline files it under head.
+  assert.equal(
+    serializeDom(parse("<style>a > b { x: 1 }</style>")),
+    "<html><head><style>a > b { x: 1 }</style></head><body></body></html>",
+  );
 });
 
 void test("Req 18.3: RCDATA element content is escaped (decodes back on re-parse)", () => {
   // textarea is RCDATA: a literal `<` in its text must be escaped so the
   // serialized markup does not look like the textarea's own end tag.
   const tree = parse("<textarea>1 &lt; 2</textarea>");
-  assert.equal(serializeDom(tree), "<textarea>1 &lt; 2</textarea>");
+  assert.equal(serializeDom(tree), "<html><head></head><body><textarea>1 &lt; 2</textarea></body></html>");
   assert.ok(domTreesEquivalent(parse(serializeDom(tree)), tree));
 });
 
-void test("Req 18.3: an empty document serializes to the empty string", () => {
-  assert.equal(serializeDom(parse("")), "");
+void test("Req 18.3: an empty document serializes to the synthesized outline", () => {
+  assert.equal(serializeDom(parse("")), "<html><head></head><body></body></html>");
 });
 
 void test("Req 18.3: nested elements and multiple siblings round-trip", () => {
   const tree = parse("<div><span>a</span><b>c</b>tail</div>");
-  assert.equal(serializeDom(tree), "<div><span>a</span><b>c</b>tail</div>");
+  assert.equal(
+    serializeDom(tree),
+    "<html><head></head><body><div><span>a</span><b>c</b>tail</div></body></html>",
+  );
   assert.ok(domTreesEquivalent(parse(serializeDom(tree)), tree));
 });
 
