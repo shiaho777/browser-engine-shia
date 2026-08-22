@@ -11,7 +11,7 @@
 <aside id="outside"><span id="out">out</span></aside>
 <script>
 function ids(list) {
-  return list.map(function (el) { return el.getAttribute("id"); });
+  return Array.from(list, function (el) { return el.getAttribute("id"); });
 }
 
 test(function () {

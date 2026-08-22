@@ -469,18 +469,152 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   };
 
   /** Collect matching element descendants from a connected subtree in tree order. */
-  const elementsByTagName = (scopeRoot: NodeId, want: string): object[] => {
-    const out: object[] = [];
+  /** Element ids under `scopeRoot` matching a tag (or all elements for "*"). */
+  const elementIdsByTagName = (scopeRoot: NodeId, want: string): NodeId[] => {
+    const out: NodeId[] = [];
     const visit = (id: NodeId): void => {
       for (const childId of session.dom.nodes.get(id)?.children ?? []) {
         const node = session.dom.nodes.get(childId);
         if (node === undefined) continue;
-        if (node.kind === "element" && (want === "*" || node.tag === want)) out.push(makeElementCached(childId));
+        if (node.kind === "element" && (want === "*" || node.tag === want)) out.push(childId);
         visit(childId);
       }
     };
     visit(scopeRoot);
     return out;
+  };
+
+  /** Element ids under `scopeRoot` whose class attribute contains every token. */
+  const elementIdsByClassName = (scopeRoot: NodeId, tokens: readonly string[]): NodeId[] =>
+    elementIdsByTagName(scopeRoot, "*").filter((id) => {
+      const cls = session.dom.nodes.get(id)?.attrs?.get("class") ?? "";
+      const have = new Set(cls.split(/\s+/).filter((t) => t.length > 0));
+      return tokens.every((t) => have.has(t));
+    });
+
+  // Elements whose `name` attribute participates in the HTMLCollection named
+  // getter (HTML standard: https://html.spec.whatwg.org/#dom-htmlcollection-supported-property-names).
+  const NAME_ATTRIBUTE_TAGS = new Set(["a", "applet", "area", "embed", "form", "frame", "frameset", "iframe", "img", "object"]);
+
+  /**
+   * A LIVE HTMLCollection over `queryIds` — re-evaluated on every access, so
+   * DOM mutations are reflected immediately. Supports length, the indexed
+   * property getter, item(), the named getter (id for every element; name for
+   * the spec'd tag set), Symbol.iterator, and the platform object semantics
+   * official WPT exercises (`in`, ownKeys, and strict-mode TypeError on
+   * assignments that would shadow an indexed or supported named property).
+   */
+  const makeLiveCollection = (queryIds: () => readonly NodeId[]): object => {
+    const snapshotIds = (): NodeId[] => queryIds().filter((id) => session.dom.nodes.has(id));
+    const namedItem = (rawName: unknown): object | null => {
+      const name = coerceGuestString(rawName);
+      if (name === "") return null;
+      for (const id of snapshotIds()) {
+        const attrs = session.dom.nodes.get(id)?.attrs;
+        if (attrs?.get("id") === name) return makeElementCached(id);
+        if (NAME_ATTRIBUTE_TAGS.has(session.dom.nodes.get(id)?.tag ?? "") && attrs?.get("name") === name) {
+          return makeElementCached(id);
+        }
+      }
+      return null;
+    };
+    const supportedNames = (): string[] => {
+      const names: string[] = [];
+      for (const id of snapshotIds()) {
+        const node = session.dom.nodes.get(id);
+        const idAttr = node?.attrs?.get("id");
+        if (idAttr !== undefined && idAttr !== "") names.push(idAttr);
+        if (node !== undefined && node.attrs !== undefined && NAME_ATTRIBUTE_TAGS.has(node.tag ?? "")) {
+          const nameAttr = node.attrs?.get("name");
+          if (nameAttr !== undefined && nameAttr !== "") names.push(nameAttr);
+        }
+      }
+      return names;
+    };
+    const isIndexKey = (prop: string): boolean => /^(0|[1-9][0-9]*)$/.test(prop);
+    const valuesIterator = function* (): Generator<object> {
+      for (const id of snapshotIds()) yield makeElementCached(id);
+    };
+    const methods: Record<string, unknown> = {
+      item: (index: unknown): object | null => {
+        const list = snapshotIds();
+        const i = Math.trunc(Number(index));
+        if (!Number.isFinite(i) || i < 0 || i >= list.length) return null;
+        return makeElementCached(list[i] as NodeId);
+      },
+      namedItem,
+      keys: function* (): Generator<number> {
+        let i = 0;
+        for (const _ of snapshotIds()) yield i++;
+      },
+      values: function* (): Generator<object> {
+        yield* valuesIterator();
+      },
+      entries: function* (): Generator<[number, object]> {
+        let i = 0;
+        for (const id of snapshotIds()) yield [i++, makeElementCached(id)];
+      },
+      [Symbol.iterator]: valuesIterator,
+      toString: () => "[object HTMLCollection]",
+    };
+    return new Proxy(methods, {
+      get(_target, prop) {
+        if (typeof prop === "symbol") return Reflect.get(methods, prop) as unknown;
+        if (isIndexKey(prop)) {
+          const list = snapshotIds();
+          const i = Number(prop);
+          return i < list.length ? makeElementCached(list[i] as NodeId) : undefined;
+        }
+        switch (prop) {
+          case "length":
+            return snapshotIds().length;
+          default:
+            return Reflect.get(methods, prop);
+        }
+      },
+      has(_target, prop) {
+        if (typeof prop === "string" && (isIndexKey(prop) || prop === "length")) return true;
+        if (typeof prop === "symbol") return prop in methods;
+        return supportedNames().includes(prop) || prop in methods;
+      },
+      ownKeys() {
+        const keys = snapshotIds().map((_, i) => String(i));
+        keys.push("length");
+        keys.push(...supportedNames());
+        return keys;
+      },
+      getOwnPropertyDescriptor(_target, prop) {
+        if (typeof prop === "string" && isIndexKey(prop)) {
+          const list = snapshotIds();
+          const i = Number(prop);
+          if (i < list.length) {
+            return { value: makeElementCached(list[i] as NodeId), writable: true, enumerable: true, configurable: true };
+          }
+          return undefined;
+        }
+        if (prop === "length") {
+          return { value: snapshotIds().length, writable: false, enumerable: true, configurable: false };
+        }
+        if (typeof prop === "string" && supportedNames().includes(prop)) {
+          const found = namedItem(prop);
+          if (found !== null) return { value: found, writable: true, enumerable: true, configurable: true };
+        }
+        return undefined;
+      },
+      set(_target, prop, value) {
+        // [OverrideBuiltins]: assigning an indexed or supported named property
+        // must not create an expando — strict-mode code throws.
+        if (typeof prop === "string" && (isIndexKey(prop) || prop === "length" || supportedNames().includes(prop))) {
+          throw new TypeError(`Cannot create proxy set property '${prop}' on an HTMLCollection`);
+        }
+        return Reflect.set(methods, prop, value);
+      },
+      deleteProperty(_target, prop) {
+        if (typeof prop === "string" && (isIndexKey(prop) || prop === "length")) return false;
+        if (typeof prop === "string" && supportedNames().includes(prop)) return false;
+        return Reflect.deleteProperty(methods, prop);
+      },
+    });
   };
 
   /** Whether `id`'s element matches `selector` (full selector engine). */
@@ -1161,11 +1295,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       hasChildNodes(): boolean {
         return (session.dom.nodes.get(nodeId)?.children.length ?? 0) > 0;
       },
-      get children(): object[] {
-        return childWrappers(nodeId).filter((_w, i) => {
-          const childId = session.dom.nodes.get(nodeId)?.children[i];
-          return childId !== undefined && session.dom.nodes.get(childId)?.kind === "element";
-        });
+      get children(): object {
+        return makeLiveCollection(() =>
+          (session.dom.nodes.get(nodeId)?.children ?? []).filter(
+            (childId) => session.dom.nodes.get(childId)?.kind === "element",
+          ),
+        );
       },
       get firstChild(): object | null {
         const kids = session.dom.nodes.get(nodeId)?.children ?? [];
@@ -1323,9 +1458,17 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         }
         return child;
       },
-      getElementsByTagName(tag: unknown): object[] {
-        const want = String(tag).toLowerCase();
-        return elementsByTagName(nodeId, want);
+      getElementsByTagName(tag: unknown): object {
+        const want = coerceGuestString(tag).toLowerCase();
+        return makeLiveCollection(() => elementIdsByTagName(nodeId, want));
+      },
+      getElementsByTagNameNS(_ns: unknown, localName: unknown): object {
+        const local = coerceGuestString(localName).toLowerCase();
+        return makeLiveCollection(() => elementIdsByTagName(nodeId, local === "*" ? "*" : local));
+      },
+      getElementsByClassName(names: unknown): object {
+        const tokens = coerceGuestString(names).trim().split(/\s+/).filter((t) => t.length > 0);
+        return makeLiveCollection(() => elementIdsByClassName(nodeId, tokens));
       },
       querySelector(selector: unknown): object | null {
         const ids = queryAll(String(selector), nodeId);
@@ -2436,9 +2579,19 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     querySelectorAll(selector: unknown): object[] {
       return queryAll(String(selector), null).map((id) => makeElementCached(id));
     },
-    getElementsByTagName(tag: unknown): object[] {
-      const want = String(tag).toLowerCase();
-      return elementsByTagName(session.dom.root, want);
+    getElementsByTagName(tag: unknown): object {
+      const want = coerceGuestString(tag).toLowerCase();
+      return makeLiveCollection(() => elementIdsByTagName(session.dom.root, want));
+    },
+    getElementsByTagNameNS(_ns: unknown, localName: unknown): object {
+      // Namespaces are not modeled yet (every element is HTML), so only the
+      // local name filters; "*" matches everything like the spec requires.
+      const local = coerceGuestString(localName).toLowerCase();
+      return makeLiveCollection(() => elementIdsByTagName(session.dom.root, local === "*" ? "*" : local));
+    },
+    getElementsByClassName(names: unknown): object {
+      const tokens = coerceGuestString(names).trim().split(/\s+/).filter((t) => t.length > 0);
+      return makeLiveCollection(() => elementIdsByClassName(session.dom.root, tokens));
     },
     createElement(tag: unknown): object {
       const id = session.createElement(String(tag));

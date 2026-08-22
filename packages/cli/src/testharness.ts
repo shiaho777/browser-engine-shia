@@ -76,6 +76,27 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
         fail(`${formatValue(actual)} not in array`, desc);
       }
     },
+    assert_object_equals(actual: unknown, expected: unknown, desc?: unknown): void {
+      const deepEqual = (a: unknown, b: unknown): boolean => {
+        if (Object.is(a, b)) return true;
+        if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
+        if (Array.isArray(a) || Array.isArray(b)) {
+          if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+          return a.every((item, i) => deepEqual(item, b[i]));
+        }
+        const ka = Object.keys(a);
+        const kb = Object.keys(b);
+        if (ka.length !== kb.length) return false;
+        return ka.every((k) => deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+      };
+      if (typeof actual !== "object" || actual === null || typeof expected !== "object" || expected === null) {
+        fail("assert_object_equals requires objects", desc);
+        return;
+      }
+      if (!deepEqual(actual, expected)) {
+        fail(`expected ${formatValue(expected)} but got ${formatValue(actual)}`, desc);
+      }
+    },
     assert_greater_than(a: unknown, b: unknown, desc?: unknown): void {
       if (!((a as number) > (b as number))) fail(`${formatValue(a)} not > ${formatValue(b)}`, desc);
     },

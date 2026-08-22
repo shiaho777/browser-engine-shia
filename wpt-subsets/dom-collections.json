@@ -1,0 +1,9 @@
+{
+  "name": "dom-collections",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "dom/collections/HTMLCollection-empty-name.html"
+  ],
+  "baselinePassCount": 7
+}

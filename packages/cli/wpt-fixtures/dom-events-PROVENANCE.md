@@ -21,3 +21,12 @@ in CI without a WPT checkout:
 
 The runner satisfies `/resources/testharness*.js` includes with its own
 harness; these files have no other includes.
+
+## dom-collections
+
+`dom/collections/HTMLCollection-empty-name.html` is likewise an UNMODIFIED
+official WPT file (same license), vendored for the `dom-collections` subset.
+The other files from the official `dom/collections/` directory are not yet
+vendored: they exercise deeper WebIDL platform-object semantics (expando
+shadowing on [OverrideBuiltins] objects, prototype tricks, exact own-property
+enumeration) that this engine does not implement yet.
