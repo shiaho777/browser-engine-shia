@@ -173,6 +173,10 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
         fail(`unexpected own property ${formatValue(name)}`, desc);
       }
     },
+    // The public formatting helper tests use inside their own messages.
+    format_value(value: unknown): string {
+      return formatValue(value);
+    },
   };
   return asserts;
 }

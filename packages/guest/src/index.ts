@@ -65,6 +65,8 @@ export {
   CustomEvent,
   FocusEvent,
   InputEvent,
+  WheelEvent,
+  CompositionEvent,
   EventTarget,
   EventTargetImpl,
   EventImpl,

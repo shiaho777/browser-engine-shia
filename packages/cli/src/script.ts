@@ -2722,6 +2722,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     HTMLCanvasElement: HTMLCanvasElementCtor,
     CanvasRenderingContext2D: CanvasRenderingContext2DCtor,
     OffscreenCanvas: OffscreenCanvasCtor,
+    // `new Text(data)` — a text node created directly in the live tree.
+    Text: function Text(this: unknown, data: unknown) {
+      const id = session.createTextNode(coerceGuestString(data));
+      mutations += 1;
+      return makeElementCached(id);
+    },
     SVGElement: SVGElementCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
