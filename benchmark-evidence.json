@@ -3,28 +3,28 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 46977,
+    "handWrittenLines": 47148,
     "generatedLines": 5439,
     "testLines": 25890,
-    "totalLines": 78306,
+    "totalLines": 78477,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.000957915575707261,
-    "mechanismDensity": 18.988015411797264,
+    "compatPerLoc": 0.0009544413336726903,
+    "mechanismDensity": 18.919148214134214,
     "executionEvidence": {
-      "subsetCount": 5,
-      "files": 107,
-      "subtests": 402,
-      "passed": 402,
+      "subsetCount": 6,
+      "files": 108,
+      "subtests": 409,
+      "passed": 409,
       "failed": 0,
       "errored": 0,
-      "queryCalls": 11903,
-      "recomputes": 4214,
-      "cacheHits": 7689,
+      "queryCalls": 12010,
+      "recomputes": 4252,
+      "cacheHits": 7758,
       "verifiedCacheHits": 23,
-      "dependencyReads": 127870,
+      "dependencyReads": 128658,
       "tracedStages": [
         "qFineComputed",
         "qFineLayout",
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 46977,
-      "ourDisplay": "46,977 lines",
+      "ourValue": 47148,
+      "ourDisplay": "47,148 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2003,12 +2003,12 @@
         "confidence": "cited"
       },
       "verdict": "WIN",
-      "rationale": "Our hand-written surface is ~766× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+      "rationale": "Our hand-written surface is ~764× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
     },
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.000957915575707261,
+      "ourValue": 0.0009544413336726903,
       "ourDisplay": "0.0010 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2027,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.988015411797264,
-      "ourDisplay": "18.99 features/kloc",
+      "ourValue": 18.919148214134214,
+      "ourDisplay": "18.92 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 46,977 hand-written lines = 18.99 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 47,148 hand-written lines = 18.92 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
@@ -2056,7 +2056,7 @@
       "id": "raw-interop",
       "label": "Raw WPT / Interop pass rate",
       "ourValue": 100,
-      "ourDisplay": "100% of maintained WPT subsets (402/402 curated subtests)",
+      "ourDisplay": "100% of maintained WPT subsets (409/409 curated subtests)",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "wpt-interop-pass-rate",
