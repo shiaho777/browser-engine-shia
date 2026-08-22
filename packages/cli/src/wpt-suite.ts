@@ -115,13 +115,31 @@ function buildAsyncHarness(): AsyncHarness {
   }
 
   const makeTools = (finish: (status: WptSubtest["status"], message: string | null) => void): TestTools => {
+    // Cleanup functions run once, when the test settles (real testharness
+    // semantics — without them, tests that mutate the document pollute every
+    // later test in the same file).
+    const cleanups: Array<() => void> = [];
+    let settled = false;
+    const settle = (status: WptSubtest["status"], message: string | null): void => {
+      if (settled) return;
+      settled = true;
+      const list = cleanups.splice(0);
+      for (const cleanup of list) {
+        try {
+          cleanup();
+        } catch {
+          // Cleanup errors must not mask the test result.
+        }
+      }
+      finish(status, message);
+    };
     const tools: TestTools = {
       step(f, ...args) {
         try {
           return typeof f === "function" ? (f as (...a: unknown[]) => unknown)(...args) : undefined;
         } catch (e) {
           const c = classify(e);
-          finish(c.status, c.message);
+          settle(c.status, c.message);
           return undefined;
         }
       },
@@ -131,14 +149,15 @@ function buildAsyncHarness(): AsyncHarness {
       step_func_done(f) {
         return (...args: unknown[]) => {
           tools.step(f, ...args);
-          finish("PASS", null);
+          settle("PASS", null);
         };
       },
       unreached_func(msg) {
-        return () => finish("FAIL", `unreached: ${String(msg)}`);
+        return () =>
+          settle("FAIL", `unreached: ${String(msg)}`);
       },
       timeout() {
-        finish("FAIL", "Test timed out");
+        settle("FAIL", "Test timed out");
       },
       set_timeout(f, ms) {
         if (typeof f === "function") setTimeout(() => tools.step(f), Number(ms) || 0);
@@ -150,9 +169,11 @@ function buildAsyncHarness(): AsyncHarness {
         }, Number(ms) || 0) as unknown as number;
       },
       done() {
-        finish("PASS", null);
+        settle("PASS", null);
       },
-      add_cleanup() {},
+      add_cleanup(f) {
+        if (typeof f === "function") cleanups.push(f as () => void);
+      },
     };
     return tools;
   };
@@ -284,6 +305,9 @@ export async function runWptHtml(
   options: WptSuiteOptions = {},
 ): Promise<WptReport> {
   const collector = options.trace === true ? createStageTraceCollector() : undefined;
+  // The guest vm context exists only after the sandbox is assembled below, so
+  // the inline-handler compiler closes over a slot assigned right after.
+  let guestContext: vm.Context | null = null;
   const session = new FineSession(
     documentHtml(html),
     options.documentUrl ?? "wpt://doc",
@@ -295,9 +319,35 @@ export async function runWptHtml(
       },
     },
   );
-  const { document, globals } = buildDocumentApi(session);
+  const { document, globals } = buildDocumentApi(session, {
+    inlineHandlerCompiler: (body): unknown => vm.runInContext(`(function (event) {\n${body}\n})`, guestContext as vm.Context),
+    // a/area activation navigates: update the sandbox location and fire a
+    // hashchange at the window (only when the fragment actually changed).
+    hashNavigator: (fragment) => {
+      const oldURL = String(sandboxLocation["href"]);
+      const base = oldURL.split("#")[0] ?? oldURL;
+      const newURL = fragment === "" ? base : `${base}#${fragment}`;
+      if (newURL === oldURL) return;
+      sandboxLocation["href"] = newURL;
+      const handler = sandbox["onhashchange"];
+      if (typeof handler === "function") (handler as (e: unknown) => void)({ oldURL, newURL });
+    },
+  });
   const harness = buildAsyncHarness();
   const sandbox: Record<string, unknown> = { document, ...globals, ...harness.globals };
+  const sandboxLocation: Record<string, unknown> = {
+    href: options.documentUrl ?? "wpt://doc",
+    get hash() {
+      const href = String(this["href"]);
+      const index = href.indexOf("#");
+      return index === -1 ? "" : href.slice(index);
+    },
+    set hash(value) {
+      const base = String(this["href"]).split("#")[0];
+      this["href"] = value.startsWith("#") ? base + value : base + "#" + value;
+    },
+  };
+  sandbox["location"] = sandboxLocation;
   sandbox["self"] = sandbox;
   sandbox["globalThis"] = sandbox;
   sandbox["window"] = sandbox;
@@ -327,6 +377,7 @@ export async function runWptHtml(
 
   let harnessError: string | null = null;
   vm.createContext(sandbox);
+  guestContext = sandbox;
   try {
     for (const script of extractScripts(html)) {
       let source = script.content;

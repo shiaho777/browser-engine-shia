@@ -235,6 +235,14 @@ export function runScript(session: FineSession, source: string): ScriptResult {
 export type DocumentApiOptions = {
   readonly geometryMode?: "full" | "throttled" | "stub";
   readonly styleMode?: "full" | "fast";
+  /**
+   * Guest-realm compiler for inline `on<type>` attribute handlers. The vm
+   * context is owned by the caller (created around the sandbox AFTER this
+   * factory runs), so inject a closure that compiles lazily.
+   */
+  readonly inlineHandlerCompiler?: (body: string) => unknown;
+  /** Hash-navigation sink for a/area activation (fires hashchange upstream). */
+  readonly hashNavigator?: (fragment: string) => void;
 };
 
 export function buildDocumentApi(
@@ -247,9 +255,13 @@ export function buildDocumentApi(
   readonly tickAnimations: (nowMs: number) => void;
   readonly hasActiveAnimations: () => boolean;
 } {
+  let compileInlineHandler: ((body: string) => unknown) | null = null;
+  let navigateToHashFragment: ((fragment: string) => void) | null = null;
   let mutations = 0;
   const geometryMode = options.geometryMode ?? "full";
   const styleMode = options.styleMode ?? "full";
+  compileInlineHandler = options.inlineHandlerCompiler ?? null;
+  navigateToHashFragment = options.hashNavigator ?? null;
   const profileGeom = process.env["ENGINE_PROFILE"] === "1";
   let gBcrCalls = 0;
   let gBcrLayoutFulls = 0;
@@ -370,6 +382,16 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   const listeners = new Map<NodeId, Listener[]>();
   /** Stable CSSStyleDeclaration wrappers; element.style keeps identity and expando state. */
   const styleWrappers = new Map<NodeId, object>();
+  /** Live per-node property state the tree does not model (checked/open). */
+  const nodeState = new Map<NodeId, { checked?: boolean; open?: boolean }>();
+  /**
+   * Inline `on<type>` attribute handler compiler. The guest context is created
+   * by the CALLER of buildDocumentApi (the WPT runner / event loop), so it
+   * injects a compiler that evals in its realm; without one, inline handlers
+   * are inert. Hash navigation from link activation is injected the same way.
+   * (Declared at the top of the factory, assigned from DocumentApiOptions.)
+   */
+  const inlineHandlerCache = new Map<string, GuestFn>();
 
   let idIndexEpoch = -1;
   let idIndex = new Map<string, NodeId>();
@@ -1095,6 +1117,15 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         session.setAttribute(nodeId, htmlAttributeName(name), String(value));
         mutations += 1;
       },
+      // a/area href: the activation behavior reads this attribute, and tests
+      // retarget links through the IDL property.
+      get href(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("href") ?? "";
+      },
+      set href(value: unknown) {
+        session.setAttribute(nodeId, "href", coerceGuestString(value));
+        mutations += 1;
+      },
       hasAttribute(name: unknown): boolean {
         return session.dom.nodes.get(nodeId)?.attrs?.has(htmlAttributeName(name)) ?? false;
       },
@@ -1509,7 +1540,21 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return dispatch(nodeId, event as GuestEvent);
       },
       click(): void {
-        dispatch(nodeId, makeEvent("click", { bubbles: true, cancelable: true }));
+        const event = makeEvent("click", { bubbles: true, cancelable: true });
+        // Activation behavior runs only when the click was not default-prevented.
+        if (dispatch(nodeId, event)) runActivationBehavior(nodeId);
+      },
+      get checked(): boolean {
+        const state = nodeState.get(nodeId);
+        if (state?.checked !== undefined) return state.checked;
+        const initial = session.dom.nodes.get(nodeId)?.attrs?.get("checked") !== undefined;
+        nodeState.set(nodeId, { ...state, checked: initial });
+        return initial;
+      },
+      set checked(value: unknown) {
+        const state = nodeState.get(nodeId) ?? {};
+        state.checked = Boolean(value);
+        nodeState.set(nodeId, state);
       },
       getBoundingClientRect(): object {
         gBcrCalls += 1;
@@ -2102,6 +2147,128 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return evt.__stopImmediate === true;
   }
 
+  /** Run the element's inline `on<type>` attribute handler (if any) at target. */
+  function invokeInlineHandler(node: NodeId, evt: GuestEvent): void {
+    if (propagationStopped(evt)) return;
+    const body = session.dom.nodes.get(node)?.attrs?.get(`on${evt.type}`);
+    if (body === undefined || compileInlineHandler === null) return;
+    const key = `${node}:${evt.type}`;
+    let handler = inlineHandlerCache.get(key);
+    if (handler === undefined) {
+      const compiled = compileInlineHandler(body);
+      if (typeof compiled !== "function") return;
+      handler = compiled as GuestFn;
+      inlineHandlerCache.set(key, handler);
+    }
+    const result = handler.call(makeElementCached(node), evt);
+    if (result === false) evt.preventDefault();
+  }
+
+  /** The nearest form ancestor of `id` (or null). */
+  function ownerForm(id: NodeId): NodeId | null {
+    let cur: NodeId | null = session.dom.nodes.get(id)?.parent ?? null;
+    while (cur !== null) {
+      if (session.dom.nodes.get(cur)?.tag === "form") return cur;
+      cur = session.dom.nodes.get(cur)?.parent ?? null;
+    }
+    return null;
+  }
+
+  /** The first labelable descendant of a <label> (tree order). */
+  function labeledControlOf(labelId: NodeId): NodeId | null {
+    const visit = (id: NodeId): NodeId | null => {
+      for (const childId of session.dom.nodes.get(id)?.children ?? []) {
+        const n = session.dom.nodes.get(childId);
+        if (n?.kind === "element" && (n.tag === "input" || n.tag === "button" || n.tag === "select" || n.tag === "textarea")) {
+          return childId;
+        }
+        const found = visit(childId);
+        if (found !== null) return found;
+      }
+      return null;
+    };
+    return visit(labelId);
+  }
+
+  function activateCheckboxRadio(id: NodeId, radio: boolean): void {
+    const state = nodeState.get(id) ?? {};
+    const previously = state.checked ?? session.dom.nodes.get(id)?.attrs?.get("checked") !== undefined;
+    state.checked = radio ? true : !previously;
+    nodeState.set(id, state);
+    dispatch(id, makeEvent("input", { bubbles: true }));
+    dispatch(id, makeEvent("change", { bubbles: true }));
+  }
+
+  function activateFormControl(id: NodeId, type: string): void {
+    const form = ownerForm(id);
+    if (form !== null) dispatch(form, makeEvent(type, { bubbles: true, cancelable: true }));
+  }
+
+  function activateHashLink(id: NodeId): void {
+    const href = session.dom.nodes.get(id)?.attrs?.get("href") ?? "";
+    const hashIndex = href.indexOf("#");
+    navigateToHashFragment?.(hashIndex >= 0 ? href.slice(hashIndex + 1) : "");
+  }
+
+  function toggleDetails(summaryId: NodeId): void {
+    const parentId = session.dom.nodes.get(summaryId)?.parent ?? null;
+    if (parentId === null) return;
+    const details = session.dom.nodes.get(parentId);
+    if (details === undefined || details.tag !== "details") return;
+    const state = nodeState.get(parentId) ?? {};
+    state.open = !state.open;
+    nodeState.set(parentId, state);
+    dispatch(parentId, makeEvent("toggle"));
+  }
+
+  /**
+   * Activation behavior (HTML §2.5): walk from the clicked element up the
+   * ancestor chain and run the NEAREST activation behavior — checkbox/radio
+   * toggle + input/change, form submit/reset, hash navigation for a/area,
+   * details toggle via summary, and label forwarding to its control.
+   */
+  function runActivationBehavior(startId: NodeId, visited: Set<NodeId> = new Set()): void {
+    let cur: NodeId | null = startId;
+    while (cur !== null && !visited.has(cur)) {
+      visited.add(cur);
+      const node = session.dom.nodes.get(cur);
+      if (node?.kind === "element") {
+        const tag = node.tag;
+        const type = (node.attrs?.get("type") ?? "").toLowerCase();
+        if (tag === "input" && (type === "checkbox" || type === "radio")) {
+          activateCheckboxRadio(cur, type === "radio");
+          return;
+        }
+        if (tag === "input" && (type === "submit" || type === "image")) {
+          activateFormControl(cur, "submit");
+          return;
+        }
+        if (tag === "button" && (type === "" || type === "submit")) {
+          activateFormControl(cur, "submit");
+          return;
+        }
+        if ((tag === "input" || tag === "button") && type === "reset") {
+          activateFormControl(cur, "reset");
+          return;
+        }
+        if (tag === "a" || tag === "area") {
+          activateHashLink(cur);
+          return;
+        }
+        if (tag === "summary") {
+          toggleDetails(cur);
+          return;
+        }
+        if (tag === "label") {
+          const control = labeledControlOf(cur);
+          if (control !== null) runActivationBehavior(control, visited);
+          return;
+        }
+      }
+      cur = node?.parent ?? null;
+    }
+  }
+
   /** Invoke the listeners registered on `node` for this phase; honour stop flags. */
   function invokeAt(node: NodeId, evt: GuestEvent, capturePhase: boolean): void {
     const list = listeners.get(node);
@@ -2133,6 +2300,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     // Target phase.
     setEventPhase(event, 2);
     invokeAt(targetId, event, false);
+    invokeInlineHandler(targetId, event);
     // Bubble phase: just above target → root.
     if (event.bubbles && !propagationStopped(event)) {
       setEventPhase(event, 3);
