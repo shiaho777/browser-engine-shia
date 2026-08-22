@@ -4,9 +4,9 @@
 
 ## Headline — where we lead
 
-- **Hand-written surface (smaller = more readable): 47,242 lines** — Our hand-written surface is ~762× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
+- **Hand-written surface (smaller = more readable): 47,244 lines** — Our hand-written surface is ~762× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
 - **compat-per-LOC (North Star): 0.0010 passes/line** — compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours.
-- **mechanism-density (features per 1k hand-written lines): 18.88 features/kloc** — 892 platform features (CSS properties + DOM members) over 47,242 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- **mechanism-density (features per 1k hand-written lines): 18.88 features/kloc** — 892 platform features (CSS properties + DOM members) over 47,244 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ## Overall
 
@@ -16,7 +16,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 | Dimension | Ours (live) | Chromium (cited) | Verdict |
 |---|---|---|---|
-| Hand-written surface (smaller = more readable) | 47,242 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
+| Hand-written surface (smaller = more readable) | 47,244 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
 | compat-per-LOC (North Star) | 0.0010 passes/line | _needs-source_ | 🟢 WIN |
 | mechanism-density (features per 1k hand-written lines) | 18.88 features/kloc | — | 🟢 WIN |
 | CSS-property coverage (raw count) | 340 properties | 600 properties _(CSS specifications (order-of-magnitude))_ | 🟡 GAP |
@@ -25,10 +25,10 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 ## Our live metrics (re-computed every run)
 
-- Hand-written product lines: **47,242**
+- Hand-written product lines: **47,244**
 - Generated lines: 5,439
 - Test lines: 25,951
-- Total system size: 78,632
+- Total system size: 78,634
 - CSS properties (data table): **340**
 - DOM interface members (IDL table): **552**
 - Platform features total: 892
@@ -930,7 +930,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 ### Hand-written surface (smaller = more readable) — 🟢 WIN
 
-- Ours (live): 47,242 lines
+- Ours (live): 47,244 lines
 - Chromium (cited): 36,000,000 lines _(Wikipedia — Chromium (web browser))_
 - Our hand-written surface is ~762× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
 
@@ -944,7 +944,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 - Ours (live): 18.88 features/kloc
 - Chromium (cited): —
-- 892 platform features (CSS properties + DOM members) over 47,242 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- 892 platform features (CSS properties + DOM members) over 47,244 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ### CSS-property coverage (raw count) — 🟡 GAP
 

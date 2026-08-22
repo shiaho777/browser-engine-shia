@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 47242,
+    "handWrittenLines": 47244,
     "generatedLines": 5439,
     "testLines": 25951,
-    "totalLines": 78632,
+    "totalLines": 78634,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0009525422293721688,
-    "mechanismDensity": 18.8815037466661,
+    "compatPerLoc": 0.00095250190500381,
+    "mechanismDensity": 18.88070442807552,
     "executionEvidence": {
       "subsetCount": 6,
       "files": 108,
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 47242,
-      "ourDisplay": "47,242 lines",
+      "ourValue": 47244,
+      "ourDisplay": "47,244 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2008,7 +2008,7 @@
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0009525422293721688,
+      "ourValue": 0.00095250190500381,
       "ourDisplay": "0.0010 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2027,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.8815037466661,
+      "ourValue": 18.88070442807552,
       "ourDisplay": "18.88 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 47,242 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 47,244 hand-written lines = 18.88 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
