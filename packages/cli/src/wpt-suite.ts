@@ -28,6 +28,7 @@ import { createAssertions, WptAssertionError } from "./testharness.js";
 import {
   AbortController,
   AbortSignal,
+  CompositionEvent,
   CustomEvent,
   DOMException,
   Event,
@@ -37,6 +38,7 @@ import {
   KeyboardEvent,
   MouseEvent,
   UIEvent,
+  WheelEvent,
 } from "@browser-engine/guest";
 import type { WptReport, WptSubtest } from "./wpt.js";
 
@@ -315,6 +317,9 @@ export async function runWptHtml(
   sandbox["AbortController"] = AbortController;
   sandbox["AbortSignal"] = AbortSignal;
   sandbox["DOMException"] = DOMException;
+  sandbox["WheelEvent"] = WheelEvent;
+  sandbox["CompositionEvent"] = CompositionEvent;
+  sandbox["performance"] = { now: () => performance.now(), timeOrigin: 0 };
   const windowTarget = new EventTarget();
   sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
   sandbox["removeEventListener"] = windowTarget.removeEventListener.bind(windowTarget);

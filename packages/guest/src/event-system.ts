@@ -357,6 +357,64 @@ export interface InputEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
+// WheelEventImpl
+// ---------------------------------------------------------------------------
+
+export class WheelEventImpl extends MouseEventImpl {
+  readonly #deltaX: number;
+  readonly #deltaY: number;
+  readonly #deltaZ: number;
+  readonly #deltaMode: number;
+
+  constructor(type?: string, init?: WheelEventInit & MouseEventInit & UIEventInit & EventInit) {
+    super(type, init);
+    this.#deltaX = init?.deltaX ?? 0;
+    this.#deltaY = init?.deltaY ?? 0;
+    this.#deltaZ = init?.deltaZ ?? 0;
+    this.#deltaMode = init?.deltaMode ?? 0;
+  }
+
+  get deltaX(): number { return this.#deltaX; }
+  get deltaY(): number { return this.#deltaY; }
+  get deltaZ(): number { return this.#deltaZ; }
+  get deltaMode(): number { return this.#deltaMode; }
+
+  static readonly DOM_DELTA_PIXEL = 0;
+  static readonly DOM_DELTA_LINE = 1;
+  static readonly DOM_DELTA_PAGE = 2;
+}
+
+export interface WheelEventInit extends MouseEventInit {
+  deltaX?: number;
+  deltaY?: number;
+  deltaZ?: number;
+  deltaMode?: number;
+}
+
+// ---------------------------------------------------------------------------
+// CompositionEventImpl
+// ---------------------------------------------------------------------------
+
+export class CompositionEventImpl extends UIEventImpl {
+  readonly #data: string | null;
+  readonly #locale: string;
+
+  constructor(type?: string, init?: CompositionEventInit & UIEventInit & EventInit) {
+    super(type, init);
+    this.#data = init?.data ?? null;
+    this.#locale = init?.locale ?? "";
+  }
+
+  get data(): string | null { return this.#data; }
+  get locale(): string { return this.#locale; }
+}
+
+export interface CompositionEventInit extends UIEventInit {
+  data?: string | null;
+  locale?: string;
+}
+
+// ---------------------------------------------------------------------------
 // EventTargetImpl — the event registration + dispatch engine
 // ---------------------------------------------------------------------------
 
@@ -533,5 +591,7 @@ export {
   CustomEventImpl as CustomEvent,
   FocusEventImpl as FocusEvent,
   InputEventImpl as InputEvent,
+  WheelEventImpl as WheelEvent,
+  CompositionEventImpl as CompositionEvent,
   EventTargetImpl as EventTarget,
 };

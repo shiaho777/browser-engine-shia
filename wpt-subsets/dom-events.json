@@ -12,10 +12,11 @@
     "dom/events/Event-dispatch-detached-click.html",
     "dom/events/Event-dispatch-propagation-stopped.html",
     "dom/events/Event-returnValue.html",
+    "dom/events/Event-timestamp-high-resolution.html",
     "dom/events/Event-type.html",
     "dom/events/EventTarget-add-remove-listener.any.js",
     "dom/events/EventTarget-addEventListener.any.js",
     "dom/events/EventTarget-dispatchEvent-returnvalue.html"
   ],
-  "baselinePassCount": 49
+  "baselinePassCount": 53
 }
