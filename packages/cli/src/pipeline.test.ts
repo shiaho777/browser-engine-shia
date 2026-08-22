@@ -43,12 +43,22 @@ void test("qDom parses the source bytes into a DomTree (html-parse implemented �
   const db = seededDb();
   const dom = db.query(qDom, URL);
 
-  // <div>hello</div> ⇒ document → div → text "hello".
+  // <div>hello</div> ⇒ document → html → [head, body → div → text "hello"].
   const root = dom.nodes.get(dom.root);
   assert.ok(root !== undefined && root.kind === "document");
   assert.equal(root.children.length, 1);
 
-  const divId = root.children[0];
+  const htmlId = root.children[0];
+  assert.ok(htmlId !== undefined);
+  const html = dom.nodes.get(htmlId);
+  assert.ok(html !== undefined && html.kind === "element" && html.tag === "html");
+
+  const bodyId = html.children[1];
+  assert.ok(bodyId !== undefined);
+  const body = dom.nodes.get(bodyId);
+  assert.ok(body !== undefined && body.tag === "body");
+
+  const divId = body.children[0];
   assert.ok(divId !== undefined);
   const div = dom.nodes.get(divId);
   assert.ok(div !== undefined && div.kind === "element");
@@ -121,9 +131,12 @@ void test("qComputed is deterministic: same inputs ⇒ equal ComputedStyle (Req 
 });
 
 void test("qLayout lays the document out into a FragmentTree (layout implemented — task 3.7)", () => {
-  // `<div>hello</div>` ⇒ document(0) → div(1) → text "hello"(2). The minimal
-  // block engine produces one fragment per laid-out node, stacked in block flow;
-  // the FragmentTree is the sole source of geometry and is deep-frozen (Req 3.2).
+  // `<div>hello</div>` ⇒ document(0) → html(3) → [head(4) hidden, body(5) →
+  // div(1) → text "hello"(2)] — the synthesized elements get HIGHER ids than
+  // the tokenized content. The minimal block engine produces one fragment per
+  // laid-out node (head is display:none via the UA sheet, so it produces
+  // none), stacked in block flow; the FragmentTree is the sole source of
+  // geometry and is deep-frozen (Req 3.2).
   const db = seededDb();
   const tree = db.query(qLayout, URL);
 
@@ -135,10 +148,22 @@ void test("qLayout lays the document out into a FragmentTree (layout implemented
   assert.ok(rootFrag !== undefined);
   assert.equal(rootFrag.node, nodeId(0));
 
-  // document → div → text: three fragments.
-  assert.equal(tree.fragments.size, 3);
+  // document → html → body → div → text: five fragments (head lays out none).
+  assert.equal(tree.fragments.size, 5);
 
-  const divFragId = rootFrag.children[0];
+  const htmlFragId = rootFrag.children[0];
+  assert.ok(htmlFragId !== undefined);
+  const htmlFrag = tree.fragments.get(htmlFragId);
+  assert.ok(htmlFrag !== undefined);
+  assert.equal(htmlFrag.node, nodeId(3));
+
+  const bodyFragId = htmlFrag.children[0];
+  assert.ok(bodyFragId !== undefined);
+  const bodyFrag = tree.fragments.get(bodyFragId);
+  assert.ok(bodyFrag !== undefined);
+  assert.equal(bodyFrag.node, nodeId(5));
+
+  const divFragId = bodyFrag.children[0];
   assert.ok(divFragId !== undefined);
   const divFrag = tree.fragments.get(divFragId);
   assert.ok(divFrag !== undefined);

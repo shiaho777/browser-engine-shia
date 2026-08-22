@@ -952,7 +952,112 @@ function buildTree(tokens: readonly Token[], eofPos: number, record: RecordRecov
     }
   }
 
+  synthesizeDocumentStructure(root, nodes);
+
   return freezeTree(root.id, nodes);
+}
+
+/** Elements that belong in `<head>` when they appear before body content. */
+const HEAD_ELEMENTS: ReadonlySet<string> = new Set([
+  "base",
+  "link",
+  "meta",
+  "noscript",
+  "script",
+  "style",
+  "template",
+  "title",
+]);
+
+/**
+ * Normalize the finished tree to the HTML5 document outline: every document
+ * ends up as document → html → [head?, body?], exactly what the "in head"/
+ * "in body" insertion modes build for a browser. Documents that already spell
+ * out their structure are untouched except for misplaced siblings (moved to
+ * `<body>`); documents written without the wrapper get it synthesized, so
+ * `document.body` / `document.head` exist everywhere.
+ */
+function synthesizeDocumentStructure(root: MutableNode, nodes: MutableNode[]): void {
+  // `parent` is readonly in the IR-facing type; synthesis owns the tree until
+  // it freezes, so re-parenting goes through this writable view.
+  const mutableParent = (node: MutableNode): { parent: NodeId | null } => node;
+  const detach = (node: MutableNode): void => {
+    const parent = node.parent !== null ? nodes[node.parent] : undefined;
+    if (parent === undefined) return;
+    const index = parent.children.indexOf(node.id);
+    if (index !== -1) parent.children.splice(index, 1);
+  };
+  const appendNode = (parent: MutableNode, node: MutableNode): void => {
+    detach(node);
+    mutableParent(node).parent = parent.id;
+    parent.children.push(node.id);
+  };
+  const createElement = (tag: string, parent: MutableNode): MutableNode => {
+    const node: MutableNode = { id: nodeId(nodes.length), kind: "element", tag, children: [], parent: parent.id };
+    nodes.push(node);
+    parent.children.push(node.id);
+    return node;
+  };
+
+  const rootChildren = root.children.map((id) => nodes[id] as MutableNode);
+  let html = rootChildren.find((n) => n.kind === "element" && n.tag === "html");
+
+  // Content found directly under `document`: head-eligible elements move to
+  // head, everything else to body. Comments stay where they are.
+  const toHead: MutableNode[] = [];
+  const toBody: MutableNode[] = [];
+  for (const child of rootChildren) {
+    if (child === html || child.kind === "comment") continue;
+    if (child.kind === "element" && child.tag !== undefined && HEAD_ELEMENTS.has(child.tag)) toHead.push(child);
+    else toBody.push(child);
+  }
+
+  if (html === undefined) {
+    html = { id: nodeId(nodes.length), kind: "element", tag: "html", children: [], parent: root.id };
+    nodes.push(html);
+    // Keep leading document-level comments ahead of the synthesized root.
+    root.children.push(html.id);
+  }
+
+  const htmlChildren = html.children.map((id) => nodes[id] as MutableNode);
+  let head = htmlChildren.find((n) => n.kind === "element" && n.tag === "head");
+  let body = htmlChildren.find((n) => n.kind === "element" && n.tag === "body");
+  if (head === undefined) {
+    head = createElement("head", html);
+    html.children.splice(html.children.indexOf(head.id), 1);
+    html.children.unshift(head.id); // head precedes body (and stray content).
+  }
+  if (body === undefined) {
+    body = createElement("body", html);
+  }
+  // Malformed strays directly under <html> belong in body.
+  for (const stray of htmlChildren) {
+    if (stray !== head && stray !== body && stray.kind !== "comment") appendNode(body, stray);
+  }
+
+  for (const node of toHead) appendNode(head, node);
+  for (const node of toBody) appendNode(body, node);
+
+  // Moving nodes can make previously-separated text nodes adjacent (e.g. text
+  // split around a comment that stays behind). Browsers merge adjacent text
+  // nodes; do the same so parse → print → parse stays a fixed point.
+  const mergeAdjacentTextIn = (parent: MutableNode): void => {
+    const kept: NodeId[] = [];
+    for (const childId of parent.children) {
+      const child = nodes[childId];
+      if (child === undefined) continue;
+      const prevId = kept.length > 0 ? kept[kept.length - 1] : undefined;
+      const prev = prevId !== undefined ? nodes[prevId] : undefined;
+      if (child.kind === "text" && prev !== undefined && prev.kind === "text") {
+        (prev as { text?: string }).text = (prev.text ?? "") + (child.text ?? "");
+        continue; // the duplicate id is dropped entirely.
+      }
+      kept.push(childId);
+    }
+    parent.children.splice(0, parent.children.length, ...kept);
+  };
+  mergeAdjacentTextIn(head);
+  mergeAdjacentTextIn(body);
 }
 
 // ---------------------------------------------------------------------------
