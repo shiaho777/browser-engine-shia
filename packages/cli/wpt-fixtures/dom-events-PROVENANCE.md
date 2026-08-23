@@ -18,7 +18,8 @@ in CI without a WPT checkout:
 - `EventTarget-add-remove-listener.any.js`
 - `EventTarget-addEventListener.any.js`
 - `EventTarget-dispatchEvent-returnvalue.html`
-- `Event-timestamp-high-resolution.html`
+- `EventTarget-dispatchEvent-returnvalue.html`
+- `Event-subclasses-constructors.html`
 
 The runner satisfies `/resources/testharness*.js` includes with its own
 harness; these files have no other includes.

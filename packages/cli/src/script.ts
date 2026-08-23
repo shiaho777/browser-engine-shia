@@ -29,9 +29,9 @@ import { ruleMatches, parseEasing, sampleEasing, interpolateValue } from "@brows
 import type { Easing } from "@browser-engine/cascade";
 import {
   coerceGuestString,
-  CustomEvent as CustomEventImpl,
-  Event as EventImpl,
-  MouseEvent as MouseEventImpl,
+  CustomEvent as CustomEvent,
+  Event as Event,
+  MouseEvent as MouseEvent,
 } from "@browser-engine/guest";
 
 import { parseHtml } from "@browser-engine/html-parser";
@@ -2106,7 +2106,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   }
 
   // The dispatch machinery drives BOTH internal plain-object events
-  // ({@link makeEvent}) and real guest `EventImpl` instances whose target /
+  // ({@link makeEvent}) and real guest `Event` instances whose target /
   // currentTarget / eventPhase are readonly accessors — mutate and read
   // dispatch state through the internal hooks when they exist.
   type DispatchableEvent = GuestEvent & {
@@ -2793,9 +2793,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       // one implementation with guest-constructed events. Legacy createEvent
       // yields an UNINITIALIZED event: empty type until initEvent runs.
       const kind = coerceGuestString(eventType);
-      if (kind === "CustomEvent") return new CustomEventImpl("");
-      if (kind === "MouseEvent" || kind === "MouseEvents") return new MouseEventImpl("");
-      return new EventImpl("");
+      if (kind === "CustomEvent") return new CustomEvent("");
+      if (kind === "MouseEvent" || kind === "MouseEvents") return new MouseEvent("");
+      return new Event("");
     },
     createEventObject(): { data: unknown; type: string } {
       return { data: undefined, type: "" };

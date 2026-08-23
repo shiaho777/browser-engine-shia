@@ -27,7 +27,7 @@
 import { DOM_SURFACE, type InterfaceDescriptor } from "@browser-engine/generator";
 
 import { installSurface } from "./surface-members.js";
-import { EventImpl, UIEventImpl, MouseEventImpl, KeyboardEventImpl, CustomEventImpl, FocusEventImpl, InputEventImpl, EventTargetImpl } from "./event-system.js";
+import { Event, UIEvent, MouseEvent, KeyboardEvent, CustomEvent, FocusEvent, InputEvent, EventTarget } from "./event-system.js";
 import { StorageImpl } from "./storage.js";
 
 /** A plain object usable as a V8 context global (string-keyed surface members). */
@@ -103,14 +103,14 @@ export function buildGuestGlobal(options: GuestGlobalOptions = {}): GuestGlobal 
   // requires `new Event("click")` to work in guest JS. They are non-enumerable
   // like all global constructors.
   const eventCtors: Record<string, { new (...args: unknown[]): unknown }> = {
-    Event: EventImpl as unknown as { new (...args: unknown[]): unknown },
-    UIEvent: UIEventImpl as unknown as { new (...args: unknown[]): unknown },
-    MouseEvent: MouseEventImpl as unknown as { new (...args: unknown[]): unknown },
-    KeyboardEvent: KeyboardEventImpl as unknown as { new (...args: unknown[]): unknown },
-    CustomEvent: CustomEventImpl as unknown as { new (...args: unknown[]): unknown },
-    FocusEvent: FocusEventImpl as unknown as { new (...args: unknown[]): unknown },
-    InputEvent: InputEventImpl as unknown as { new (...args: unknown[]): unknown },
-    EventTarget: EventTargetImpl,
+    Event: Event as unknown as { new (...args: unknown[]): unknown },
+    UIEvent: UIEvent as unknown as { new (...args: unknown[]): unknown },
+    MouseEvent: MouseEvent as unknown as { new (...args: unknown[]): unknown },
+    KeyboardEvent: KeyboardEvent as unknown as { new (...args: unknown[]): unknown },
+    CustomEvent: CustomEvent as unknown as { new (...args: unknown[]): unknown },
+    FocusEvent: FocusEvent as unknown as { new (...args: unknown[]): unknown },
+    InputEvent: InputEvent as unknown as { new (...args: unknown[]): unknown },
+    EventTarget: EventTarget,
   };
   for (const [name, ctor] of Object.entries(eventCtors)) {
     // These are the REAL constructors (guest-constructible, not throwers).

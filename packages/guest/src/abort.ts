@@ -1,7 +1,7 @@
 /**
  * AbortController / AbortSignal (DOM Standard §3.2 aborting).
  *
- * `AbortSignal` is an {@link EventTargetImpl}: aborting fires a plain
+ * `AbortSignal` is an {@link EventTarget}: aborting fires a plain
  * `"abort"` event, so listeners registered through `addEventListener` (and
  * `addEventListener(..., { signal })`) all observe it. The classes are
  * guest-constructible exactly as far as the platform exposes them —
@@ -9,7 +9,7 @@
  * internal-only while the statics (`abort`, `timeout`, `any`) and
  * `AbortController` cover every spec'd creation path.
  */
-import { EventImpl, EventTargetImpl } from "./event-system.js";
+import { Event, EventTarget } from "./event-system.js";
 
 /** Minimal DOMException shape (name + message) for abort reasons. */
 export class DOMException extends Error {
@@ -25,10 +25,10 @@ const ABORT_ERROR_MESSAGE = "The operation was aborted.";
 let CREATION_SEQUENCE = 0;
 const TIMEOUT_MESSAGE = "The operation was aborted due to timeout";
 
-export class AbortSignal extends EventTargetImpl {
+export class AbortSignal extends EventTarget {
   #aborted = false;
   #reason: unknown = undefined;
-  #onabort: ((event: EventImpl) => void) | null = null;
+  #onabort: ((event: Event) => void) | null = null;
 
   get aborted(): boolean {
     return this.#aborted;
@@ -39,11 +39,11 @@ export class AbortSignal extends EventTargetImpl {
   }
 
   /** The `onabort` IDL attribute, backed by an internal event listener. */
-  get onabort(): ((event: EventImpl) => void) | null {
+  get onabort(): ((event: Event) => void) | null {
     return this.#onabort;
   }
 
-  set onabort(handler: ((event: EventImpl) => void) | null) {
+  set onabort(handler: ((event: Event) => void) | null) {
     if (this.#onabort !== null) {
       this.removeEventListener("abort", this.#onabort);
     }
@@ -89,7 +89,7 @@ export class AbortSignal extends EventTargetImpl {
     AbortSignal.#pendingGroup = null;
     group.sort((a, b) => a.#createdAt - b.#createdAt);
     for (const signal of group) {
-      const event = new EventImpl("abort");
+      const event = new Event("abort");
       event._setTrusted(true);
       signal.dispatchEvent(event);
     }

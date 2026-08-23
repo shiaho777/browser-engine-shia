@@ -3,28 +3,28 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 47521,
+    "handWrittenLines": 47523,
     "generatedLines": 5439,
     "testLines": 25951,
-    "totalLines": 78911,
+    "totalLines": 78913,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.000946949769575556,
-    "mechanismDensity": 18.7706487658088,
+    "compatPerLoc": 0.0009469099173032005,
+    "mechanismDensity": 18.769858805210106,
     "executionEvidence": {
       "subsetCount": 6,
-      "files": 109,
-      "subtests": 413,
-      "passed": 413,
+      "files": 110,
+      "subtests": 462,
+      "passed": 462,
       "failed": 0,
       "errored": 0,
-      "queryCalls": 11244,
-      "recomputes": 3775,
-      "cacheHits": 7469,
+      "queryCalls": 11290,
+      "recomputes": 3793,
+      "cacheHits": 7497,
       "verifiedCacheHits": 23,
-      "dependencyReads": 180849,
+      "dependencyReads": 181295,
       "tracedStages": [
         "qFineComputed",
         "qFineLayout",
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 47521,
-      "ourDisplay": "47,521 lines",
+      "ourValue": 47523,
+      "ourDisplay": "47,523 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2008,7 +2008,7 @@
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.000946949769575556,
+      "ourValue": 0.0009469099173032005,
       "ourDisplay": "0.0009 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2027,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.7706487658088,
+      "ourValue": 18.769858805210106,
       "ourDisplay": "18.77 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 47,521 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 47,523 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
@@ -2056,7 +2056,7 @@
       "id": "raw-interop",
       "label": "Raw WPT / Interop pass rate",
       "ourValue": 100,
-      "ourDisplay": "100% of maintained WPT subsets (413/413 curated subtests)",
+      "ourDisplay": "100% of maintained WPT subsets (462/462 curated subtests)",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "wpt-interop-pass-rate",

@@ -68,8 +68,6 @@ export {
   WheelEvent,
   CompositionEvent,
   EventTarget,
-  EventTargetImpl,
-  EventImpl,
   type EventInit,
   type MouseEventInit,
   type KeyboardEventInit,
