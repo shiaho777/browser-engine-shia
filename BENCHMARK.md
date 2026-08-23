@@ -4,9 +4,9 @@
 
 ## Headline — where we lead
 
-- **Hand-written surface (smaller = more readable): 47,521 lines** — Our hand-written surface is ~758× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
+- **Hand-written surface (smaller = more readable): 47,523 lines** — Our hand-written surface is ~758× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
 - **compat-per-LOC (North Star): 0.0009 passes/line** — compat-per-LOC is our North Star: passing checks per hand-written line. Chromium publishes no per-LOC figure (needs-source), but spreading comparable compatibility over ~36M lines yields orders of magnitude less per line — this axis is structurally ours.
-- **mechanism-density (features per 1k hand-written lines): 18.77 features/kloc** — 892 platform features (CSS properties + DOM members) over 47,521 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- **mechanism-density (features per 1k hand-written lines): 18.77 features/kloc** — 892 platform features (CSS properties + DOM members) over 47,523 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ## Overall
 
@@ -16,19 +16,19 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 | Dimension | Ours (live) | Chromium (cited) | Verdict |
 |---|---|---|---|
-| Hand-written surface (smaller = more readable) | 47,521 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
+| Hand-written surface (smaller = more readable) | 47,523 lines | 36,000,000 lines _(Wikipedia — Chromium (web browser))_ | 🟢 WIN |
 | compat-per-LOC (North Star) | 0.0009 passes/line | _needs-source_ | 🟢 WIN |
 | mechanism-density (features per 1k hand-written lines) | 18.77 features/kloc | — | 🟢 WIN |
 | CSS-property coverage (raw count) | 340 properties | 600 properties _(CSS specifications (order-of-magnitude))_ | 🟡 GAP |
-| Raw WPT / Interop pass rate | 100% of maintained WPT subsets (413/413 curated subtests) | 95% _(WebKit blog — The success of Interop 2024)_ | 🟡 GAP |
+| Raw WPT / Interop pass rate | 100% of maintained WPT subsets (462/462 curated subtests) | 95% _(WebKit blog — The success of Interop 2024)_ | 🟡 GAP |
 | Runtime performance (Speedometer-class) | not measured | _needs-source_ | ⚪ N/C |
 
 ## Our live metrics (re-computed every run)
 
-- Hand-written product lines: **47,521**
+- Hand-written product lines: **47,523**
 - Generated lines: 5,439
 - Test lines: 25,951
-- Total system size: 78,911
+- Total system size: 78,913
 - CSS properties (data table): **340**
 - DOM interface members (IDL table): **552**
 - Platform features total: 892
@@ -39,13 +39,13 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 ## Execution evidence (maintained WPT subset trace)
 
 - Maintained subsets traced: 6
-- WPT files/subtests: 109 files, 413 subtests
-- WPT outcomes: 413 passed, 0 failed, 0 errored
-- Query calls: 11244
-- Recomputation events: 3775
-- Cache hits: 7469
+- WPT files/subtests: 110 files, 462 subtests
+- WPT outcomes: 462 passed, 0 failed, 0 errored
+- Query calls: 11290
+- Recomputation events: 3793
+- Cache hits: 7497
 - Verified cache hits: 23
-- Dependency reads: 180849
+- Dependency reads: 181295
 - Traced stages: qFineComputed, qFineLayout, qFineLayoutStyle, qFinePaint, qFineRuleIndex, qFineSheets
 
 ## Incremental edit-sequence evidence
@@ -930,7 +930,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 ### Hand-written surface (smaller = more readable) — 🟢 WIN
 
-- Ours (live): 47,521 lines
+- Ours (live): 47,523 lines
 - Chromium (cited): 36,000,000 lines _(Wikipedia — Chromium (web browser))_
 - Our hand-written surface is ~758× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)
 
@@ -944,7 +944,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 - Ours (live): 18.77 features/kloc
 - Chromium (cited): —
-- 892 platform features (CSS properties + DOM members) over 47,521 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
+- 892 platform features (CSS properties + DOM members) over 47,523 hand-written lines = 18.77 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match.
 
 ### CSS-property coverage (raw count) — 🟡 GAP
 
@@ -954,7 +954,7 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 ### Raw WPT / Interop pass rate — 🟡 GAP
 
-- Ours (live): 100% of maintained WPT subsets (413/413 curated subtests)
+- Ours (live): 100% of maintained WPT subsets (462/462 curated subtests)
 - Chromium (cited): 95% _(WebKit blog — The success of Interop 2024)_
 - Our maintained subset passes, but it is curated — not the full WPT/Interop suite. Chrome's cited ~95% covers the broad Interop 2024 set. Absolute compatibility breadth is Chromium's; we do not claim a win on different-scope numbers.
 

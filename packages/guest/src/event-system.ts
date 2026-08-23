@@ -13,10 +13,10 @@
 // No IR imports needed — the event system is self-contained.
 
 // ---------------------------------------------------------------------------
-// EventImpl
+// Event
 // ---------------------------------------------------------------------------
 
-export class EventImpl {
+export class Event {
   #type: string;
   #bubbles: boolean;
   #cancelable: boolean;
@@ -128,17 +128,23 @@ export interface EventInit {
 }
 
 // ---------------------------------------------------------------------------
-// UIEventImpl
+// UIEvent
 // ---------------------------------------------------------------------------
 
-export class UIEventImpl extends EventImpl {
+export class UIEvent extends Event {
   readonly #detail: number;
   readonly #view: unknown;
 
   constructor(type?: string, init?: UIEventInit & EventInit) {
     super(type, init);
     this.#detail = init?.detail ?? 0;
-    this.#view = init?.view ?? null;
+    const view = init?.view;
+    // WebIDL `Window?`: null passes; a non-object cannot be a Window and must
+    // throw rather than silently coerce.
+    if (view !== undefined && view !== null && (typeof view !== "object" || typeof (view as { addEventListener?: unknown }).addEventListener !== "function")) {
+      throw new TypeError("Failed to construct 'UIEvent': member view is not of type Window.");
+    }
+    this.#view = view ?? null;
   }
 
   get detail(): number { return this.#detail; }
@@ -151,10 +157,10 @@ export interface UIEventInit extends EventInit {
 }
 
 // ---------------------------------------------------------------------------
-// MouseEventImpl
+// MouseEvent
 // ---------------------------------------------------------------------------
 
-export class MouseEventImpl extends UIEventImpl {
+export class MouseEvent extends UIEvent {
   readonly #screenX: number;
   readonly #screenY: number;
   readonly #clientX: number;
@@ -222,10 +228,10 @@ export interface MouseEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// KeyboardEventImpl
+// KeyboardEvent
 // ---------------------------------------------------------------------------
 
-export class KeyboardEventImpl extends UIEventImpl {
+export class KeyboardEvent extends UIEvent {
   readonly #key: string;
   readonly #code: string;
   readonly #location: number;
@@ -235,6 +241,9 @@ export class KeyboardEventImpl extends UIEventImpl {
   readonly #metaKey: boolean;
   readonly #repeat: boolean;
   readonly #isComposing: boolean;
+  // Legacy key-state attributes (UI Events spec §4): 0 unless initialized.
+  readonly #charCode: number;
+  readonly #keyCode: number;
 
   constructor(type?: string, init?: KeyboardEventInit & UIEventInit & EventInit) {
     super(type, init);
@@ -247,8 +256,15 @@ export class KeyboardEventImpl extends UIEventImpl {
     this.#metaKey = init?.metaKey ?? false;
     this.#repeat = init?.repeat ?? false;
     this.#isComposing = init?.isComposing ?? false;
+    const legacy = init as { charCode?: number; keyCode?: number } | undefined;
+    this.#charCode = legacy?.charCode ?? 0;
+    this.#keyCode = legacy?.keyCode ?? 0;
   }
 
+  get charCode(): number { return this.#charCode; }
+  get keyCode(): number { return this.#keyCode; }
+  /** Legacy alias: mirrors keyCode when present, else charCode. */
+  get which(): number { return this.#keyCode || this.#charCode; }
   get key(): string { return this.#key; }
   get code(): string { return this.#code; }
   get location(): number { return this.#location; }
@@ -283,10 +299,10 @@ export interface KeyboardEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// CustomEventImpl
+// CustomEvent
 // ---------------------------------------------------------------------------
 
-export class CustomEventImpl extends EventImpl {
+export class CustomEvent extends Event {
   #detail: unknown = null;
 
   constructor(type?: string, init?: CustomEventInit & EventInit) {
@@ -311,10 +327,10 @@ export interface CustomEventInit extends EventInit {
 }
 
 // ---------------------------------------------------------------------------
-// FocusEventImpl
+// FocusEvent
 // ---------------------------------------------------------------------------
 
-export class FocusEventImpl extends UIEventImpl {
+export class FocusEvent extends UIEvent {
   readonly #relatedTarget: unknown;
 
   constructor(type?: string, init?: FocusEventInit & UIEventInit & EventInit) {
@@ -330,10 +346,10 @@ export interface FocusEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// InputEventImpl
+// InputEvent
 // ---------------------------------------------------------------------------
 
-export class InputEventImpl extends UIEventImpl {
+export class InputEvent extends UIEvent {
   readonly #data: string | null;
   readonly #inputType: string;
   readonly #isComposing: boolean;
@@ -357,10 +373,10 @@ export interface InputEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// WheelEventImpl
+// WheelEvent
 // ---------------------------------------------------------------------------
 
-export class WheelEventImpl extends MouseEventImpl {
+export class WheelEvent extends MouseEvent {
   readonly #deltaX: number;
   readonly #deltaY: number;
   readonly #deltaZ: number;
@@ -392,16 +408,16 @@ export interface WheelEventInit extends MouseEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// CompositionEventImpl
+// CompositionEvent
 // ---------------------------------------------------------------------------
 
-export class CompositionEventImpl extends UIEventImpl {
+export class CompositionEvent extends UIEvent {
   readonly #data: string | null;
   readonly #locale: string;
 
   constructor(type?: string, init?: CompositionEventInit & UIEventInit & EventInit) {
     super(type, init);
-    this.#data = init?.data ?? null;
+    this.#data = init?.data ?? "";
     this.#locale = init?.locale ?? "";
   }
 
@@ -415,7 +431,7 @@ export interface CompositionEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
-// EventTargetImpl — the event registration + dispatch engine
+// EventTarget — the event registration + dispatch engine
 // ---------------------------------------------------------------------------
 
 interface EventListenerEntry {
@@ -426,13 +442,13 @@ interface EventListenerEntry {
   readonly passive: boolean;
 }
 
-type EventListenerCallback = (event: EventImpl) => void;
+type EventListenerCallback = (event: Event) => void;
 
 /**
  * A mixin/implementation of EventTarget. Any object can have event listeners
- * by delegating to an EventTargetImpl instance.
+ * by delegating to an EventTarget instance.
  */
-export class EventTargetImpl {
+export class EventTarget {
   static readonly NONE = 0;
   static readonly CAPTURING_PHASE = 1;
   static readonly AT_TARGET = 2;
@@ -474,7 +490,7 @@ export class EventTargetImpl {
     if (idx !== -1) entries.splice(idx, 1);
   }
 
-  dispatchEvent(event: EventImpl): boolean {
+  dispatchEvent(event: Event): boolean {
     // Build the propagation path: from target up to root (for bubble).
     // The target and its ancestors are determined by the event's target.
     // For now, we implement a simplified dispatch: invoke listeners on this
@@ -511,7 +527,7 @@ export class EventTargetImpl {
    * manages the bubble walk). Invokes both capture and bubble listeners
    * depending on the current phase.
    */
-  dispatchEventInternal(event: EventImpl): void {
+  dispatchEventInternal(event: Event): void {
     const phase = event.eventPhase;
     if (phase === 1) {
       // Capturing: invoke capture listeners.
@@ -526,17 +542,17 @@ export class EventTargetImpl {
    * Dispatch an event in capture phase from root to target.
    * Called by the top-level dispatchEvent to walk the capture path.
    */
-  dispatchEventCapture(event: EventImpl): void {
+  dispatchEventCapture(event: Event): void {
     event._setPhase(1); // CAPTURING_PHASE
     event._setCurrentTarget(this);
     invokeListeners(this.#listeners, event.type, event, true);
   }
 
   /** Parent in the event propagation path. Set by the DOM integration. */
-  #parent: EventTargetImpl | null = null;
+  #parent: EventTarget | null = null;
 
   /** @internal */
-  _setParent(p: EventTargetImpl | null): void { this.#parent = p; }
+  _setParent(p: EventTarget | null): void { this.#parent = p; }
 
   /** @internal */
   _getListeners(): Map<string, EventListenerEntry[]> { return this.#listeners; }
@@ -545,7 +561,7 @@ export class EventTargetImpl {
 function invokeListeners(
   listeners: Map<string, EventListenerEntry[]>,
   type: string,
-  event: EventImpl,
+  event: Event,
   capture: boolean,
 ): void {
   const entries = listeners.get(type);
@@ -583,15 +599,3 @@ export interface AddEventListenerOptions {
 // Exports
 // ---------------------------------------------------------------------------
 
-export {
-  EventImpl as Event,
-  UIEventImpl as UIEvent,
-  MouseEventImpl as MouseEvent,
-  KeyboardEventImpl as KeyboardEvent,
-  CustomEventImpl as CustomEvent,
-  FocusEventImpl as FocusEvent,
-  InputEventImpl as InputEvent,
-  WheelEventImpl as WheelEvent,
-  CompositionEventImpl as CompositionEvent,
-  EventTargetImpl as EventTarget,
-};
