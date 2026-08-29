@@ -1264,12 +1264,19 @@ export async function runScriptsOnSessionReal(
 
   let error: string | null = null;
   const context = vm.createContext(sandbox);
+  // First error wins; include a short stack like the ESM runner so page
+  // failures are diagnosable without a debugger.
+  const formatError = (e: unknown): string => {
+    const message = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 6).join(" | ") : "";
+    return stack ? `${message} :: ${stack}` : message;
+  };
   for (const source of sources) {
     if (source.trim() === "") continue;
     try {
       vm.runInContext(source, context, { timeout: 2000 });
     } catch (e) {
-      if (error === null) error = e instanceof Error ? e.message : String(e);
+      if (error === null) error = formatError(e);
     }
   }
   const flushAsync = async (maxMs = 500): Promise<void> => {
@@ -1296,7 +1303,7 @@ export async function runScriptsOnSessionReal(
   try {
     await flushAsync();
   } catch (e) {
-    if (error === null) error = e instanceof Error ? e.message : String(e);
+    if (error === null) error = formatError(e);
   }
 
   return {

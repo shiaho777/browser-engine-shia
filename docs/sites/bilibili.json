@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "bilibili",
   "url": "https://www.bilibili.com",
-  "description": "Bilibili homepage: module-based SPA shell (Vite bundle), live recommendation feed driven by guest timers and fetches.",
+  "description": "Bilibili homepage + search + video watch page: module-based SPA shell (Vite bundle), live recommendation feed driven by guest timers and fetches. Known classified gap: the player bundle's wbi-key helper throws (T(n) charAt on undefined) and the bundle strips Error.stack (anti-debug), so guest errors report without stacks; page still renders.",
   "capabilities": [
     "esm-module-evaluation",
     "classic-scripts",
