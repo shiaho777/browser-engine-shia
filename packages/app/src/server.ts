@@ -335,8 +335,25 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
               return;
             }
             const target = typeof body["target"] === "string" ? body["target"] : HOME_URL;
-            const frame = await tabs.active.navigate(target, { viewport, push: true });
+            const frame = await tabs.active.navigate(target, {
+              viewport,
+              push: true,
+              ...(body["keepAlive"] === true ? { keepAlive: true } : {}),
+            });
             sendJson(res, 200, frameToResult(frame, tabs, { binary }));
+            return;
+          }
+          if (method === "POST" && url.pathname === "/api/pump") {
+            const raw = await readBody(req);
+            const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
+            const count = typeof body["frames"] === "number" ? Math.max(1, Math.min(120, Math.floor(body["frames"]))) : 1;
+            const settleMs = typeof body["settleMs"] === "number" ? Math.max(0, Math.min(5_000, body["settleMs"])) : 200;
+            const result = await tabs.active.pump(count, {
+              settleMs,
+              idleStop: body["idleStop"] !== false,
+            });
+            const frame = tabs.active.frame;
+            sendJson(res, 200, { ok: true, ...result, frameMode: "none", ...(frame !== null ? { frameRev: frame.frameRev, mutations: result.mutations } : {}) });
             return;
           }
           if (method === "POST" && url.pathname === "/api/scroll") {

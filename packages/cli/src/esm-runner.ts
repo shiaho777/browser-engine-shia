@@ -18,6 +18,12 @@ export interface ModuleRunResult {
   readonly errors: readonly string[];
   readonly importedUrls: readonly string[];
   readonly mutations: number;
+  /** Present only when the run used `keepAlive`: number of guest timers still armed. */
+  readonly liveTimers?: number;
+  /** Present only with `keepAlive`: wait for in-flight guest fetches/timers once. */
+  readonly settle?: (maxMs?: number) => Promise<void>;
+  /** Present only with `keepAlive`: total DOM mutations performed so far. */
+  readonly getMutations?: () => number;
 }
 
 type SourceTextModuleCtor = new (
@@ -864,6 +870,13 @@ export async function runModuleScripts(
     readonly browserFetch?: GuestBrowserFetch;
     readonly settleMs?: number;
     readonly budgetMs?: number;
+    /**
+     * Keep the module runtime alive after the initial evaluation: live timers,
+     * rAF callbacks, and fetches are not sealed, so an embedding host can keep
+     * pumping guest work for continuous rendering. The returned result carries
+     * `liveTimers`/`settle`/`getMutations` hooks for exactly that.
+     */
+    readonly keepAlive?: boolean;
   } = {},
 ): Promise<ModuleRunResult> {
   const SourceTextModule = getSourceTextModule();
@@ -1020,15 +1033,21 @@ export async function runModuleScripts(
   };
 
   const installTimers = (target: Record<string, unknown>): void => {
+    // keepAlive timers must not hold the host process open: the host drives
+    // pumping explicitly, so every guest handle is unref'd.
+    const unref = (id: NodeJS.Timeout): NodeJS.Timeout => {
+      id.unref?.();
+      return id;
+    };
     target["queueMicrotask"] = (fn: unknown) => {
       if (typeof fn === "function") queueMicrotask(fn as () => void);
     };
     target["setTimeout"] = (fn: unknown, delay?: unknown) => {
       if (typeof fn !== "function" || sealed) return 0;
-      const id = setTimeout(() => {
+      const id = unref(setTimeout(() => {
         liveTimeouts.delete(id);
         if (!sealed) safeRun(fn as () => void);
-      }, Number(delay) || 0);
+      }, Number(delay) || 0));
       liveTimeouts.add(id);
       return id as unknown as number;
     };
@@ -1039,14 +1058,14 @@ export async function runModuleScripts(
     };
     target["setInterval"] = (fn: unknown, delay?: unknown) => {
       if (typeof fn !== "function" || sealed) return 0;
-      const id = setInterval(() => {
+      const id = unref(setInterval(() => {
         if (sealed) {
           clearInterval(id);
           liveIntervals.delete(id);
           return;
         }
         safeRun(fn as () => void);
-      }, Number(delay) || 0);
+      }, Number(delay) || 0));
       liveIntervals.add(id);
       return id as unknown as number;
     };
@@ -1057,10 +1076,10 @@ export async function runModuleScripts(
     };
     target["requestAnimationFrame"] = (fn: unknown) => {
       if (typeof fn !== "function" || sealed) return 0;
-      const id = setTimeout(() => {
+      const id = unref(setTimeout(() => {
         liveTimeouts.delete(id);
         if (!sealed) safeRun(() => (fn as (t: number) => void)(performance.now()));
-      }, 16);
+      }, 16));
       liveTimeouts.add(id);
       return id as unknown as number;
     };
@@ -1306,6 +1325,11 @@ export async function runModuleScripts(
   }
   clearTimeout(forceSealTimer);
 
+  if (options.keepAlive) {
+    // keepAlive: the runtime stays unsealed so the host can keep pumping guest
+    // timers/rAF for continuous rendering. The budget timer must NOT fire either.
+    clearTimeout(forceSealTimer);
+  }
   const settleDeadline = Date.now() + Math.min(settleMs, Math.max(0, remainingMs()));
   while (Date.now() < settleDeadline) {
     if (inflightFetches.size > 0) {
@@ -1323,9 +1347,22 @@ export async function runModuleScripts(
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     if (inflightFetches.size === 0 && liveTimeouts.size === 0) break;
   }
-  sealModuleRuntime();
+  if (!options.keepAlive) {
+    sealModuleRuntime();
+  }
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+  if (!options.keepAlive) {
+    return {
+      supported: true,
+      evaluated,
+      linked: moduleCache.size,
+      failed,
+      errors: errors.slice(0, 12),
+      importedUrls,
+      mutations: mutationsOf(),
+    };
+  }
   return {
     supported: true,
     evaluated,
@@ -1334,6 +1371,15 @@ export async function runModuleScripts(
     errors: errors.slice(0, 12),
     importedUrls,
     mutations: mutationsOf(),
+    liveTimers: liveTimeouts.size + liveIntervals.size,
+    settle: async (maxMs = 500): Promise<void> => {
+      const deadline = Date.now() + Math.max(0, maxMs);
+      while (Date.now() < deadline) {
+        if (inflightFetches.size === 0 && liveTimeouts.size === 0 && liveIntervals.size === 0) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 16));
+      }
+    },
+    getMutations: mutationsOf,
   };
 }
 

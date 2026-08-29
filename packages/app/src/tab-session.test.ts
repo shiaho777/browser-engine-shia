@@ -58,3 +58,47 @@ void test("TabSession viewport relayout grows canvas", async () => {
   assert.ok(grown.width >= 1200);
   assert.equal(tab.viewport.width, 1200);
 });
+
+void test("keepAlive page pumps guest timers into new frames", async () => {
+  const tab = new TabSession();
+  const html = `<!doctype html><html><body><div id="out">0</div><script>
+      var n = 0;
+      setInterval(function () { n += 1; document.getElementById("out").textContent = String(n); }, 30);
+    </script></body></html>`;
+  await tab.navigate(html, { viewport: { width: 600, height: 400 }, keepAlive: true });
+  const before = tab.page;
+  assert.ok(before !== null);
+  assert.ok(before.runtime !== undefined, "keepAlive navigate must expose a runtime");
+  const baseline = before.runtime.mutations();
+
+  // The classic runner uses real host intervals: give the first 30ms tick time to fire,
+  // then pump frames and confirm the guest kept mutating.
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const afterWait = (tab.page?.runtime?.mutations() ?? 0);
+  assert.ok(afterWait > baseline, "guest interval must tick while the page is live");
+
+  const first = await tab.pump(3, { settleMs: 120, idleStop: false });
+  assert.ok(first.frames >= 1);
+  assert.ok(first.frameRev > (before.frameRev ?? 1));
+  assert.ok(
+    (tab.page?.runtime?.mutations() ?? 0) >= afterWait,
+    "pumping must preserve the live runtime",
+  );
+
+  // The interval text must have actually changed: find the #out node and check
+  // its text is now a positive integer (it started as "0").
+  let outText: string | null = null;
+  const nodes = tab.page?.dom.nodes;
+  if (nodes !== undefined) {
+    for (const node of nodes.values()) {
+      if (node.kind === "element" && node.tag === "div" && node.attrs?.get("id") === "out") {
+        for (const child of node.children) {
+          const t = nodes.get(child);
+          if (t?.text !== undefined) outText = t.text;
+        }
+      }
+    }
+  }
+  assert.ok(outText !== null && outText !== "0" && Number(outText) > 0, "interval must have ticked");
+  assert.ok((tab.page?.pngBytes.byteLength ?? 0) > 100);
+});

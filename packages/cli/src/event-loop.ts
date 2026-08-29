@@ -39,6 +39,12 @@ export type GuestBrowserFetch = (
 
 export interface ScriptNetworkOptions {
   readonly browserFetch?: GuestBrowserFetch;
+  /**
+   * Keep guest intervals alive after the initial flush so a host can keep
+   * pumping the returned `drain`/`flushAsync` hooks for continuous rendering.
+   * Live handles are unref'd so they never hold the host process open.
+   */
+  readonly keepAlive?: boolean;
 }
 
 /** The outcome of an event-driven run: work performed + DOM mutations. */
@@ -1216,13 +1222,15 @@ export async function runScriptsOnSessionReal(
     clearTimeout: (id: unknown) => loop.clearTimeout(Number(id)),
     setInterval: (fn: unknown, delay: unknown) => {
       if (typeof fn !== "function") return 0;
-      const id = setInterval(() => {
+      const handle = setInterval(() => {
         try {
           (fn as () => void)();
         } catch {
           // Guest/page code may throw here; swallowed by design.
         }
-      }, Number(delay) || 0) as unknown as number;
+      }, Number(delay) || 0);
+      if (options.keepAlive === true) handle.unref?.();
+      const id = handle as unknown as number;
       liveIntervals.add(id);
       return id;
     },
@@ -1271,8 +1279,10 @@ export async function runScriptsOnSessionReal(
     }
     inflight.clear();
     loop.drain();
-    for (const id of liveIntervals) clearInterval(id);
-    liveIntervals.clear();
+    if (options.keepAlive !== true) {
+      for (const id of liveIntervals) clearInterval(id);
+      liveIntervals.clear();
+    }
   };
 
   try {

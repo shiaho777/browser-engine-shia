@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 47560,
+    "handWrittenLines": 47901,
     "generatedLines": 5439,
-    "testLines": 25970,
-    "totalLines": 78969,
+    "testLines": 26010,
+    "totalLines": 79350,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0009461732548359966,
-    "mechanismDensity": 18.755256518082422,
+    "compatPerLoc": 0.0009394375900294357,
+    "mechanismDensity": 18.62174067347237,
     "executionEvidence": {
       "subsetCount": 6,
       "files": 110,
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 47560,
-      "ourDisplay": "47,560 lines",
+      "ourValue": 47901,
+      "ourDisplay": "47,901 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2003,12 +2003,12 @@
         "confidence": "cited"
       },
       "verdict": "WIN",
-      "rationale": "Our hand-written surface is ~757× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+      "rationale": "Our hand-written surface is ~752× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
     },
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0009461732548359966,
+      "ourValue": 0.0009394375900294357,
       "ourDisplay": "0.0009 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2027,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.755256518082422,
-      "ourDisplay": "18.76 features/kloc",
+      "ourValue": 18.62174067347237,
+      "ourDisplay": "18.62 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 47,560 hand-written lines = 18.76 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 47,901 hand-written lines = 18.62 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",

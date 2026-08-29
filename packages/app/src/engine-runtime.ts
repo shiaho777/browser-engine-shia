@@ -215,6 +215,21 @@ export async function loadExternalScripts(
   return { sources, failed, loaded };
 }
 
+/**
+ * A live guest runtime kept after boot: pumping it lets guest timers, rAF
+ * callbacks, and microtasks keep mutating the DOM for continuous rendering.
+ */
+export interface PageRuntime {
+  /** Drain the classic-run virtual event loop (timers + rAF + microtasks). */
+  readonly drainClassic: () => void;
+  /** Wait once for in-flight guest fetches (classic run). */
+  readonly flushClassic: () => Promise<void>;
+  /** Wait for in-flight module fetches/timers; null when ESM is off. */
+  readonly settleModules: ((maxMs?: number) => Promise<void>) | null;
+  /** Total guest DOM mutations so far (classic + modules). */
+  readonly mutations: () => number;
+}
+
 export async function bootFineSession(
   html: string,
   url: string,
@@ -224,11 +239,15 @@ export async function bootFineSession(
     readonly loadExternalSheet?: (href: string) => Uint8Array | undefined;
     readonly network?: BrowserNetworkStack;
     readonly onAfterClassic?: (session: FineSession) => void | Promise<void>;
+    /** Keep guest timers/rAF alive after boot so a host can pump frames. */
+    readonly keepAlive?: boolean;
   } = {},
 ): Promise<{
   session: FineSession;
   scripts: ScriptExecutionSummary;
   network: BrowserNetworkStack | null;
+  /** Present only with keepAlive: hooks to pump guest work after boot. */
+  runtime?: PageRuntime;
 }> {
   const network = options.network ?? null;
   const fetchFn =
@@ -289,7 +308,9 @@ export async function bootFineSession(
   const classicSources = [...collected.sources, ...classicExternal.sources];
   const browserFetch =
     network !== null ? networkStackToBrowserFetch(network, base) : undefined;
-  const netOpts = browserFetch !== undefined ? { browserFetch } : {};
+  const netOpts: { browserFetch?: NonNullable<typeof browserFetch>; keepAlive?: boolean } =
+    browserFetch !== undefined ? { browserFetch } : {};
+  if (options.keepAlive) netOpts.keepAlive = true;
   let run: EventDrivenRun = {
     microtasks: 0,
     timers: 0,
@@ -324,10 +345,12 @@ export async function bootFineSession(
     browserFetch?: NonNullable<typeof browserFetch>;
     settleMs?: number;
     budgetMs?: number;
+    keepAlive?: boolean;
   } = { settleMs: 400, budgetMs: 16_000 };
   if (browserFetch !== undefined) {
     moduleOpts.browserFetch = browserFetch;
   }
+  if (options.keepAlive) moduleOpts.keepAlive = true;
   if (run.sandbox !== undefined) moduleOpts.inheritWindow = run.sandbox;
   const moduleRun = await runModuleScripts(session, moduleEntries, fetchFn, moduleOpts);
   mark("modules", t);
@@ -379,6 +402,30 @@ export async function bootFineSession(
   return {
     session,
     network,
+    ...(options.keepAlive
+      ? {
+          runtime: {
+            drainClassic: () => {
+              try {
+                run.drain?.();
+              } catch {
+                // Guest/page code may throw here; swallowed by design.
+              }
+            },
+            flushClassic: async (): Promise<void> => {
+              try {
+                await run.flushAsync?.();
+              } catch {
+                // Guest/page code may throw here; swallowed by design.
+              }
+            },
+            settleModules:
+              moduleRun.settle === undefined ? null : (maxMs?: number) => moduleRun.settle!(maxMs),
+            mutations: (): number =>
+              (run.getMutations?.() ?? run.mutations) + (moduleRun.getMutations?.() ?? 0),
+          },
+        }
+      : {}),
     scripts: {
       scripts: classicSources.length + moduleEntries.length,
       mutations: run.mutations,

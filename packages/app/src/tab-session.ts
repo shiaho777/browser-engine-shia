@@ -15,6 +15,7 @@ import {
   findLinkHref,
   loadHtmlDocument,
   loadPage,
+  pumpFrames,
   repaintPage,
   fastScrollPaint,
   resolveNavigationTarget,
@@ -168,13 +169,16 @@ export class TabSession {
 
   async navigate(
     target: string,
-    options: { push?: boolean; viewport?: Partial<EngineViewport> } = {},
+    options: { push?: boolean; viewport?: Partial<EngineViewport>; keepAlive?: boolean } = {},
   ): Promise<PageFrame> {
     if (options.viewport !== undefined) {
       this.setViewport(options.viewport);
     }
     const push = options.push ?? true;
-    const page = await loadPage(target, { viewport: this.#viewport });
+    const page = await loadPage(target, {
+      viewport: this.#viewport,
+      ...(options.keepAlive ? { keepAlive: true } : {}),
+    });
     this.#page = page;
     if (push) {
       this.#history = this.#history.slice(0, this.#index + 1);
@@ -187,6 +191,21 @@ export class TabSession {
       this.#index = 0;
     }
     return page.frame;
+  }
+
+  /**
+   * Advance the live page by up to `count` render cycles: drain guest
+   * timers/rAF, then repaint each time. Stops early when guest work stops
+   * mutating the DOM. Returns the number of frames actually produced.
+   */
+  async pump(
+    count = 1,
+    options: { readonly settleMs?: number; readonly idleStop?: boolean } = {},
+  ): Promise<{ frames: number; mutations: number; frameRev: number }> {
+    if (this.#page === null) return { frames: 0, mutations: 0, frameRev: 0 };
+    const result = await pumpFrames(this.#page, count, options);
+    this.#page = result.page;
+    return { frames: result.frames, mutations: result.mutations, frameRev: this.#page.frameRev };
   }
 
   async loadHtml(

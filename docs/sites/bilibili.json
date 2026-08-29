@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "site": "bilibili",
+  "url": "https://www.bilibili.com",
+  "description": "Bilibili homepage: module-based SPA shell (Vite bundle), live recommendation feed driven by guest timers and fetches.",
+  "capabilities": [
+    "esm-module-evaluation",
+    "classic-scripts",
+    "guest-timers",
+    "request-animation-frame",
+    "continuous-frames",
+    "network-fetch-json",
+    "cookies",
+    "images"
+  ],
+  "checks": [
+    { "id": "title", "kind": "title-equals", "value": "哔哩哔哩 (゜-゜)つロ 干杯~-bilibili", "description": "document title renders" },
+    { "id": "esm-evaluated", "kind": "min-metric", "metric": "modulesEvaluated", "min": 3, "description": "inline+external modules evaluate" },
+    { "id": "esm-supported", "kind": "metric-equals", "metric": "esmSupported", "value": true, "description": "guest ESM is on by default" },
+    { "id": "mutations", "kind": "min-metric", "metric": "mutations", "min": 1000, "description": "guest scripts materially drive the DOM" },
+    { "id": "network", "kind": "min-metric", "metric": "networkEvents", "min": 10, "description": "recommendation/nav APIs are fetched" },
+    { "id": "pump-grows-dom", "kind": "pump-mutations", "frames": 2, "minNewMutations": 1, "description": "continuous frames: guest timers keep mutating the DOM across pumps" },
+    { "id": "content-taller-than-viewport", "kind": "content-height-gt-viewport", "description": "the feed produces a scrollable document" }
+  ]
+}

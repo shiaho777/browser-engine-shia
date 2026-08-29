@@ -47,7 +47,7 @@ import {
   normalizeViewport,
   type EngineViewport,
 } from "./host-api.js";
-import { bootFineSession, createPageNetwork, type ScriptExecutionSummary } from "./engine-runtime.js";
+import { bootFineSession, createPageNetwork, type PageRuntime, type ScriptExecutionSummary } from "./engine-runtime.js";
 import { networkStackToFetchFn } from "@browser-engine/guest";
 import { normalizeFocus, paintFocusOverlay, type EditFocus } from "./focus-overlay.js";
 export type { EditFocus } from "./focus-overlay.js";
@@ -110,12 +110,56 @@ export interface PageState {
   readonly contentHeight: number;
   readonly frameRev: number;
   readonly focus: EditFocus | null;
+  /** Present when loaded with keepAlive: lets a host pump guest work + repaint. */
+  readonly runtime?: PageRuntime;
 }
 
 export interface LoadPageOptions {
   readonly fetchFn?: FetchFn;
   readonly viewport?: EngineViewport;
   readonly runScripts?: boolean;
+  /** Keep guest timers/rAF alive after load so pumpFrames can re-render. */
+  readonly keepAlive?: boolean;
+}
+
+/**
+ * Advance a keepAlive page by one render cycle: drain guest timers/rAF/microtasks
+ * so pending guest work mutates the DOM, then repaint. Returns the new state, or
+ * the same state unchanged when the page has no live runtime.
+ */
+export async function pumpFrame(page: PageState, settleMs = 200): Promise<PageState> {
+  const runtime = page.runtime;
+  if (runtime === undefined) return page;
+  runtime.drainClassic();
+  await runtime.flushClassic();
+  if (runtime.settleModules !== null) {
+    await runtime.settleModules(settleMs);
+  }
+  return repaintPage(page, page.viewport, page.focus, page.scrollY);
+}
+
+/** Pump up to `count` frames, stopping early when guest work stops mutating the DOM. */
+export async function pumpFrames(
+  page: PageState,
+  count: number,
+  options: { readonly settleMs?: number; readonly idleStop?: boolean } = {},
+): Promise<{ page: PageState; frames: number; mutations: number }> {
+  const settleMs = options.settleMs ?? 200;
+  const startMutations = page.runtime?.mutations() ?? 0;
+  let current = page;
+  let frames = 0;
+  for (let i = 0; i < count; i += 1) {
+    const before = current.runtime?.mutations() ?? 0;
+    const next = await pumpFrame(current, settleMs);
+    frames += 1;
+    current = next;
+    if (options.idleStop === true && (current.runtime?.mutations() ?? 0) === before) break;
+  }
+  return {
+    page: current,
+    frames,
+    mutations: (current.runtime?.mutations() ?? 0) - startMutations,
+  };
 }
 
 export interface EditableHit {
@@ -572,6 +616,7 @@ async function renderHtmlEngine(
     readonly resourceLoader?: ReturnType<typeof cacheLoader>;
     readonly resourceCache?: Map<string, Uint8Array> | ReadonlyMap<string, Uint8Array>;
     readonly network?: ReturnType<typeof createPageNetwork>;
+    readonly keepAlive?: boolean;
   } = {},
 ): Promise<PageState> {
   const started = performance.now();
@@ -587,11 +632,13 @@ async function renderHtmlEngine(
     loadExternalSheet?: (href: string) => Uint8Array | undefined;
     network?: ReturnType<typeof createPageNetwork>;
     onAfterClassic?: (session: { readonly dom: DomTree }) => void | Promise<void>;
+    keepAlive?: boolean;
   } = {};
   if (options.fetchFn !== undefined) bootOptions.fetchFn = options.fetchFn;
   if (options.runScripts !== undefined) bootOptions.runScripts = options.runScripts;
   if (options.loadExternalSheet !== undefined) bootOptions.loadExternalSheet = options.loadExternalSheet;
   if (network !== undefined) bootOptions.network = network;
+  if (options.keepAlive) bootOptions.keepAlive = true;
   if (fetchForResources !== undefined) {
     bootOptions.onAfterClassic = (session) => {
       const base = documentBaseUrl(session.dom, url);
@@ -773,7 +820,7 @@ async function renderHtmlEngine(
     imageFetch,
   );
   mark("renderDom", tBoot);
-  return finishPage(
+  const page = finishPage(
     url,
     boot.session.dom,
     rendered,
@@ -786,6 +833,10 @@ async function renderHtmlEngine(
     imageFetch,
     warmImageBytes,
   );
+  if (boot.runtime !== undefined && options.keepAlive) {
+    return { ...page, runtime: boot.runtime };
+  }
+  return page;
 }
 
 export function findLinkHref(dom: DomTree, node: NodeId): string | null {
@@ -1015,7 +1066,7 @@ export async function repaintPage(
   const combinedLoad = makeCombinedImageLoader(page.loader, imageBytes, page.url);
   const imageFetch = makeCachingImageFetch(page.imageFetch, imageBytes, page.url);
   const rendered = await renderDom(page.dom, page.url, viewport, combinedLoad, focus, imageFetch, scrollY);
-  return finishPage(
+  const next = finishPage(
     page.url,
     page.dom,
     rendered,
@@ -1028,6 +1079,7 @@ export async function repaintPage(
     page.imageFetch ?? imageFetch,
     imageBytes,
   );
+  return page.runtime !== undefined ? { ...next, runtime: page.runtime } : next;
 }
 
 export async function applyTextEdit(
@@ -1162,7 +1214,7 @@ export async function loadPage(
     const filePath = fileURLToPath(trimmed);
     const html = readFileSync(filePath, "utf8");
     const url = pathToFileURL(filePath).href;
-    return renderHtmlEngine(html, url, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(html, url, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
   }
 
   if (!/^(https?:\/\/|engine:\/\/)/i.test(trimmed)) {
@@ -1171,7 +1223,7 @@ export async function loadPage(
       return loadPage(pathToFileURL(asPath).href, opts);
     }
     if (trimmed.includes("<") && trimmed.includes(">")) {
-      return renderHtmlEngine(trimmed, "engine://inline", viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+      return renderHtmlEngine(trimmed, "engine://inline", viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
     }
     return loadPage(`https://${trimmed}`, opts);
   }
@@ -1233,6 +1285,7 @@ export async function loadPage(
     resourceLoader: load,
     resourceCache: resourceLoad.cache,
     ...(network !== null ? { network } : {}),
+    ...(opts.keepAlive ? { keepAlive: true } : {}),
   });
 }
 
