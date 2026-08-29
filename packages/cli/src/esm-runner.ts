@@ -3,6 +3,7 @@ import vm from "node:vm";
 import type { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
+import { makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
 import type { GuestBrowserFetch } from "./event-loop.js";
 
 export interface ModuleEntry {
@@ -344,6 +345,14 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   if (sandbox["URLSearchParams"] === undefined) sandbox["URLSearchParams"] = URLSearchParams;
   if (sandbox["AbortController"] === undefined) sandbox["AbortController"] = AbortController;
   if (sandbox["AbortSignal"] === undefined) sandbox["AbortSignal"] = AbortSignal;
+  if (sandbox["Blob"] === undefined) sandbox["Blob"] = makeBlobClass();
+  if (sandbox["File"] === undefined) sandbox["File"] = makeFileClass();
+  if (typeof (URL as { createObjectURL?: unknown }).createObjectURL !== "function") {
+    (URL as unknown as { createObjectURL?: unknown }).createObjectURL = (blob: unknown): string =>
+      globalObjectUrls.createObjectURL(blob);
+    (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL = (url: unknown): void =>
+      globalObjectUrls.revokeObjectURL(url);
+  }
 }
 
 

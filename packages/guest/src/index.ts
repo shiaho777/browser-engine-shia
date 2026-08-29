@@ -106,6 +106,7 @@ export {
   type BrowserNetworkEvent,
 } from "./network.js";
 export { CookieJar, type StoredCookie } from "./cookie-jar.js";
+export { makeBlobClass, makeFileClass, ObjectUrlRegistry, globalObjectUrls, type GuestBlob, type GuestFile } from "./blob.js";
 
 // ---- aborting (DOM §3.2): AbortController / AbortSignal --------------------
 export { AbortController, AbortSignal, DOMException } from "./abort.js";

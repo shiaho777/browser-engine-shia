@@ -11,15 +11,90 @@
     "continuous-frames",
     "network-fetch-json",
     "cookies",
-    "images"
+    "images",
+    "multi-page-navigation",
+    "search-results-page"
   ],
   "checks": [
-    { "id": "title", "kind": "title-equals", "value": "哔哩哔哩 (゜-゜)つロ 干杯~-bilibili", "description": "document title renders" },
-    { "id": "esm-evaluated", "kind": "min-metric", "metric": "modulesEvaluated", "min": 3, "description": "inline+external modules evaluate" },
-    { "id": "esm-supported", "kind": "metric-equals", "metric": "esmSupported", "value": true, "description": "guest ESM is on by default" },
-    { "id": "mutations", "kind": "min-metric", "metric": "mutations", "min": 1000, "description": "guest scripts materially drive the DOM" },
-    { "id": "network", "kind": "min-metric", "metric": "networkEvents", "min": 10, "description": "recommendation/nav APIs are fetched" },
-    { "id": "pump-grows-dom", "kind": "pump-mutations", "frames": 2, "minNewMutations": 1, "description": "continuous frames: guest timers keep mutating the DOM across pumps" },
-    { "id": "content-taller-than-viewport", "kind": "content-height-gt-viewport", "description": "the feed produces a scrollable document" }
+    {
+      "id": "title",
+      "kind": "title-equals",
+      "value": "哔哩哔哩 (゜-゜)つロ 干杯~-bilibili",
+      "description": "document title renders"
+    },
+    {
+      "id": "esm-evaluated",
+      "kind": "min-metric",
+      "metric": "modulesEvaluated",
+      "min": 3,
+      "description": "inline+external modules evaluate"
+    },
+    {
+      "id": "esm-supported",
+      "kind": "metric-equals",
+      "metric": "esmSupported",
+      "value": true,
+      "description": "guest ESM is on by default"
+    },
+    {
+      "id": "mutations",
+      "kind": "min-metric",
+      "metric": "mutations",
+      "min": 1000,
+      "description": "guest scripts materially drive the DOM"
+    },
+    {
+      "id": "network",
+      "kind": "min-metric",
+      "metric": "networkEvents",
+      "min": 10,
+      "description": "recommendation/nav APIs are fetched"
+    },
+    {
+      "id": "pump-grows-dom",
+      "kind": "pump-mutations",
+      "frames": 2,
+      "minNewMutations": 1,
+      "description": "continuous frames: guest timers keep mutating the DOM across pumps"
+    },
+    {
+      "id": "content-taller-than-viewport",
+      "kind": "content-height-gt-viewport",
+      "description": "the feed produces a scrollable document"
+    },
+    {
+      "id": "search-page-title",
+      "kind": "title-contains",
+      "url": "https://search.bilibili.com/all?keyword=%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0",
+      "value": "哔哩哔哩",
+      "description": "search results page renders with site title"
+    },
+    {
+      "id": "search-page-content",
+      "kind": "content-height-gt-viewport",
+      "url": "https://search.bilibili.com/all?keyword=%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0",
+      "description": "search results produce a scrollable document"
+    },
+    {
+      "id": "search-page-network",
+      "kind": "min-metric",
+      "url": "https://search.bilibili.com/all?keyword=%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0",
+      "metric": "networkEvents",
+      "min": 20,
+      "description": "search page fetches results APIs"
+    },
+    {
+      "id": "watch-page-title",
+      "kind": "title-contains",
+      "url": "https://www.bilibili.com/video/BV1GJ411x7h7/",
+      "value": "哔哩哔哩",
+      "description": "video watch page loads with real title"
+    },
+    {
+      "id": "watch-page-content",
+      "kind": "content-height-gt-viewport",
+      "url": "https://www.bilibili.com/video/BV1GJ411x7h7/",
+      "description": "watch page produces a scrollable document"
+    }
   ]
 }

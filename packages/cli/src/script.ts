@@ -1591,6 +1591,32 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       get offsetHeight(): number {
         return Math.round(rectFromTree(resolveLayoutTree(), nodeId).height);
       },
+      get offsetTop(): number {
+        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).top);
+      },
+      get offsetLeft(): number {
+        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).left);
+      },
+      get offsetParent(): unknown {
+        // CSSOM View: nearest ancestor with non-static position; body/html fallback.
+        let current = session.dom.nodes.get(nodeId)?.parent ?? null;
+        while (current !== null) {
+          const n = session.dom.nodes.get(current);
+          if (n === undefined || n.kind !== "element") break;
+          let position: unknown = "static";
+          try {
+            position = session.computed(current)["position"] ?? "static";
+          } catch {
+            // Cascade can fail for detached/foreign nodes; treat as static.
+          }
+          if (position !== "static" && position !== undefined) {
+            return makeElementCached(current);
+          }
+          if (n.tag === "body" || n.tag === "html") return makeElementCached(current);
+          current = n.parent;
+        }
+        return null;
+      },
       get clientWidth(): number {
         return Math.max(0, Math.round(rectFromTree(resolveLayoutTree(), nodeId).width));
       },

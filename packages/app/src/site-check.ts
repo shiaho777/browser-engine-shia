@@ -39,6 +39,8 @@ interface ManifestCheck {
   readonly value?: unknown;
   readonly frames?: number;
   readonly minNewMutations?: number;
+  /** Page-scoped checks load this URL before running (default: the manifest URL). */
+  readonly url?: string;
 }
 
 interface SiteManifest {
@@ -69,6 +71,12 @@ function runStaticCheck(page: PageState, check: ManifestCheck, viewportHeight: n
       return page.title === check.value
         ? pass(`title=${JSON.stringify(page.title)}`)
         : fail(`title=${JSON.stringify(page.title)} expected ${JSON.stringify(check.value)}`);
+    case "title-contains": {
+      const needle = typeof check.value === "string" ? check.value : "";
+      return page.title.includes(needle)
+        ? pass(`title=${JSON.stringify(page.title)} contains ${JSON.stringify(needle)}`)
+        : fail(`title=${JSON.stringify(page.title)} missing ${JSON.stringify(needle)}`);
+    }
     case "min-metric": {
       const value = metricOf(page, check.metric ?? "");
       if (typeof value !== "number") return fail(`metric ${check.metric} is not numeric`);
@@ -96,6 +104,26 @@ function runStaticCheck(page: PageState, check: ManifestCheck, viewportHeight: n
  * keepAlive, pump extra frames for continuous-rendering checks, and verify
  * every declared check. Network access is real; failures classify loudly.
  */
+/** Load one page with one bounded retry — real sites rate-limit rapid repeated hits. */
+async function loadWithRetry(url: string, viewport: EngineViewport, attempts = 2): Promise<PageState> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const page = await loadPage(url, { viewport, keepAlive: true });
+      // Treat a rendered error page for http(s) targets as a retryable failure.
+      if (page.title === "Load error" && /^https?:\/\//i.test(url)) {
+        lastError = new Error("page rendered the engine error page (root fetch failed)");
+      } else {
+        return page;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export async function checkSite(
   manifestPath: string,
   options: { readonly viewport?: Partial<EngineViewport>; readonly pumpFrames?: number } = {},
@@ -105,7 +133,7 @@ export async function checkSite(
   const started = performance.now();
   let page: PageState;
   try {
-    page = await loadPage(manifest.url, { viewport, keepAlive: true });
+    page = await loadWithRetry(manifest.url, viewport);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -124,7 +152,19 @@ export async function checkSite(
 
   const results: SiteCheckResult[] = [];
   let current = page;
+  let currentUrl = manifest.url;
   for (const check of manifest.checks) {
+    // Page-scoped check: switch to (or load) its URL first.
+    if (check.url !== undefined && check.url !== currentUrl) {
+      try {
+        current = await loadWithRetry(check.url, viewport);
+        currentUrl = check.url;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push({ id: check.id, passed: false, detail: `load ${check.url} failed: ${message}` });
+        continue;
+      }
+    }
     if (check.kind === "pump-mutations") {
       const before = current.runtime?.mutations() ?? 0;
       const pump = await pumpFrames(current, check.frames ?? 1, { settleMs: 250, idleStop: true });
