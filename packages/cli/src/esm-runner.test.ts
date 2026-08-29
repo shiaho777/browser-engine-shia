@@ -81,3 +81,24 @@ void test("classic and ESM share the same window sandbox", async () => {
     1,
   );
 });
+
+void test("linker failures surface in errors, not just the failed count", async () => {
+  if (!isEsmSupported()) return;
+
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const result = await runModuleScripts(
+    session,
+    [
+      {
+        url: "https://example.test/entry.js",
+        source: `const mod = await import("_");
+globalThis.__never = mod;`,
+      },
+    ],
+    () => Promise.resolve(undefined),
+  );
+  assert.equal(result.supported, true);
+  assert.ok(result.failed >= 1);
+  assert.ok(result.errors.length > 0, "failed linker call must record an error message");
+  assert.match(result.errors[0] ?? "", /unsupported module specifier/);
+});

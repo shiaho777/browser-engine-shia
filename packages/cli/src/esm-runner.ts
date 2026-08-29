@@ -1181,7 +1181,9 @@ export async function runModuleScripts(
     const resolved = resolveSpecifier(specifier, referrer.identifier);
     if (resolved === null) {
       failed += 1;
-      throw new Error(`unsupported module specifier '${specifier}' from ${referrer.identifier}`);
+      const message = `unsupported module specifier '${specifier}' from ${referrer.identifier}`;
+      errors.push(message);
+      throw new Error(message);
     }
     const existing = moduleCache.get(resolved);
     if (existing !== undefined) return existing;
@@ -1206,7 +1208,9 @@ export async function runModuleScripts(
     const source = await loadSource(resolved);
     if (source === null) {
       failed += 1;
-      throw new Error(`module not found: ${resolved}`);
+      const message = `module not found: ${resolved}`;
+      errors.push(message);
+      throw new Error(message);
     }
     const mod = new SourceTextModule(source, {
       identifier: resolved,

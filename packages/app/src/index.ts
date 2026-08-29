@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import { startAppServer } from "./server.js";
 
@@ -139,6 +140,37 @@ async function runElectronMode(): Promise<number> {
   });
 }
 
+const ESM_FLAG = "--experimental-vm-modules";
+
+function esmReady(): boolean {
+  // vm.SourceTextModule only exists when Node runs with --experimental-vm-modules.
+  const vmModule = (vm as unknown as { SourceTextModule?: unknown }).SourceTextModule;
+  return typeof vmModule === "function";
+}
+
+function requireEsmFlag(): Promise<never> {
+  if (esmReady()) {
+    // Should be unreachable; typed to keep callers simple.
+    process.exit(0);
+  }
+  const node = process.execPath;
+  const args = [...process.execArgv, ESM_FLAG, ...process.argv.slice(1)];
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_OPTIONS: `${process.env["NODE_OPTIONS"] ?? ""} ${ESM_FLAG}`.trim(),
+  };
+  const child = spawn(node, args, { stdio: "inherit", env: childEnv });
+  child.on("exit", (code) => {
+    process.exit(code ?? 0);
+  });
+  child.on("error", (error) => {
+    console.error(`failed to relaunch with ${ESM_FLAG}: ${error.message}`);
+    process.exit(1);
+  });
+  // The child owns the server lifecycle from here on; keep this process parked.
+  return new Promise<never>(() => {});
+}
+
 async function runWebMode(options: {
   host?: string;
   port?: number;
@@ -182,6 +214,10 @@ export async function runApp(options: RunAppOptions = {}): Promise<number> {
     if (mode === "electron") {
       console.log("starting Electron shell (engine content + hit-test navigation)");
       return await runElectronMode();
+    }
+    if (!esmReady()) {
+      console.log(`relaunching web shell with ${ESM_FLAG} (guest ESM support)`);
+      await requireEsmFlag();
     }
     return await runWebMode({
       open: options.open ?? parsed.open,
