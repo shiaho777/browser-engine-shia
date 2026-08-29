@@ -16,7 +16,7 @@ void test("Blob exposes size/type, slice, arrayBuffer, text", async () => {
   assert.equal(bytes.byteLength, 11);
 });
 
-void test("File carries name and lastModified", async () => {
+void test("File carries name and lastModified", () => {
   const File = makeFileClass();
   const f = new File(["abc"], "a.txt", { type: "text/plain" });
   assert.equal(f.name, "a.txt");
