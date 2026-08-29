@@ -637,3 +637,60 @@ void test("scripted mutation re-renders incrementally (only the edited node reco
   // And exactly one box turned blue.
   assert.equal(session.render().commands.filter((c) => c.op === "rect" && c.fill.b === 255).length, 1);
 });
+
+void test("innerHTML parses table rows with implied tbody (HTML5 in-table insertion)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><div id='host'></div></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(
+    session,
+    [
+      `var p = document.getElementById("host");
+p.innerHTML = "<div>A</div><table><tr><td>B</td></tr></table>";
+var e = p.firstChild;
+var table = e.nextSibling;
+globalThis.shape = JSON.stringify({
+  e: e.tagName,
+  table: table.tagName,
+  tbody: table.firstChild ? table.firstChild.tagName : "NULL",
+  tr: table.firstChild && table.firstChild.firstChild ? table.firstChild.firstChild.tagName : "NULL",
+  td: table.firstChild && table.firstChild.firstChild && table.firstChild.firstChild.firstChild
+    ? table.firstChild.firstChild.firstChild.tagName : "NULL"
+});`,
+    ],
+    undefined,
+    {},
+  );
+  assert.equal(run.error, null);
+  assert.deepEqual(JSON.parse(String(run.sandbox?.["shape"])), {
+    e: "DIV",
+    table: "TABLE",
+    tbody: "TBODY",
+    tr: "TR",
+    td: "TD",
+  });
+});
+
+void test("innerHTML flattens synthesized document outline (no head/body leakage)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><div id='host'></div></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(
+    session,
+    [
+      `var p = document.getElementById("host");
+p.innerHTML = "<span>x</span>";
+var tags = [];
+for (var c = p.firstChild; c; c = c.nextSibling) tags.push(c.tagName);
+globalThis.tags = tags.join(",");`,
+    ],
+    undefined,
+    {},
+  );
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["tags"], "SPAN");
+});

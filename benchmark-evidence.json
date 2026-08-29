@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 48103,
+    "handWrittenLines": 48122,
     "generatedLines": 5439,
-    "testLines": 26041,
-    "totalLines": 79583,
+    "testLines": 26096,
+    "totalLines": 79657,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0009354925888198242,
-    "mechanismDensity": 18.543541982828515,
+    "compatPerLoc": 0.000935123228460995,
+    "mechanismDensity": 18.536220439715724,
     "executionEvidence": {
       "subsetCount": 6,
       "files": 110,
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 48103,
-      "ourDisplay": "48,103 lines",
+      "ourValue": 48122,
+      "ourDisplay": "48,122 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2008,7 +2008,7 @@
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0009354925888198242,
+      "ourValue": 0.000935123228460995,
       "ourDisplay": "0.0009 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2027,11 +2027,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.543541982828515,
+      "ourValue": 18.536220439715724,
       "ourDisplay": "18.54 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 48,103 hand-written lines = 18.54 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "892 platform features (CSS properties + DOM members) over 48,122 hand-written lines = 18.54 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",

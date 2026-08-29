@@ -899,6 +899,17 @@ function buildTree(tokens: readonly Token[], eofPos: number, record: RecordRecov
       case "start": {
         autoCloseForStartTag(token.name);
 
+        // HTML5 tree construction: row/cell content inside <table> is adopted
+        // by an implied <tbody> ("in table" → "in table body" insertion mode).
+        if (
+          (token.name === "tr" || token.name === "td" || token.name === "th") &&
+          top().tag === "table"
+        ) {
+          const tbody = appendChildTo(top(), "element");
+          tbody.tag = "tbody";
+          stack.push(tbody);
+        }
+
         const el = appendChildTo(top(), "element");
         el.tag = token.name;
         el.attrs = token.attrs;

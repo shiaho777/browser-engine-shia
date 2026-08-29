@@ -2028,6 +2028,29 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return id;
   };
 
+  /**
+   * Fragment content roots: the document-outline synthesis wraps parsed
+   * fragments in html/head/body, so real content may sit at any depth of
+   * those wrappers. Flatten them (in document order) before importing.
+   */
+  const fragmentContentRoots = (tree: ReturnType<typeof parseHtml>): NodeId[] => {
+    const out: NodeId[] = [];
+    const isOutline = (n: ReturnType<typeof tree.nodes.get>) =>
+      n !== undefined && n.kind === "element" &&
+      (n.tag === "html" || n.tag === "head" || n.tag === "body");
+    const visit = (id: NodeId): void => {
+      const n = tree.nodes.get(id);
+      if (n === undefined) return;
+      if (isOutline(n)) {
+        for (const c of n.children) visit(c);
+        return;
+      }
+      out.push(id);
+    };
+    for (const c of tree.nodes.get(tree.root)?.children ?? []) visit(c);
+    return out;
+  };
+
   const replaceInnerHtml = (id: NodeId, html: string): void => {
     const node = session.dom.nodes.get(id);
     if (node === undefined || node.kind === "text" || node.kind === "comment") return;
@@ -2036,20 +2059,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     }
     if (html === "") return;
     const tree = parseHtml(new TextEncoder().encode(html));
-    const root = tree.nodes.get(tree.root);
-    if (root === undefined) return;
-    for (const childId of root.children) {
-      const child = tree.nodes.get(childId);
+    for (const contentId of fragmentContentRoots(tree)) {
+      const child = tree.nodes.get(contentId);
       if (child === undefined) continue;
-      if (child.kind === "element" && (child.tag === "html" || child.tag === "head" || child.tag === "body")) {
-        for (const grand of child.children) {
-          const g = tree.nodes.get(grand);
-          if (g === undefined) continue;
-          const imported = importParsedNode(g, tree);
-          if (imported !== null) session.appendChild(id, imported);
-        }
-        continue;
-      }
       const imported = importParsedNode(child, tree);
       if (imported !== null) session.appendChild(id, imported);
     }
@@ -2064,10 +2076,8 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     session.removeChild(parent, id);
     if (html === "") return;
     const tree = parseHtml(new TextEncoder().encode(html));
-    const root = tree.nodes.get(tree.root);
-    if (root === undefined) return;
-    for (const childId of root.children) {
-      const child = tree.nodes.get(childId);
+    for (const contentId of fragmentContentRoots(tree)) {
+      const child = tree.nodes.get(contentId);
       if (child === undefined) continue;
       const imported = importParsedNode(child, tree);
       if (imported !== null) session.insertBefore(parent, imported, ref);
