@@ -20,6 +20,7 @@
  * compose it with the session.
  */
 import vm from "node:vm";
+import { URL as HostURL } from "node:url";
 
 import type { DomNode, DomTree, NodeId, StyleRule } from "@browser-engine/ir";
 import { CSS_PROPERTIES, parsePropertyValue } from "@browser-engine/generator";
@@ -1091,6 +1092,66 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     });
     return ctx;
   };
+  /**
+   * URL decomposition IDL attributes (HTML §2.6 "URL decomposition IDL
+   * attributes") for hyperlink elements (`a`, `area`): every accessor reflects
+   * the resolved absolute URL of the `href` content attribute. Libraries (e.g.
+   * axios's browser URL normalizer) rely on `document.createElement("a")` +
+   * `setAttribute("href", url)` and then read `protocol`/`host`/`pathname`…
+   * without these getters the reads come back `undefined` and the consuming
+   * code crashes on `undefined.charAt`. Returned as PROPERTY DESCRIPTORS and
+   * installed with `Object.defineProperties` — an object-literal spread would
+   * invoke each getter once at element-creation time and freeze the fallback
+   * values in as plain data properties. Setters re-serialize through the URL
+   * per component per spec; the remaining setters are silent no-ops matching
+   * the rest of this surface.
+   */
+  const urlDecompositionDescriptors = (
+    nodeId: NodeId,
+    session: FineSession,
+  ): PropertyDescriptorMap => {
+    const resolvedUrl = (): URL | null => {
+      const node = session.dom.nodes.get(nodeId);
+      const raw = node?.attrs?.get("href");
+      if (raw === undefined || raw === "") return null;
+      try {
+        // Host-realm URL: inside a vm context the guest realm may not define a
+        // `URL` global, so reference the statically imported binding.
+        return new HostURL(raw, session.baseUrl);
+      } catch {
+        return null;
+      }
+    };
+    return {
+      protocol: {
+        // No href → the spec's "no resolved URL" state: every component is "".
+        get: () => resolvedUrl()?.protocol ?? "",
+        set: (value: unknown) => {
+          const url = resolvedUrl();
+          if (url !== null) {
+            session.setAttribute(nodeId, "href", `${String(value)}${url.href.slice(url.href.indexOf(":") + 1)}`);
+            mutations += 1;
+          }
+        },
+      },
+      host: { get: () => resolvedUrl()?.host ?? "" },
+      hostname: { get: () => resolvedUrl()?.hostname ?? "" },
+      port: { get: () => resolvedUrl()?.port ?? "" },
+      pathname: { get: () => resolvedUrl()?.pathname ?? "" },
+      search: { get: () => resolvedUrl()?.search ?? "" },
+      hash: {
+        get: () => resolvedUrl()?.hash ?? "",
+        set: (value: unknown) => {
+          const url = resolvedUrl();
+          if (url === null) return;
+          url.hash = coerceGuestString(value);
+          session.setAttribute(nodeId, "href", url.href);
+          mutations += 1;
+        },
+      },
+      origin: { get: () => resolvedUrl()?.origin ?? "" },
+    };
+  };
   const makeElement = (nodeId: NodeId): object => {
     const wrapper: Record<string, unknown> = {
       get nodeType(): number {
@@ -1130,6 +1191,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       set href(value: unknown) {
         session.setAttribute(nodeId, "href", coerceGuestString(value));
+        mutations += 1;
+      },
+      get src(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("src") ?? "";
+      },
+      set src(value: unknown) {
+        session.setAttribute(nodeId, "src", coerceGuestString(value));
         mutations += 1;
       },
       hasAttribute(name: unknown): boolean {
@@ -1940,6 +2008,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       Object.setPrototypeOf(w, SVGElementCtor.prototype as object);
     } else {
       Object.setPrototypeOf(w, HTMLElementCtor.prototype as object);
+    }
+    // URL decomposition accessors live on the element itself so they win over
+    // any same-named prototype member (installed AFTER the prototype is set —
+    // defineProperties with own accessors).
+    if (tag === "a" || tag === "area") {
+      Object.defineProperties(w, urlDecompositionDescriptors(id, session));
     }
     wrapperCache.set(id, w);
     return w;

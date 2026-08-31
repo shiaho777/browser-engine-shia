@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "bilibili",
   "url": "https://www.bilibili.com",
-  "description": "Bilibili homepage + search + video watch page: module-based SPA shell (Vite bundle), live recommendation feed driven by guest timers and fetches. Known classified gap: the player bundle's wbi-key helper throws (T(n) charAt on undefined) and the bundle strips Error.stack (anti-debug), so guest errors report without stacks; page still renders.",
+  "description": "Bilibili homepage + search + video watch page: module-based SPA shell (Vite bundle), live recommendation feed driven by guest timers and fetches; watch page runs its full classic-script boot (15/15 scripts incl. the player bundle, 0 failures) since the axios anchor-parse crash was fixed by implementing <a> URL decomposition IDL attributes. Remaining classified gap: the player bundle strips Error.stack at runtime (anti-debug), so any guest error reports without stacks. Video does not play yet (MSE/<video> pipeline is unbuilt).",
   "capabilities": [
     "esm-module-evaluation",
     "classic-scripts",

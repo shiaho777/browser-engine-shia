@@ -712,3 +712,45 @@ globalThis.removed = (s.parentNode ? "has-parent" : "no-parent");`;
   assert.ok(Number(run.sandbox?.["scriptsLen"]) >= 1);
   assert.equal(run.sandbox?.["removed"], "has-parent");
 });
+
+void test("a/area URL decomposition IDL attributes resolve href (axios anchor parse)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body></body></html>",
+    "https://www.bilibili.com/video/BV1GJ411x7h7/?spm=a",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    const a = document.createElement("a");
+    a.setAttribute("href", "https://s1.hdslb.com/bfs/static/player/main/core.js?ver=3");
+    globalThis.decomp = {
+      protocol: a.protocol, host: a.host, hostname: a.hostname, port: a.port,
+      pathname: a.pathname, search: a.search, origin: a.origin,
+      pathnameStartsWithSlash: a.pathname.charAt(0) === "/",
+    };
+    const rel = document.createElement("a");
+    rel.setAttribute("href", "/video/BV2/?p=1");
+    globalThis.rel = { host: rel.host, pathname: rel.pathname };
+    const empty = document.createElement("a");
+    globalThis.empty = { href: empty.href, protocol: empty.protocol, pathname: empty.pathname };
+    a.hash = "#frag";
+    globalThis.afterHash = a.href;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  const decomp = (run.sandbox?.["decomp"] ?? {}) as Record<string, unknown>;
+  assert.equal(decomp['protocol'], "https:");
+  assert.equal(decomp['host'], "s1.hdslb.com");
+  assert.equal(decomp['hostname'], "s1.hdslb.com");
+  assert.equal(decomp['port'], "");
+  assert.equal(decomp['pathname'], "/bfs/static/player/main/core.js");
+  assert.equal(decomp['search'], "?ver=3");
+  assert.equal(decomp['origin'], "https://s1.hdslb.com");
+  assert.ok(decomp['pathnameStartsWithSlash'], "pathname must be defined and start with / (axios reads charAt)");
+  const rel = (run.sandbox?.["rel"] ?? {}) as Record<string, unknown>;
+  assert.equal(rel['host'], "www.bilibili.com", "relative href resolves against document base");
+  assert.equal(rel['pathname'], "/video/BV2/");
+  const empty = (run.sandbox?.["empty"] ?? {}) as Record<string, unknown>;
+  assert.equal(empty['href'], "");
+  assert.equal(empty['protocol'], "", "no href → spec's no-resolved-URL state: components are empty");
+  assert.equal(empty['pathname'], "");
+  assert.equal(run.sandbox?.["afterHash"], "https://s1.hdslb.com/bfs/static/player/main/core.js?ver=3#frag");
+});
