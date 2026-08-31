@@ -94,6 +94,10 @@ function runStaticCheck(page: PageState, check: ManifestCheck, viewportHeight: n
       return page.contentHeight > viewportHeight
         ? pass(`contentHeight=${page.contentHeight} > viewport=${viewportHeight}`)
         : fail(`contentHeight=${page.contentHeight} <= viewport=${viewportHeight}`);
+    case "boot-error-free":
+      return page.scripts.error === null
+        ? pass("boot completed with no script error")
+        : fail(`boot script error: ${String(page.scripts.error).slice(0, 160)}`);
     default:
       return fail(`unknown check kind ${check.kind}`);
   }

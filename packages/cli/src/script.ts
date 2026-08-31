@@ -250,6 +250,23 @@ export type DocumentApiOptions = {
    * and clears it after; the document getter reads it live.
    */
   readonly currentScriptBox?: { current: NodeId | null };
+  /**
+   * Mutable holder for the sandbox's `location` object, which the runner
+   * installs AFTER this factory runs (window.location identity). The
+   * document getter `document.location` reads it live — per HTML,
+   * document.location must be the SAME object as window.location. When the
+   * box is empty (standalone callers), a minimal parse of the session URL
+   * backs the getter instead.
+   */
+  readonly locationBox?: { current: unknown };
+  /**
+   * Dynamic script execution (HTML §4.12.1): when guest code appends a
+   * <script> element (createElement + setAttribute + appendChild — the SPA
+   * chunk-loader pattern), the node must fetch and evaluate. The document API
+   * owns no vm context, so the runner injects this hook; it reads the node's
+   * attributes, fetches the (already-resolved) src, evaluates, and drains.
+   */
+  readonly onDynamicScript?: (nodeId: NodeId) => void;
 };
 
 export function buildDocumentApi(
@@ -261,6 +278,8 @@ export function buildDocumentApi(
   readonly mutations: () => number;
   readonly tickAnimations: (nowMs: number) => void;
   readonly hasActiveAnimations: () => boolean;
+  /** Fire DOMContentLoaded at the document (HTML end-of-parsing lifecycle). */
+  readonly fireDocumentLifecycleEvents: () => void;
 } {
   let compileInlineHandler: ((body: string) => unknown) | null = null;
   let navigateToHashFragment: ((fragment: string) => void) | null = null;
@@ -622,7 +641,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           return undefined;
         }
         if (prop === "length") {
-          return { value: snapshotIds().length, writable: false, enumerable: true, configurable: false };
+          // configurable:true satisfies the proxy target-invariant check (the plain
+          // methods object has no own 'length'); live semantics still hold — reads
+          // re-query and assignment is rejected by the set trap.
+          return { value: snapshotIds().length, writable: false, enumerable: true, configurable: true };
         }
         if (typeof prop === "string" && supportedNames().includes(prop)) {
           const found = namedItem(prop);
@@ -644,6 +666,107 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return Reflect.deleteProperty(methods, prop);
       },
     });
+  };
+
+  /**
+   * NodeList (DOM §7.1): `childNodes` returns a LIVE NodeList,
+   * `querySelectorAll` a STATIC one. Same array-like surface as
+   * HTMLCollection but WITHOUT the named getter, plus forEach; the
+   * NodeListCtor.prototype ancestor makes `instanceof NodeList` work.
+   */
+  const NodeListCtor = function NodeList(): never {
+    throw new Error("Illegal constructor");
+  } as unknown as new () => object;
+  Object.setPrototypeOf(NodeListCtor.prototype as object, Object.prototype);
+  const makeNodeList = (queryIds: () => readonly NodeId[]): object => {
+    const snapshotIds = (): NodeId[] => queryIds().filter((id) => session.dom.nodes.has(id));
+    const isIndexKey = (prop: string): boolean => /^(0|[1-9][0-9]*)$/.test(prop);
+    const valuesIterator = function* (): Generator<object> {
+      for (const id of snapshotIds()) yield makeElementCached(id);
+    };
+    const methods: Record<string, unknown> = {
+      item: (index: unknown): object | null => {
+        const list = snapshotIds();
+        const i = Math.trunc(Number(index));
+        if (!Number.isFinite(i) || i < 0 || i >= list.length) return null;
+        return makeElementCached(list[i] as NodeId);
+      },
+      forEach: (callback: unknown, thisArg?: unknown): void => {
+        if (typeof callback !== "function") return;
+        const list = snapshotIds();
+        for (let i = 0; i < list.length; i += 1) {
+          (callback as (n: object, i: number, l: object) => void).call(
+            thisArg,
+            makeElementCached(list[i] as NodeId),
+            i,
+            proxyRef,
+          );
+        }
+      },
+      keys: function* (): Generator<number> {
+        let i = 0;
+        for (const _ of snapshotIds()) yield i++;
+      },
+      values: function* (): Generator<object> {
+        yield* valuesIterator();
+      },
+      entries: function* (): Generator<[number, object]> {
+        let i = 0;
+        for (const id of snapshotIds()) yield [i++, makeElementCached(id)];
+      },
+      [Symbol.iterator]: valuesIterator,
+      toString: () => "[object NodeList]",
+    };
+    const proxyRef: object = new Proxy(methods, {
+      getPrototypeOf(): object | null {
+        return NodeListCtor.prototype as object;
+      },
+      get(_target, prop) {
+        if (typeof prop === "symbol") return Reflect.get(methods, prop) as unknown;
+        if (isIndexKey(prop)) {
+          const list = snapshotIds();
+          const i = Number(prop);
+          return i < list.length ? makeElementCached(list[i] as NodeId) : undefined;
+        }
+        switch (prop) {
+          case "length":
+            return snapshotIds().length;
+          default:
+            return Reflect.get(methods, prop);
+        }
+      },
+      has(_target, prop) {
+        if (typeof prop === "string" && (isIndexKey(prop) || prop === "length")) return true;
+        if (typeof prop === "symbol") return prop in methods;
+        return prop in methods;
+      },
+      ownKeys() {
+        const keys = snapshotIds().map((_, i) => String(i));
+        keys.push("length");
+        return keys;
+      },
+      getOwnPropertyDescriptor(_target, prop) {
+        if (typeof prop === "string" && isIndexKey(prop)) {
+          const list = snapshotIds();
+          const i = Number(prop);
+          if (i < list.length) {
+            return { value: makeElementCached(list[i] as NodeId), writable: true, enumerable: true, configurable: true };
+          }
+          return undefined;
+        }
+        if (prop === "length") {
+          // configurable:true satisfies the proxy target-invariant check (the plain
+          // methods object has no own 'length'); live semantics still hold — reads
+          // re-query and assignment is rejected by the set trap.
+          return { value: snapshotIds().length, writable: false, enumerable: true, configurable: true };
+        }
+        return undefined;
+      },
+      set(_target, prop, value) {
+        return Reflect.set(methods, prop, value);
+      },
+    });
+    return proxyRef;
   };
 
   /** Whether `id`'s element matches `selector` (full selector engine). */
@@ -792,6 +915,22 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   const nodeIdsFromParentNodeArgs = (values: unknown[]): NodeId[] =>
     values.map((value) => idFromWrapper(value) ?? session.createTextNode(String(value)));
 
+  /**
+   * After any tree insertion, <script> elements inserted from guest script
+   * (not parser-created) get executed per HTML script-element semantics:
+   * "when a script element that is not parser-inserted becomes connected,
+   * fetch and run it." The runner's hook does the fetch/eval; this is a
+   * no-op when no hook was injected (standalone callers).
+   */
+  const notifyDynamicScripts = (ids: readonly (NodeId | null | undefined)[]): void => {
+    if (options.onDynamicScript === undefined) return;
+    for (const id of ids) {
+      if (id === null || id === undefined) continue;
+      const node = session.dom.nodes.get(id);
+      if (node?.kind === "element" && node.tag === "script") options.onDynamicScript(id);
+    }
+  };
+
   /** Detach nodes before variadic insertion, mirroring DOM's convert-nodes step. */
   const detachForVariadicInsert = (ids: readonly NodeId[]): void => {
     for (const id of ids) {
@@ -810,6 +949,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       session.insertBefore(parentId, id, ref);
     }
     mutations += 1;
+    notifyDynamicScripts(ids);
   };
 
   /** Insert variadic ChildNode content before or after `targetId` in its parent. */
@@ -838,6 +978,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       session.insertBefore(parentId, id, ref);
     }
     mutations += 1;
+    notifyDynamicScripts(ids);
   };
 
   /** Replace a ChildNode receiver with variadic content at its old position. */
@@ -861,6 +1002,47 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       session.insertBefore(parentId, id, ref);
     }
     mutations += 1;
+    notifyDynamicScripts(ids);
+  };
+
+  /**
+   * DOM §4.4 insertAdjacent: insert `ids` relative to `targetId` at the given
+   * position. "beforebegin"/"afterend" require a parent (throw SyntaxError per
+   * spec when the receiver has none); returns whether any node was inserted.
+   */
+  const insertAdjacentNodes = (targetId: NodeId, ids: readonly NodeId[], position: unknown): boolean => {
+    const where = coerceGuestString(position).toLowerCase();
+    if (where !== "beforebegin" && where !== "afterbegin" && where !== "beforeend" && where !== "afterend") {
+      throw new SyntaxError(`insertAdjacent: invalid position '${coerceGuestString(position)}'`);
+    }
+    const parentId = session.dom.nodes.get(targetId)?.parent ?? null;
+    if (parentId === null && (where === "beforebegin" || where === "afterend")) {
+      throw new SyntaxError("insertAdjacent: no parent for 'beforebegin'/'afterend'");
+    }
+    detachForVariadicInsert(ids);
+    let parentIdUsed: NodeId = targetId;
+    let ref: NodeId | null = null;
+    if (where === "beforebegin") {
+      parentIdUsed = parentId as NodeId;
+      ref = targetId;
+    } else if (where === "afterend") {
+      parentIdUsed = parentId as NodeId;
+      // after `targetId` — ref must be the real next sibling (null would append).
+      const kids = session.dom.nodes.get(parentId as NodeId)?.children ?? [];
+      const targetIndex = kids.indexOf(targetId);
+      ref = targetIndex >= 0 ? (kids[targetIndex + 1] ?? null) : null;
+    } else if (where === "afterbegin") {
+      parentIdUsed = targetId;
+      ref = (session.dom.nodes.get(targetId)?.children[0] ?? null);
+    } else {
+      parentIdUsed = targetId;
+      ref = null;
+    }
+    for (const id of ids) {
+      session.insertBefore(parentIdUsed, id, ref);
+    }
+    mutations += 1;
+    return ids.length > 0;
   };
 
   /** A guest-visible node wrapper bound to a node id in the session. */
@@ -1181,8 +1363,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return node?.attrs?.get(htmlAttributeName(name)) ?? null;
       },
       setAttribute(name: unknown, value: unknown): void {
-        session.setAttribute(nodeId, htmlAttributeName(name), String(value));
+        const attr = htmlAttributeName(name);
+        session.setAttribute(nodeId, attr, String(value));
         mutations += 1;
+        // HTML script-element semantics: setting `src` on a CONNECTED script
+        // element triggers the fetch-and-run steps (the classic SPA loader
+        // pattern: append first, then set src).
+        if (attr === "src" && options.onDynamicScript !== undefined) {
+          const node = session.dom.nodes.get(nodeId);
+          if (node?.kind === "element" && node.tag === "script" && isConnectedToDocument(session.dom, nodeId)) {
+            options.onDynamicScript(nodeId);
+          }
+        }
       },
       // a/area href: the activation behavior reads this attribute, and tests
       // retarget links through the IDL property.
@@ -1394,8 +1586,8 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           mutations += 1;
         }
       },
-      get childNodes(): object[] {
-        return childWrappers(nodeId);
+      get childNodes(): object {
+        return makeNodeList(() => session.dom.nodes.get(nodeId)?.children ?? []);
       },
       hasChildNodes(): boolean {
         return (session.dom.nodes.get(nodeId)?.children.length ?? 0) > 0;
@@ -1506,6 +1698,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         if (childId !== undefined) {
           session.appendChild(nodeId, childId);
           mutations += 1;
+          notifyDynamicScripts([childId]);
         }
         return child;
       },
@@ -1523,6 +1716,22 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       replaceWith(...values: unknown[]): void {
         replaceChildNodeContent(nodeId, values);
+      },
+      /**
+       * HTML §4.2.5 / DOM §4.4: insert adjacent element/text relative to this
+       * element ("beforebegin" | "afterbegin" | "beforeend" | "afterend",
+       * case-insensitive). Returns the inserted element (insertAdjacentElement)
+       * so chains like `d.insertAdjacentElement("afterend", el).focus()` work.
+       * Throws SyntaxError on an unknown position, matching the platform.
+       */
+      insertAdjacentElement(position: unknown, element: unknown): object | null {
+        const id = idFromWrapper(element);
+        if (id === undefined) return null;
+        insertAdjacentNodes(nodeId, [id], position);
+        return element as object;
+      },
+      insertAdjacentText(position: unknown, text: unknown): void {
+        insertAdjacentNodes(nodeId, [session.createTextNode(coerceGuestString(text))], position);
       },
       removeChild(child: unknown): unknown {
         const childId = idFromWrapper(child);
@@ -1579,8 +1788,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         const ids = queryAll(String(selector), nodeId);
         return ids.length > 0 ? makeElementCached(ids[0] as NodeId) : null;
       },
-      querySelectorAll(selector: unknown): object[] {
-        return queryAll(String(selector), nodeId).map((id) => makeElementCached(id));
+      querySelectorAll(selector: unknown): object {
+        // Static NodeList: the query is evaluated ONCE (DOM §8.2.3), unlike
+        // the live childNodes collection.
+        const snapshot = queryAll(String(selector), nodeId);
+        return makeNodeList(() => snapshot);
       },
       matches(selector: unknown): boolean {
         return matchesSel(nodeId, String(selector));
@@ -2007,7 +2219,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     } else if (isSvg) {
       Object.setPrototypeOf(w, SVGElementCtor.prototype as object);
     } else {
-      Object.setPrototypeOf(w, HTMLElementCtor.prototype as object);
+      // Tag-specific interface prototype when one exists (HTMLAnchorElement
+      // for <a>, HTMLDivElement for <div>, …), else HTMLElement.prototype —
+      // so `el instanceof HTMLAnchorElement` behaves like the platform.
+      Object.setPrototypeOf(w, interfaceCtorForTag(tag) ?? (HTMLElementCtor.prototype as object));
     }
     // URL decomposition accessors live on the element itself so they win over
     // any same-named prototype member (installed AFTER the prototype is set —
@@ -2018,8 +2233,6 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     wrapperCache.set(id, w);
     return w;
   };
-  const childWrappers = (id: NodeId): object[] =>
-    (session.dom.nodes.get(id)?.children ?? []).map((c) => makeElementCached(c));
 
   /** The first/last element child of `id`, ignoring text and comment nodes. */
   const edgeElementChild = (id: NodeId, dir: 1 | -1): object | null => {
@@ -2449,6 +2662,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     throw new Error("Illegal constructor");
   }
   Object.setPrototypeOf(HTMLElementCtor.prototype as object, ElementCtor.prototype as object);
+
   function SVGElementCtor(): never {
     throw new Error("Illegal constructor");
   }
@@ -2716,6 +2930,29 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     get baseURI(): string {
       return session.baseUrl;
     },
+    get location(): unknown {
+      if (options.locationBox !== undefined && options.locationBox.current !== null) {
+        return options.locationBox.current;
+      }
+      // Standalone callers: minimal Location-shaped parse of the session URL.
+      try {
+        const u = new HostURL(session.url);
+        return {
+          href: u.href,
+          protocol: u.protocol,
+          host: u.host,
+          hostname: u.hostname,
+          port: u.port,
+          pathname: u.pathname,
+          search: u.search,
+          hash: u.hash,
+          origin: u.origin,
+          toString: () => u.href,
+        };
+      } catch {
+        return null;
+      }
+    },
     get URL(): string {
       return session.url;
     },
@@ -2867,8 +3104,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       const ids = queryAll(String(selector), null);
       return ids.length > 0 ? makeElementCached(ids[0] as NodeId) : null;
     },
-    querySelectorAll(selector: unknown): object[] {
-      return queryAll(String(selector), null).map((id) => makeElementCached(id));
+    querySelectorAll(selector: unknown): object {
+      // Static NodeList: evaluated once at call time (DOM §8.2.3).
+      const snapshot = queryAll(String(selector), null);
+      return makeNodeList(() => snapshot);
     },
     getElementsByTagName(tag: unknown): object {
       const want = coerceGuestString(tag).toLowerCase();
@@ -2945,6 +3184,102 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 
   Object.setPrototypeOf(document, DocumentCtor.prototype as object);
   const HTMLCanvasElementCtor = function HTMLCanvasElement() {} as unknown as new () => object;
+
+  /**
+   * The HTML element interface map (HTML §4.13): every tag with a distinct
+   * DOM interface gets its own constructor whose prototype chains to
+   * HTMLElement.prototype, so `instanceof HTMLAnchorElement` works and
+   * `new HTMLAnchorElement()` creates the matching element. This is the real
+   * platform surface — bundles feature-check these constructors constantly.
+   */
+  const HTML_INTERFACE_TAGS: ReadonlyArray<readonly [string, string]> = [
+    ["HTMLAnchorElement", "a"],
+    ["HTMLAreaElement", "area"],
+    ["HTMLAudioElement", "audio"],
+    ["HTMLBaseElement", "base"],
+    ["HTMLBodyElement", "body"],
+    ["HTMLBRElement", "br"],
+    ["HTMLButtonElement", "button"],
+    ["HTMLCanvasElement", "canvas"],
+    ["HTMLDataElement", "data"],
+    ["HTMLDataListElement", "datalist"],
+    ["HTMLDetailsElement", "details"],
+    ["HTMLDialogElement", "dialog"],
+    ["HTMLDivElement", "div"],
+    ["HTMLDListElement", "dl"],
+    ["HTMLEmbedElement", "embed"],
+    ["HTMLFieldSetElement", "fieldset"],
+    ["HTMLFormElement", "form"],
+    ["HTMLHeadingElement", "h1"],
+    ["HTMLHeadElement", "head"],
+    ["HTMLHGroupElement", "hgroup"],
+    ["HTMLHRElement", "hr"],
+    ["HTMLHtmlElement", "html"],
+    ["HTMLIFrameElement", "iframe"],
+    ["HTMLImageElement", "img"],
+    ["HTMLInputElement", "input"],
+    ["HTMLLabelElement", "label"],
+    ["HTMLLegendElement", "legend"],
+    ["HTMLLIElement", "li"],
+    ["HTMLLinkElement", "link"],
+    ["HTMLMapElement", "map"],
+    ["HTMLMenuElement", "menu"],
+    ["HTMLMetaElement", "meta"],
+    ["HTMLMeterElement", "meter"],
+    ["HTMLModElement", "del"],
+    ["HTMLObjectElement", "object"],
+    ["HTMLOListElement", "ol"],
+    ["HTMLOptGroupElement", "optgroup"],
+    ["HTMLOptionElement", "option"],
+    ["HTMLOutputElement", "output"],
+    ["HTMLParagraphElement", "p"],
+    ["HTMLParamElement", "param"],
+    ["HTMLPictureElement", "picture"],
+    ["HTMLPreElement", "pre"],
+    ["HTMLProgressElement", "progress"],
+    ["HTMLQuoteElement", "blockquote"],
+    ["HTMLScriptElement", "script"],
+    ["HTMLSelectElement", "select"],
+    ["HTMLSlotElement", "slot"],
+    ["HTMLSourceElement", "source"],
+    ["HTMLSpanElement", "span"],
+    ["HTMLStyleElement", "style"],
+    ["HTMLTableCaptionElement", "caption"],
+    ["HTMLTableCellElement", "td"],
+    ["HTMLTableColElement", "col"],
+    ["HTMLTableElement", "table"],
+    ["HTMLTableRowElement", "tr"],
+    ["HTMLTableSectionElement", "tbody"],
+    ["HTMLTemplateElement", "template"],
+    ["HTMLTextAreaElement", "textarea"],
+    ["HTMLTimeElement", "time"],
+    ["HTMLTitleElement", "title"],
+    ["HTMLTrackElement", "track"],
+    ["HTMLUListElement", "ul"],
+    ["HTMLVideoElement", "video"],
+    ["HTMLUnknownElement", "unknown"],
+  ];
+
+  /** name → constructor; also the map used to pick a wrapper's prototype. */
+  const htmlInterfaceCtors = new Map<string, { ctor: new () => object; tag: string }>();
+  for (const [name, tag] of HTML_INTERFACE_TAGS) {
+    if (name === "HTMLCanvasElement") {
+      htmlInterfaceCtors.set(name, { ctor: HTMLCanvasElementCtor, tag });
+      continue;
+    }
+    const ctor = function (this: unknown, _w?: unknown, _h?: unknown): void {
+      throw new Error("Illegal constructor");
+    } as unknown as new () => object;
+    Object.setPrototypeOf(ctor.prototype as object, HTMLElementCtor.prototype as object);
+    htmlInterfaceCtors.set(name, { ctor, tag });
+  }
+  /** A wrapper for `tag` gets `ctor.prototype` when the tag has its own interface. */
+  const interfaceCtorForTag = (tag: string): object | null => {
+    for (const [, { ctor: c, tag: t }] of htmlInterfaceCtors) {
+      if (t === tag) return c.prototype as object;
+    }
+    return null;
+  };
   Object.setPrototypeOf(HTMLCanvasElementCtor.prototype, HTMLElementCtor.prototype as object);
   const CanvasRenderingContext2DCtor = function CanvasRenderingContext2D() {} as unknown as new () => object;
   const OffscreenCanvasCtor = function OffscreenCanvas(this: { width: number; height: number; getContext: (t: unknown) => object | null }, w?: unknown, h?: unknown) {
@@ -3010,7 +3345,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     Node: NodeCtor,
     Element: ElementCtor,
     HTMLElement: HTMLElementCtor,
-    HTMLCanvasElement: HTMLCanvasElementCtor,
+    ...Object.fromEntries([...htmlInterfaceCtors].map(([name, { ctor }]) => [name, ctor])),
     CanvasRenderingContext2D: CanvasRenderingContext2DCtor,
     OffscreenCanvas: OffscreenCanvasCtor,
     // `new Text(data)` — a text node created directly in the live tree.
@@ -3019,10 +3354,34 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       mutations += 1;
       return makeElementCached(id);
     },
+    NodeList: NodeListCtor,
     SVGElement: SVGElementCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
     getComputedStyle,
+  };
+  /**
+   * HTML §7.8 lifecycle: after parsing completes (all classic scripts have
+   * run), the document fires `DOMContentLoaded` at the document, then `load`
+   * at the window. Many SPAs defer hydration until these events — the runner
+   * calls this between script evaluation and the first timer drain.
+   */
+  const fireDocumentLifecycleEvents = (): void => {
+    const dcl = makeEvent("DOMContentLoaded", { bubbles: true });
+    // Tree-phase dispatch (capture/target/bubble on the document root) AND the
+    // document-object listener registry: the platform fires DOMContentLoaded
+    // AT the document, so both attachment styles must see it.
+    dispatch(session.dom.root, dcl);
+    const set = documentListeners.get("DOMContentLoaded");
+    if (set !== undefined) {
+      for (const fn of [...set]) {
+        try {
+          fn(dcl);
+        } catch {
+          // Guest/page code may throw here; swallowed by design.
+        }
+      }
+    }
   };
   return {
     document,
@@ -3030,6 +3389,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     mutations: () => mutations,
     tickAnimations,
     hasActiveAnimations,
+    fireDocumentLifecycleEvents,
   };
 }
 
@@ -3038,7 +3398,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 // ---------------------------------------------------------------------------
 
 /** Whether `nodeId` is currently reachable from the document root. */
-function isConnectedToDocument(dom: DomTree, nodeId: NodeId): boolean {
+export function isConnectedToDocument(dom: DomTree, nodeId: NodeId): boolean {
   let current: NodeId | null | undefined = nodeId;
   const seen = new Set<NodeId>();
   while (current !== null && current !== undefined) {

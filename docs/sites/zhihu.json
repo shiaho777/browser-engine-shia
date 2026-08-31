@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "site": "zhihu",
+  "url": "https://www.zhihu.com/",
+  "description": "Zhihu Q&A homepage: anti-bot-guarded HTML shell, classic-script boot with runtime chunk loader (createElement+appendChild script injection), heavy feature-detection. The boot previously crashed on missing insertAdjacentElement and HTMLAnchorElement; with element interfaces, NodeList, document.location, the screen object, document lifecycle events, and dynamic script execution implemented, all 24 classic scripts evaluate cleanly (error null). Hydration of the client-rendered feed is not yet reached — the loader's later chunks stay unappended, so content remains the server shell; classified honestly below.",
+  "capabilities": [
+    "classic-scripts",
+    "dynamic-script-execution",
+    "document-lifecycle-events",
+    "element-interfaces",
+    "nodelist",
+    "insert-adjacent",
+    "screen-object",
+    "cookies"
+  ],
+  "checks": [
+    {
+      "id": "title",
+      "kind": "title-equals",
+      "value": "知乎 - 有问题，就会有答案",
+      "description": "document title renders"
+    },
+    {
+      "id": "boot-error-free",
+      "kind": "boot-error-free",
+      "description": "all classic scripts evaluate with no uncaught boot error"
+    },
+    {
+      "id": "scripts-run",
+      "kind": "min-metric",
+      "metric": "scriptsRun",
+      "min": 20,
+      "description": "the full classic-script set runs"
+    },
+    {
+      "id": "scripts-failed-zero",
+      "kind": "metric-equals",
+      "metric": "scriptsFailed",
+      "value": 0,
+      "description": "no script fetches fail"
+    },
+    {
+      "id": "network",
+      "kind": "min-metric",
+      "metric": "networkEvents",
+      "min": 10,
+      "description": "guest scripts make real API/config fetches"
+    },
+    {
+      "id": "content-shape",
+      "kind": "content-height-gt-viewport",
+      "description": "the server shell produces a document at least as tall as the viewport"
+    }
+  ]
+}

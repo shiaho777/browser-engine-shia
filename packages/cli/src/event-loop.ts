@@ -19,6 +19,8 @@
  */
 import vm from "node:vm";
 
+import type { NodeId } from "@browser-engine/ir";
+
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
@@ -464,6 +466,27 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   sandbox["innerWidth"] = 1280;
   sandbox["innerHeight"] = 800;
   sandbox["devicePixelRatio"] = 1;
+  // CSSOM View §5: the `screen` object — desktop viewport dimensions, as a
+  // barebones but real surface (bundles use screen.width/height for
+  // responsive bootstrapping decisions).
+  const screenObj = {
+    width: 1280,
+    height: 800,
+    availWidth: 1280,
+    availHeight: 800,
+    availLeft: 0,
+    availTop: 0,
+    colorDepth: 24,
+    pixelDepth: 24,
+    orientation: { type: "landscape-primary", angle: 0, onchange: null },
+  };
+  sandbox["screen"] = screenObj;
+  sandbox["outerWidth"] = 1280;
+  sandbox["outerHeight"] = 800;
+  sandbox["screenX"] = 0;
+  sandbox["screenY"] = 0;
+  sandbox["screenLeft"] = 0;
+  sandbox["screenTop"] = 0;
   const NodeCtor = function Node() {} as unknown as new () => object;
   const ElementCtor = function Element() {} as unknown as new () => object;
   Object.setPrototypeOf(ElementCtor.prototype, (NodeCtor as unknown as { prototype: object }).prototype);
@@ -1021,8 +1044,9 @@ export function runScriptsOnSession(
   sources: readonly string[],
   resources: ReadonlyMap<string, string> = new Map(),
 ): EventDrivenRun {
+  const locationBox: { current: unknown } = { current: null };
   const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations } =
-    buildDocumentApi(session);
+    buildDocumentApi(session, { locationBox });
   const loop = new VirtualEventLoop();
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
 
@@ -1088,6 +1112,7 @@ export function runScriptsOnSession(
     fetch: fetchFn,
   };
   installBrowserGlobals(sandbox, session.url);
+  locationBox.current = sandbox["location"];
   installXMLHttpRequest(
     sandbox,
     (sandbox["fetch"] as (input: unknown, init?: unknown) => Promise<object>),
@@ -1123,14 +1148,32 @@ export function runScriptsOnSession(
   };
 }
 
-export async function runScriptsOnSessionReal(
+export function runScriptsOnSessionReal(
   session: FineSession,
   sources: readonly string[],
   fetchFn: FetchFn = defaultFetch,
   options: ScriptNetworkOptions = {},
 ): Promise<EventDrivenRun> {
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations } =
-    buildDocumentApi(session, { geometryMode: "stub", styleMode: "fast" });
+  return runScriptsOnSessionRealInner(session, sources, fetchFn, options);
+}
+
+async function runScriptsOnSessionRealInner(
+  session: FineSession,
+  sources: readonly string[],
+  fetchFn: FetchFn = defaultFetch,
+  options: ScriptNetworkOptions = {},
+): Promise<EventDrivenRun> {
+  const locationBox: { current: unknown } = { current: null };
+  // Late-bound dynamic script evaluator: the vm context exists only after
+  // the sandbox is fully assembled, but appendChild can fire any time.
+  let dynamicScriptEvaluator: ((nodeId: NodeId) => void) | null = null;
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents } =
+    buildDocumentApi(session, {
+      geometryMode: "stub",
+      styleMode: "fast",
+      locationBox,
+      onDynamicScript: (nodeId: NodeId) => dynamicScriptEvaluator?.(nodeId),
+    });
   const loop = new VirtualEventLoop();
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
   const decoder = new TextDecoder();
@@ -1283,6 +1326,9 @@ export async function runScriptsOnSessionReal(
     fetch: fetchImpl,
   };
   installBrowserGlobals(sandbox, session.url);
+  // document.location must be the SAME object as window.location (HTML §7.3);
+  // hand the document getter the installed location after globals exist.
+  locationBox.current = sandbox["location"];
   installXMLHttpRequest(
     sandbox,
     (sandbox["fetch"] as (input: unknown, init?: unknown) => Promise<object>),
@@ -1298,9 +1344,62 @@ export async function runScriptsOnSessionReal(
     const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 6).join(" | ") : "";
     return stack ? `${message} :: ${stack}` : message;
   };
-  // HTML: an uncaught timer/rAF callback error reports to the global handler
-  // and the task completes — the loop keeps draining and the error is
-  // recorded for the frame summary instead of aborting the pump.
+  // Dynamic script execution (HTML §4.12.1): a guest-appended <script> with
+  // a src fetches and evaluates in this context; inline text evaluates
+  // directly. Each inserted script element runs at most once; evaluation is
+  // scheduled as a microtask-adjacent task so chunk code registers modules
+  // before the next timer fires. currentScript points at the executing node.
+  const executedDynamicScripts = new Set<NodeId>();
+  const inlineScriptText = (nodeId: NodeId): string => {
+    const node = session.dom.nodes.get(nodeId);
+    if (node === undefined) return "";
+    if (node.kind === "text") return node.text ?? "";
+    let out = "";
+    for (const child of node.children) out += inlineScriptText(child);
+    return out;
+  };
+  dynamicScriptEvaluator = (nodeId: NodeId): void => {
+    if (executedDynamicScripts.has(nodeId)) return;
+    executedDynamicScripts.add(nodeId);
+    const node = session.dom.nodes.get(nodeId);
+    if (node === undefined || node.kind !== "element") return;
+    const type = node.attrs?.get("type");
+    if (type !== undefined && type !== "" && !/javascript|ecmascript/i.test(type)) return;
+    const src = node.attrs?.get("src")?.trim();
+    const evaluate = (code: string, label: string): void => {
+      loop.microtask(() => {
+        box.current = nodeId;
+        try {
+          vm.runInContext(code, context, { timeout: 2000, filename: label });
+        } catch (e) {
+          if (error === null) error = formatError(e);
+        }
+        box.current = null;
+      });
+    };
+    if (src !== undefined && src !== "") {
+      const href = resolveFetchUrl(src);
+      void (async (): Promise<void> => {
+        try {
+          let code: string | null = null;
+          if (browserFetch !== undefined) {
+            const response = await browserFetch(href);
+            code = response.ok ? await response.text() : null;
+          } else {
+            const response = await fetch(href);
+            code = response.ok ? await response.text() : null;
+          }
+          if (code !== null) evaluate(code, href);
+        } catch {
+          // network failure: the script simply never runs (matches the
+          // graceful-absent behavior of the resource loader)
+        }
+      })();
+    } else {
+      const inline = inlineScriptText(nodeId);
+      if (inline.trim() !== "") evaluate(inline, "inline-dynamic");
+    }
+  };
   loop.onUncaught((e) => {
     if (error === null) error = formatError(e);
   });
@@ -1316,6 +1415,18 @@ export async function runScriptsOnSessionReal(
     }
   }
   box.current = null;
+  // HTML end-of-parsing lifecycle: DOMContentLoaded at the document, then
+  // `load` at the window. SPAs commonly defer hydration until these fire.
+  // Callback errors report through the loop's uncaught handler like any task.
+  loop.microtask(() => fireDocumentLifecycleEvents());
+  loop.microtask(() => {
+    const winDispatch = sandbox["dispatchEvent"];
+    if (typeof winDispatch === "function") {
+      (winDispatch as (event: unknown) => boolean)({ type: "load" });
+    }
+    const onLoad = sandbox["onload"];
+    if (typeof onLoad === "function") (onLoad as () => void)();
+  });
   const flushAsync = async (maxMs = 500): Promise<void> => {
     loop.drain();
     let rounds = 0;

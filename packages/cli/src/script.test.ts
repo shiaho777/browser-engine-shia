@@ -754,3 +754,183 @@ void test("a/area URL decomposition IDL attributes resolve href (axios anchor pa
   assert.equal(empty['pathname'], "");
   assert.equal(run.sandbox?.["afterHash"], "https://s1.hdslb.com/bfs/static/player/main/core.js?ver=3#frag");
 });
+void test("insertAdjacentElement inserts relative to the receiver and returns the element", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><div id='host'><span id='marker'></span></div></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    const marker = document.getElementById("marker");
+    const a = document.createElement("b");
+    const returned = marker.insertAdjacentElement("beforebegin", a);
+    globalThis.returnedIsA = returned === a;
+    globalThis.afterBeginCount = (() => {
+      const host = document.getElementById("host");
+      const el = document.createElement("i");
+      host.insertAdjacentElement("afterbegin", el);
+      return host.children.length;
+    })();
+    marker.insertAdjacentElement("beforeend", document.createElement("u"));
+    const tail = document.createElement("s");
+    marker.insertAdjacentElement("afterend", tail);
+    globalThis.hostChildTags = Array.from(document.getElementById("host").children).map((c) => c.localName).join(",");
+    let threw = false;
+    try { marker.insertAdjacentElement("sideways", document.createElement("b")); }
+    catch (e) {
+      // Cross-realm throw: verify by name/message rather than instanceof.
+      threw = e !== null && typeof e === "object" && e.name === "SyntaxError";
+    }
+    globalThis.badPositionThrew = threw;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["returnedIsA"], true);
+  assert.equal(Number(run.sandbox?.["afterBeginCount"]), 3);
+  // "u" lands INSIDE the span (beforeend inserts into the marker), so the
+    // host-level tags end with the "s" that follows the span.
+    assert.equal(run.sandbox?.["hostChildTags"], "i,b,span,s");
+  assert.equal(run.sandbox?.["badPositionThrew"], true);
+});
+
+void test("NodeList: childNodes is live, querySelectorAll is static, forEach works", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><ul id='list'><li>one</li><li>two</li></ul></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    const list = document.getElementById("list");
+    globalThis.isNodeList = list.childNodes instanceof NodeList;
+    // static: snapshot taken before mutation
+    const before = list.querySelectorAll("li");
+    globalThis.staticLength = before.length;
+    const li = document.createElement("li");
+    li.textContent = "three";
+    list.appendChild(li);
+    globalThis.staticLengthAfter = before.length;
+    globalThis.liveLength = list.childNodes.length;
+    let seen = 0;
+    list.childNodes.forEach(() => { seen += 1; });
+    globalThis.forEachCount = seen;
+    // querySelectorAll static snapshot survives a REMOVE of a matched node
+    globalThis.staticAfterRemove = (() => {
+      const snap = document.querySelectorAll("li");
+      list.removeChild(list.children[list.children.length - 1]);
+      return snap.length;
+    })();
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["isNodeList"], true);
+  assert.equal(Number(run.sandbox?.["staticLength"]), 2);
+  assert.equal(Number(run.sandbox?.["staticLengthAfter"]), 2, "querySelectorAll snapshot must not grow");
+  assert.equal(Number(run.sandbox?.["liveLength"]), 3, "childNodes must stay live");
+  assert.equal(Number(run.sandbox?.["forEachCount"]), 3);
+  assert.equal(Number(run.sandbox?.["staticAfterRemove"]), 3);
+});
+
+void test("element interfaces: instanceof + per-tag prototypes (HTMLAnchorElement for <a>)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><a id='link' href='/x'></a><div id='d'></div></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    const a = document.getElementById("link");
+    const d = document.getElementById("d");
+    globalThis.aIsAnchor = a instanceof HTMLAnchorElement;
+    globalThis.divIsDiv = d instanceof HTMLDivElement;
+    globalThis.aIsHTMLElement = a instanceof HTMLElement;
+    globalThis.aIsElement = a instanceof Element;
+    const created = document.createElement("video");
+    globalThis.createdIsVideo = created instanceof HTMLVideoElement;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["aIsAnchor"], true);
+  assert.equal(run.sandbox?.["divIsDiv"], true);
+  assert.equal(run.sandbox?.["aIsHTMLElement"], true);
+  assert.equal(run.sandbox?.["aIsElement"], true);
+  assert.equal(run.sandbox?.["createdIsVideo"], true);
+});
+
+void test("document.location is the same object as window.location (protocol/host readable)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body></body></html>",
+    "https://www.zhihu.com/hot?x=1",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    globalThis.same = document.location === window.location;
+    globalThis.protocol = document.location.protocol;
+    globalThis.host = document.location.host;
+    globalThis.pathname = document.location.pathname;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["same"], true, "document.location must be window.location identity");
+  assert.equal(run.sandbox?.["protocol"], "https:");
+  assert.equal(run.sandbox?.["host"], "www.zhihu.com");
+  assert.equal(run.sandbox?.["pathname"], "/hot");
+});
+
+void test("dynamic <script> execution: appended src script fetches, evaluates, and mutates the DOM", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><div id='out'></div></body></html>",
+    "https://example.test/",
+  );
+  const browserFetch = async (input: unknown): Promise<{ ok: boolean; status: number; url: string; text: () => Promise<string> }> => {
+    const href = String(input);
+    if (href.endsWith("/chunk.js")) {
+      return { ok: true, status: 200, url: href, text: async () => "globalThis.chunkRan = true; document.getElementById('out').textContent = 'chunk';" };
+    }
+    return { ok: false, status: 404, url: href, text: async () => "" };
+  };
+  const run = await runScriptsOnSessionReal(session, [`
+    const s = document.createElement("script");
+    s.src = "/chunk.js";
+    document.head.appendChild(s);
+  `], undefined, { browserFetch: browserFetch as never });
+  assert.equal(run.error, null);
+  await run.flushAsync!();
+  type NId = Parameters<typeof session.dom.nodes.get>[0];
+  const outId = [...session.dom.nodes.values()].find((n) => n.attrs?.get("id") === "out");
+  const text = (outId?.children ?? []).map((c: NId) => {
+    const node = session.dom.nodes.get(c);
+    return node && "text" in node ? String((node as { text?: string }).text ?? "") : "";
+  }).join("");
+  assert.equal(text, "chunk", "dynamically injected script must execute and mutate the DOM");
+  assert.equal((run.sandbox as Record<string, unknown> | undefined)?.["chunkRan"], true);
+});
+void test("screen object exposes CSSOM View dimensions for mobile detection", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    globalThis.sw = window.screen.width;
+    globalThis.sh = window.screen.height;
+    globalThis.avail = window.screen.availWidth === window.screen.width;
+    globalThis.depth = window.screen.colorDepth;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(Number(run.sandbox?.["sw"]), 1280);
+  assert.equal(Number(run.sandbox?.["sh"]), 800);
+  assert.equal(run.sandbox?.["avail"], true);
+  assert.equal(Number(run.sandbox?.["depth"]), 24);
+});
+
+void test("DOMContentLoaded fires after classic scripts; window load follows", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    const order = [];
+    document.addEventListener("DOMContentLoaded", () => { order.push("dcl"); });
+    window.addEventListener("load", () => { order.push("load"); });
+    // registered late still works if it happens before script end
+    globalThis.order = order;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.flushAsync !== undefined, true);
+  await run.flushAsync!();
+  const order = (run.sandbox as Record<string, unknown> | undefined)?.["order"] as unknown;
+  assert.ok(Array.isArray(order));
+  assert.ok((order as string[]).includes("dcl"), "DOMContentLoaded must fire");
+  assert.ok((order as string[]).includes("load"), "window load must fire");
+});

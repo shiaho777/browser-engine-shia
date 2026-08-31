@@ -264,6 +264,25 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   sandbox["innerWidth"] = 1280;
   sandbox["innerHeight"] = 800;
   sandbox["devicePixelRatio"] = 1;
+  // CSSOM View §5 `screen` + window chrome dimensions (same surface as the
+  // classic runner — bundles branch on screen.width during boot).
+  sandbox["screen"] = {
+    width: 1280,
+    height: 800,
+    availWidth: 1280,
+    availHeight: 800,
+    availLeft: 0,
+    availTop: 0,
+    colorDepth: 24,
+    pixelDepth: 24,
+    orientation: { type: "landscape-primary", angle: 0, onchange: null },
+  };
+  sandbox["outerWidth"] = 1280;
+  sandbox["outerHeight"] = 800;
+  sandbox["screenX"] = 0;
+  sandbox["screenY"] = 0;
+  sandbox["screenLeft"] = 0;
+  sandbox["screenTop"] = 0;
   const NodeCtor = function Node() {} as unknown as new () => object;
   const ElementCtor = function Element() {} as unknown as new () => object;
   Object.setPrototypeOf(ElementCtor.prototype, (NodeCtor as unknown as { prototype: object }).prototype);
