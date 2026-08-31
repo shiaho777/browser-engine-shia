@@ -1016,3 +1016,84 @@ void test("listener exceptions in DOMContentLoaded surface as uncaught errors", 
   assert.ok(run.error !== null && run.error.includes("dcl-listener-boom"),
     "a throwing DCL listener must be reported, not swallowed");
 });
+
+void test("dynamic script fires load on the element after evaluation (webpack handshake)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const browserFetch = (input: unknown): Promise<{
+    ok: boolean; status: number; url: string;
+    headers: { get: (name: unknown) => string | null; has: (name: unknown) => boolean };
+    text: () => Promise<string>;
+    json: () => Promise<unknown>;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  }> => {
+    const href = String(input);
+    return Promise.resolve({
+      ok: true, status: 200, url: href,
+      headers: { get: () => null, has: () => false },
+      text: () => Promise.resolve("globalThis.chunkRan = true;"),
+      json: () => Promise.resolve({}),
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+    });
+  };
+  const run = await runScriptsOnSessionReal(session, [`
+    globalThis.marks = [];
+    const s = document.createElement("script");
+    s.addEventListener("load", function () { globalThis.marks.push("load"); });
+    s.addEventListener("error", function () { globalThis.marks.push("error"); });
+    s.src = "/chunk.js";
+    document.head.appendChild(s);
+  `], undefined, { browserFetch });
+  assert.equal(run.error, null);
+  await run.flushAsync!();
+  assert.equal(JSON.stringify(run.sandbox?.["marks"]), '["load"]');
+  assert.equal(Boolean(run.sandbox?.["chunkRan"]), true);
+});
+
+void test("guest console output is captured with levels and cross-realm errors", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    console.log("hello", 42);
+    console.warn("careful");
+    console.error(new TypeError("boom"));
+    console.log("noise-1"); console.log("noise-2"); console.log("noise-3");
+  `], undefined, {});
+  assert.equal(run.error, null);
+  const log = run.sandbox?.["__consoleLog"] as { level: string; message: string }[];
+  assert.ok(Array.isArray(log));
+  assert.ok(log.some((e) => e.level === "log" && e.message.includes("hello 42")));
+  assert.ok(log.some((e) => e.level === "warn" && e.message === "careful"));
+  assert.ok(log.some((e) => e.level === "error" && e.message.includes("TypeError: boom")),
+    "cross-realm errors must format as name: message, not {}");
+});
+
+void test("document.styleSheets + element.sheet + insertRule rewrite style text", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><head><style id='s'>body { color: red; }</style></head><body></body></html>",
+    "https://example.test/",
+  );
+  const run = await runScriptsOnSessionReal(session, [`
+    const sheet = document.getElementById("s").sheet;
+    globalThis.ownerIsStyle = sheet.ownerNode.getAttribute("id") === "s";
+    globalThis.ruleCount = sheet.cssRules.length;
+    globalThis.docSheetCount = document.styleSheets.length;
+    sheet.insertRule(".feed { color: blue; }");
+    globalThis.afterInsert = document.getElementById("s").textContent.includes(".feed");
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(Boolean(run.sandbox?.["ownerIsStyle"]), true);
+  assert.equal(Number(run.sandbox?.["ruleCount"]), 1);
+  assert.equal(Number(run.sandbox?.["docSheetCount"]), 1);
+  assert.equal(Boolean(run.sandbox?.["afterInsert"]), true);
+  // the rewrite must land in the SESSION DOM (the cascade re-reads it)
+  const style = [...session.dom.nodes.values()].find((n) => n.attrs?.get("id") === "s");
+  const text = (style?.children ?? []).map((c) => {
+    const node = session.dom.nodes.get(c);
+    return node && "text" in node ? String((node as { text?: string }).text ?? "") : "";
+  }).join("");
+  assert.ok(text.includes("body { color: red; }"), "original rule survives");
+  assert.ok(text.includes(".feed { color: blue; }"), "insertRule rewrites the element text");
+});
+

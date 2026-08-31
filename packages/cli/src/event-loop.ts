@@ -55,6 +55,11 @@ export interface ScriptNetworkOptions {
   readonly scriptNodeIds?: readonly (import("@browser-engine/ir").NodeId | null)[];
   /** Shared holder the document API reads for `document.currentScript`. */
   readonly currentScriptBox?: { current: import("@browser-engine/ir").NodeId | null };
+  /**
+   * Aligned with `sources`: the URL each source came from (inline = null),
+   * used as the vm filename so guest stack frames identify the script.
+   */
+  readonly scriptUrls?: readonly (string | null)[];
 }
 
 /** The outcome of an event-driven run: work performed + DOM mutations. */
@@ -145,6 +150,15 @@ class VirtualEventLoop {
   readonly #timers: Timer[] = [];
   #raf: { id: number; cb: (t: number) => void; cancelled: boolean }[] = [];
   #clock = 0;
+  /**
+   * Wall-clock anchor for runs whose transport is REAL (keepAlive site
+   * sessions): a timer must not fire before its delay has ACTUALLY elapsed,
+   * or a page's 120s chunk-load timeout fires the instant the queue is
+   * otherwise empty — while the host network is still mid-flight. Purely
+   * virtual runs (tests) leave this off for determinism.
+   */
+  readonly #realTime: boolean;
+  readonly #startedAtMs: number;
   #nextTimerId = 1;
   #nextRafId = 1;
   #onFrame: ((now: number) => void) | undefined;
@@ -153,6 +167,16 @@ class VirtualEventLoop {
   microtaskCount = 0;
   timerCount = 0;
   frameCount = 0;
+
+  constructor(options: { realTime?: boolean } = {}) {
+    this.#realTime = options.realTime === true;
+    this.#startedAtMs = Date.now();
+  }
+
+  /** Real milliseconds elapsed since the loop started (0 when not real-time). */
+  get #realElapsedMs(): number {
+    return this.#realTime ? Date.now() - this.#startedAtMs : Number.POSITIVE_INFINITY;
+  }
 
   /**
    * Report uncaught errors from timer/rAF callbacks without aborting the loop
@@ -277,6 +301,11 @@ class VirtualEventLoop {
       // Fire the earliest-due timer (ties: insertion order via stable id).
       pending.sort((a, b) => (a.due !== b.due ? a.due - b.due : a.id - b.id));
       const next = pending[0] as Timer;
+      if (next.due > this.#clock + this.#realElapsedMs) {
+        // Wall-clock gate (real-time runs): the earliest timer is not actually
+        // due yet — yield so the host can do real work (network) and re-drain.
+        return;
+      }
       next.cancelled = true;
       this.#clock = Math.max(this.#clock, next.due);
       this.timerCount += 1;
@@ -791,7 +820,11 @@ function installXMLHttpRequest(
 }
 
 
-function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): void {
+function installBrowserGlobals(
+  sandbox: Record<string, unknown>,
+  href: string,
+  consoleCapture?: (level: string, parts: string[]) => void,
+): void {
   let protocol = "";
   let host = "";
   let hostname = "";
@@ -873,26 +906,79 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
   sandbox["history"] = history;
   sandbox["localStorage"] = localStorage;
   sandbox["sessionStorage"] = sessionStorage;
+  // Console API (Console §1): guest output is CAPTURED into a bounded ring
+  // buffer (survivable diagnostics; DevTools-parity) — never printed, never
+  // dropped silently. Errors and warnings are kept even past the cap.
+  const consoleLog: { level: string; message: string }[] = [];
+  sandbox["__consoleLog"] = consoleLog;
+  const formatArgs = (args: unknown[]): string =>
+    args
+      .map((a) => {
+        if (typeof a === "string") return a;
+        if (typeof a === "object" && a !== null && "message" in a) {
+          // Cross-realm Error: instanceof fails across vm boundaries, so
+          // duck-type on the message member (name when present). Include the
+          // first stack frame when the guest preserved one — site bundles
+          // strip stacks at runtime, so capture whatever survives.
+          const name = (a as { name?: unknown }).name;
+          const message = String((a as { message?: unknown }).message);
+          const label = typeof name === "string" && name !== "" ? `${name}: ${message}` : message;
+          const stack = (a as { stack?: unknown }).stack;
+          const firstFrame =
+            typeof stack === "string"
+              ? (stack.split("\n").find((l) => l.includes("at ")) ?? "").trim()
+              : "";
+          return firstFrame !== "" ? `${label} :: ${firstFrame.slice(0, 160)}` : label;
+        }
+        if (typeof a === "object" && a !== null) {
+          try {
+            return JSON.stringify(a) ?? "[object]";
+          } catch {
+            return "[unserializable]";
+          }
+        }
+        if (typeof a === "symbol" || typeof a === "function") {
+          return a.toString();
+        }
+        return String(a);
+      })
+      .join(" ");
+  const record = (level: string): ((...args: unknown[]) => void) => {
+    return (...args: unknown[]) => {
+      const message = formatArgs(args);
+      if (level === "error" || level === "warn") {
+        if (consoleLog.length >= 200) consoleLog.splice(0, consoleLog.length - 199);
+      } else if (consoleLog.length >= 200) {
+        return;
+      }
+      consoleLog.push({ level, message });
+    };
+  };
   const quietConsole = {
-    log: () => {},
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-    trace: () => {},
-    dir: () => {},
-    table: () => {},
-    group: () => {},
-    groupEnd: () => {},
-    groupCollapsed: () => {},
-    time: () => {},
-    timeEnd: () => {},
-    assert: () => {},
-    clear: () => {},
-    count: () => {},
-    countReset: () => {},
+    log: record("log"),
+    info: record("info"),
+    warn: record("warn"),
+    error: record("error"),
+    debug: record("debug"),
+    trace: record("trace"),
+    dir: record("log"),
+    table: record("log"),
+    group: record("group"),
+    groupEnd: record("group"),
+    groupCollapsed: record("group"),
+    time: record("time"),
+    timeEnd: record("time"),
+    assert: record("assert"),
+    clear: () => {
+      consoleLog.length = 0;
+    },
+    count: record("count"),
+    countReset: record("count"),
   };
   sandbox["console"] = quietConsole;
+  if (consoleCapture !== undefined) {
+    sandbox["__consoleSink"] = (level: string, parts: string[]): void => consoleCapture(level, parts);
+  }
   sandbox["atob"] = (data: unknown) => Buffer.from(String(data), "base64").toString("binary");
   sandbox["btoa"] = (data: unknown) => Buffer.from(String(data), "binary").toString("base64");
   const navStart = Date.now() - 1000;
@@ -1198,7 +1284,7 @@ async function runScriptsOnSessionRealInner(
   // the sandbox is fully assembled, but appendChild can fire any time.
   let dynamicScriptEvaluator: ((nodeId: NodeId) => void) | null = null;
   let loopErrorSink: ((error: unknown) => void) | null = null;
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents } =
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents, fireScriptElementEvent } =
     buildDocumentApi(session, {
       geometryMode: "stub",
       styleMode: "fast",
@@ -1211,7 +1297,7 @@ async function runScriptsOnSessionRealInner(
         loopErrorSink?.(error);
       },
     });
-  const loop = new VirtualEventLoop();
+  const loop = new VirtualEventLoop({ realTime: true });
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
   const decoder = new TextDecoder();
   const inflight = new Set<Promise<void>>();
@@ -1437,8 +1523,12 @@ async function runScriptsOnSessionRealInner(
         box.current = nodeId;
         try {
           vm.runInContext(code, context, { timeout: 2000, filename: label });
+          // script executed → `load` fires on the element (webpack loaders
+          // resolve their chunk promise from this event)
+          fireScriptElementEvent(nodeId, "load");
         } catch (e) {
           if (error === null) error = formatError(e);
+          fireScriptElementEvent(nodeId, "error");
         }
         box.current = null;
       });
@@ -1456,9 +1546,11 @@ async function runScriptsOnSessionRealInner(
             code = response.ok ? await response.text() : null;
           }
           if (code !== null) evaluate(code, href);
+          else fireScriptElementEvent(nodeId, "error");
         } catch {
-          // network failure: the script simply never runs (matches the
-          // graceful-absent behavior of the resource loader)
+          // network failure: report `error` on the element (the page's loader
+          // listens for it) and let the script simply never run.
+          fireScriptElementEvent(nodeId, "error");
         }
       })();
     } else {
@@ -1478,7 +1570,11 @@ async function runScriptsOnSessionRealInner(
     if (source.trim() === "") continue;
     box.current = options.scriptNodeIds?.[i] ?? null;
     try {
-      vm.runInContext(source, context, { timeout: 2000 });
+      // Per-source filename: guest stack frames must identify WHICH script
+      // failed (inline sources are labeled by index, externals by URL when
+      // the host provided scriptUrls).
+      const filename = options.scriptUrls?.[i] ?? `inline-script-${i}.js`;
+      vm.runInContext(source, context, { timeout: 2000, filename });
     } catch (e) {
       if (error === null) error = formatError(e);
     }

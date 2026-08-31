@@ -309,6 +309,18 @@ export async function bootFineSession(
   ]);
   t = mark("fetchScripts", t);
   const classicSources = [...collected.sources, ...classicExternal.sources];
+  // Aligned with classicSources: each source's URL (inline = null) so vm stack
+  // frames name the script they came from.
+  const classicScriptUrls: (string | null)[] = [];
+  for (const rec of collected.records) {
+    if (rec.kind === "classic" && rec.inline && !rec.nomodule) {
+      classicScriptUrls.push(null);
+    }
+  }
+  while (classicScriptUrls.length < classicSources.length) {
+    const extIdx = classicScriptUrls.length - collected.sources.length;
+    classicScriptUrls.push(classicUrls[extIdx] ?? null);
+  }
   // Aligned with classicSources: inline sources map to their <script> nodes (record
   // order), external sources have no node here. Drives document.currentScript.
   const classicScriptNodeIds: (NodeId | null)[] = [];
@@ -324,10 +336,12 @@ export async function bootFineSession(
     browserFetch?: NonNullable<typeof browserFetch>;
     keepAlive?: boolean;
     scriptNodeIds?: (NodeId | null)[];
+    scriptUrls?: (string | null)[];
     currentScriptBox?: { current: NodeId | null };
   } = browserFetch !== undefined ? { browserFetch } : {};
   if (options.keepAlive) netOpts.keepAlive = true;
   netOpts.scriptNodeIds = classicScriptNodeIds;
+  netOpts.scriptUrls = classicScriptUrls;
   const currentScriptBox: { current: NodeId | null } = { current: null };
   netOpts.currentScriptBox = currentScriptBox;
   let run: EventDrivenRun = {

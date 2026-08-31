@@ -288,6 +288,12 @@ export function buildDocumentApi(
   readonly hasActiveAnimations: () => boolean;
   /** Fire DOMContentLoaded at the document (HTML end-of-parsing lifecycle). */
   readonly fireDocumentLifecycleEvents: () => void;
+  /**
+   * Fire `load` (or `error`) on a dynamically-executed <script> element —
+   * webpack-style loaders resolve chunk promises from the script's load
+   * event; without it every dynamic chunk "times out" from the page's view.
+   */
+  readonly fireScriptElementEvent: (nodeId: NodeId, type: "load" | "error") => void;
 } {
   let compileInlineHandler: ((body: string) => unknown) | null = null;
   let navigateToHashFragment: ((fragment: string) => void) | null = null;
@@ -2191,6 +2197,164 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     });
   };
 
+  /**
+   * CSSStyleSheet for a style/link element (CSSOM §6): ownerNode + a live
+   * cssRules list initialized from the element's style text, insertRule/
+   * deleteRule that both update the rule list AND rewrite the element's text
+   * content — the session's stylesheet pipeline re-parses the DOM on
+   * re-render, so rewritten text is what actually drives the cascade.
+   * Emotion/styled-components-like libraries depend on exactly this surface
+   * (`sheet.ownerNode`, `sheet.cssRules`, `sheet.insertRule`) for their
+   * speed/nonce paths.
+   */
+  const styleSheetCache = new Map<NodeId, object>();
+  const makeStyleSheetObject = (nodeId: NodeId): object => {
+    const cached = styleSheetCache.get(nodeId);
+    if (cached !== undefined) return cached;
+    const styleText = (): string => {
+      let text = "";
+      const collect = (id: NodeId): void => {
+        const node = session.dom.nodes.get(id);
+        if (node === undefined) return;
+        if (node.kind === "text") {
+          text += node.text ?? "";
+          return;
+        }
+        for (const child of node.children) collect(child);
+      };
+      collect(nodeId);
+      return text;
+    };
+    const rewriteStyleText = (text: string): void => {
+      const node = session.dom.nodes.get(nodeId);
+      if (node === undefined) return;
+      const textIds: NodeId[] = [];
+      const collectText = (id: NodeId): void => {
+        const node = session.dom.nodes.get(id);
+        if (node === undefined) return;
+        if (node.kind === "text") {
+          textIds.push(id);
+          return;
+        }
+        for (const child of node.children) collectText(child);
+      };
+      collectText(nodeId);
+      if (textIds.length === 1 && (session.dom.nodes.get(textIds[0] as NodeId)?.text ?? "") === text) {
+        return;
+      }
+      for (const textId of textIds) session.removeChild(nodeId, textId);
+      if (text !== "") session.appendChild(nodeId, session.createTextNode(text));
+      mutations += 1;
+    };
+    type StyleRuleEntry = { cssText: string };
+    let rules: StyleRuleEntry[] = [];
+    let rulesFromText = "";
+    const ensureRulesParsed = (): void => {
+      const text = styleText();
+      if (text === rulesFromText) return;
+      rulesFromText = text;
+      rules = [];
+      // Top-level rule splitter: handles @media blocks by brace depth.
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        if (ch === "{") depth += 1;
+        else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            rules.push({ cssText: text.slice(start, i + 1).trim() });
+            // skip trailing semicolon/whitespace to the next rule start
+            let j = i + 1;
+            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
+            if (text[j] === ";") j += 1;
+            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
+            start = j;
+            i = j - 1;
+          }
+        }
+      }
+      const tail = text.slice(start).trim();
+      if (tail !== "") rules.push({ cssText: tail });
+    };
+    const rebuildText = (): void => {
+      rewriteStyleText(rules.map((r) => r.cssText).join("\n"));
+      rulesFromText = rules.map((r) => r.cssText).join("\n");
+    };
+    const sheet: Record<string, unknown> = {
+      get ownerNode(): object {
+        return makeElementCached(nodeId);
+      },
+      get cssRules(): object[] {
+        ensureRulesParsed();
+        return rules.map((r) => ({ cssText: r.cssText }));
+      },
+      get rules(): object[] {
+        return sheet["cssRules"] as object[];
+      },
+      insertRule(cssText: unknown, index?: unknown): number {
+        ensureRulesParsed();
+        const rule = coerceGuestString(cssText).trim();
+        if (rule === "") throw new SyntaxError("insertRule: empty rule text");
+        const i =
+          index === undefined
+            ? rules.length
+            : Math.max(0, Math.min(rules.length, Math.trunc(Number(index))));
+        rules.splice(i, 0, { cssText: rule });
+        rebuildText();
+        return i;
+      },
+      deleteRule(index: unknown): void {
+        ensureRulesParsed();
+        const i = Math.trunc(Number(index));
+        if (i < 0 || i >= rules.length) {
+          throw new Error(`deleteRule: index ${i} out of range`);
+        }
+        rules.splice(i, 1);
+        rebuildText();
+      },
+      get cssText(): string {
+        return styleText();
+      },
+      get disabled(): boolean {
+        return false;
+      },
+      set disabled(_value: unknown) {},
+      get media(): { mediaText: string } {
+        const node = session.dom.nodes.get(nodeId);
+        return { mediaText: node?.attrs?.get("media") ?? "" };
+      },
+      get title(): string | null {
+        const node = session.dom.nodes.get(nodeId);
+        return node?.attrs?.get("title") ?? null;
+      },
+      toString(): string {
+        return "[object CSSStyleSheet]";
+      },
+    };
+    styleSheetCache.set(nodeId, sheet);
+    return sheet;
+  };
+
+  /** Live list of the document's style/link sheets (document.styleSheets). */
+  const documentStyleSheetsList = (): object[] => {
+    const sheets: object[] = [];
+    const visit = (id: NodeId): void => {
+      const node = session.dom.nodes.get(id);
+      if (node === undefined) return;
+      if (node.kind === "element" && (node.tag === "style" || node.tag === "link")) {
+        // link only counts when rel=stylesheet (CSSOM: only active sheets)
+        const rel = (node.attrs?.get("rel") ?? "").toLowerCase();
+        if (node.tag === "style" || rel.includes("stylesheet")) {
+          sheets.push(makeStyleSheetObject(id));
+        }
+      }
+      for (const child of node.children) visit(child);
+    };
+    visit(session.dom.root);
+    return sheets;
+  };
+
   /** Cache wrappers per node id so repeated lookups return a stable object. */
   const wrapperCache = new Map<NodeId, object>();
   const makeElementCached = (id: NodeId): object => {
@@ -2237,6 +2401,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     // defineProperties with own accessors).
     if (tag === "a" || tag === "area") {
       Object.defineProperties(w, urlDecompositionDescriptors(id, session));
+    }
+    if (tag === "style" || tag === "link") {
+      Object.defineProperty(w, "sheet", {
+        get: () => makeStyleSheetObject(id),
+        enumerable: true,
+        configurable: true,
+      });
     }
     wrapperCache.set(id, w);
     return w;
@@ -2938,6 +3109,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     get baseURI(): string {
       return session.baseUrl;
     },
+    get styleSheets(): object[] {
+      return documentStyleSheetsList();
+    },
     get location(): unknown {
       if (options.locationBox !== undefined && options.locationBox.current !== null) {
         return options.locationBox.current;
@@ -3394,6 +3568,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       }
     }
   };
+  const fireScriptElementEvent = (nodeId: NodeId, type: "load" | "error"): void => {
+    // HTML script element: `load` fires when the script has been fetched and
+    // executed; `error` when the fetch or evaluation failed. Listeners attach
+    // via the element's registry (el.onload / addEventListener).
+    dispatch(nodeId, makeEvent(type));
+  };
   return {
     document,
     globals: domGlobals,
@@ -3401,6 +3581,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     tickAnimations,
     hasActiveAnimations,
     fireDocumentLifecycleEvents,
+    fireScriptElementEvent,
   };
 }
 
