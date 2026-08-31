@@ -243,6 +243,12 @@ export type DocumentApiOptions = {
   readonly inlineHandlerCompiler?: (body: string) => unknown;
   /** Hash-navigation sink for a/area activation (fires hashchange upstream). */
   readonly hashNavigator?: (fragment: string) => void;
+  /**
+   * Mutable holder for the <script> element currently executing (HTML:
+   * `document.currentScript`). The runner sets it before each inline source
+   * and clears it after; the document getter reads it live.
+   */
+  readonly currentScriptBox?: { current: NodeId | null };
 };
 
 export function buildDocumentApi(
@@ -2700,6 +2706,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         if (n.kind === "element" && n.tag === "body") return makeElementCached(id);
       }
       return null;
+    },
+    get scripts(): object {
+      return makeLiveCollection(() => elementIdsByTagName(session.dom.root, "script"));
+    },
+    get currentScript(): object | null {
+      const id = options.currentScriptBox?.current ?? null;
+      return id !== null ? makeElementCached(id) : null;
     },
     get cookie(): string {
       return cookieJar;

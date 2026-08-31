@@ -694,3 +694,21 @@ globalThis.tags = tags.join(",");`,
   assert.equal(run.error, null);
   assert.equal(run.sandbox?.["tags"], "SPAN");
 });
+
+void test("document.scripts + currentScript support self-locating inline scripts", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession(
+    "<html><body><div id='app'></div></body></html>",
+    "https://example.test/",
+  );
+  const src = `var host = document.getElementById("app");
+var sc = document.createElement("script");
+host.appendChild(sc);
+var s = document.currentScript || document.scripts[document.scripts.length - 1];
+globalThis.scriptsLen = document.scripts.length;
+globalThis.removed = (s.parentNode ? "has-parent" : "no-parent");`;
+  const run = await runScriptsOnSessionReal(session, [src], undefined, {});
+  assert.equal(run.error, null);
+  assert.ok(Number(run.sandbox?.["scriptsLen"]) >= 1);
+  assert.equal(run.sandbox?.["removed"], "has-parent");
+});

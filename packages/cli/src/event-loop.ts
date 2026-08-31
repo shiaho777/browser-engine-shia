@@ -45,6 +45,14 @@ export interface ScriptNetworkOptions {
    * Live handles are unref'd so they never hold the host process open.
    */
   readonly keepAlive?: boolean;
+  /**
+   * Aligned with `sources` (external scripts may be interleaved): the <script>
+   * element node executing each source, or null when unknown. Drives
+   * `document.currentScript`.
+   */
+  readonly scriptNodeIds?: readonly (import("@browser-engine/ir").NodeId | null)[];
+  /** Shared holder the document API reads for `document.currentScript`. */
+  readonly currentScriptBox?: { current: import("@browser-engine/ir").NodeId | null };
 }
 
 /** The outcome of an event-driven run: work performed + DOM mutations. */
@@ -117,9 +125,28 @@ class VirtualEventLoop {
   #nextRafId = 1;
   #onFrame: ((now: number) => void) | undefined;
   #frameWork: (() => boolean) | undefined;
+  #onUncaught: ((error: unknown) => void) | undefined;
   microtaskCount = 0;
   timerCount = 0;
   frameCount = 0;
+
+  /**
+   * Report uncaught errors from timer/rAF callbacks without aborting the loop
+   * (HTML: an exception in a timer task reports to the global error handler
+   * and the task completes).
+   */
+  onUncaught(handler: (error: unknown) => void): void {
+    this.#onUncaught = handler;
+  }
+
+  #runGuarded(fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      if (this.#onUncaught === undefined) throw e;
+      this.#onUncaught(e);
+    }
+  }
 
   /**
    * Register a per-frame HOOK driven by the same clock as `requestAnimationFrame`:
@@ -202,7 +229,7 @@ class VirtualEventLoop {
         if (steps++ > maxSteps) return;
         const fn = this.#microtasks.shift() as () => void;
         this.microtaskCount += 1;
-        fn();
+        this.#runGuarded(fn);
       }
       const frame = this.#raf.filter((r) => !r.cancelled);
       const pending = this.#timers.filter((t) => !t.cancelled);
@@ -218,7 +245,7 @@ class VirtualEventLoop {
         this.#onFrame?.(this.#clock);
         for (const r of frame) {
           if (steps++ > maxSteps) return;
-          r.cb(this.#clock);
+          this.#runGuarded(() => r.cb(this.#clock));
         }
         continue;
       }
@@ -230,7 +257,7 @@ class VirtualEventLoop {
       this.#clock = Math.max(this.#clock, next.due);
       this.timerCount += 1;
       if (steps++ > maxSteps) return;
-      next.fn();
+      this.#runGuarded(next.fn);
     }
   }
 }
@@ -1271,14 +1298,24 @@ export async function runScriptsOnSessionReal(
     const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 6).join(" | ") : "";
     return stack ? `${message} :: ${stack}` : message;
   };
-  for (const source of sources) {
+  // HTML: an uncaught timer/rAF callback error reports to the global handler
+  // and the task completes — the loop keeps draining and the error is
+  // recorded for the frame summary instead of aborting the pump.
+  loop.onUncaught((e) => {
+    if (error === null) error = formatError(e);
+  });
+  const box = options.currentScriptBox ?? { current: null as import("@browser-engine/ir").NodeId | null };
+  for (let i = 0; i < sources.length; i += 1) {
+    const source = sources[i] ?? "";
     if (source.trim() === "") continue;
+    box.current = options.scriptNodeIds?.[i] ?? null;
     try {
       vm.runInContext(source, context, { timeout: 2000 });
     } catch (e) {
       if (error === null) error = formatError(e);
     }
   }
+  box.current = null;
   const flushAsync = async (maxMs = 500): Promise<void> => {
     loop.drain();
     let rounds = 0;

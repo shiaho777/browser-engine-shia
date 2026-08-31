@@ -22,6 +22,8 @@ export interface ScriptRecord {
   readonly url: string | null;
   readonly source: string | null;
   readonly nomodule: boolean;
+  /** The <script> element node (present for inline scripts with a body). */
+  readonly nodeId?: NodeId;
 }
 
 export interface CollectedScripts {
@@ -142,6 +144,7 @@ export function collectDocumentScripts(dom: DomTree, baseUrl: string): Collected
           inline: true,
           url: null,
           source: body,
+          nodeId: id,
           nomodule: false,
         });
       }
@@ -306,11 +309,27 @@ export async function bootFineSession(
   ]);
   t = mark("fetchScripts", t);
   const classicSources = [...collected.sources, ...classicExternal.sources];
+  // Aligned with classicSources: inline sources map to their <script> nodes (record
+  // order), external sources have no node here. Drives document.currentScript.
+  const classicScriptNodeIds: (NodeId | null)[] = [];
+  for (const rec of collected.records) {
+    if (rec.kind === "classic" && rec.inline && !rec.nomodule) {
+      classicScriptNodeIds.push(rec.nodeId ?? null);
+    }
+  }
+  while (classicScriptNodeIds.length < classicSources.length) classicScriptNodeIds.push(null);
   const browserFetch =
     network !== null ? networkStackToBrowserFetch(network, base) : undefined;
-  const netOpts: { browserFetch?: NonNullable<typeof browserFetch>; keepAlive?: boolean } =
-    browserFetch !== undefined ? { browserFetch } : {};
+  const netOpts: {
+    browserFetch?: NonNullable<typeof browserFetch>;
+    keepAlive?: boolean;
+    scriptNodeIds?: (NodeId | null)[];
+    currentScriptBox?: { current: NodeId | null };
+  } = browserFetch !== undefined ? { browserFetch } : {};
   if (options.keepAlive) netOpts.keepAlive = true;
+  netOpts.scriptNodeIds = classicScriptNodeIds;
+  const currentScriptBox: { current: NodeId | null } = { current: null };
+  netOpts.currentScriptBox = currentScriptBox;
   let run: EventDrivenRun = {
     microtasks: 0,
     timers: 0,
