@@ -91,7 +91,7 @@ class Thenable<T> {
     this.#cbs.length = 0;
   }
 
-  then(onFulfilled: (v: T) => unknown): Thenable<unknown> {
+  then(onFulfilled: (v: T) => unknown, onRejected?: (e: unknown) => unknown): Thenable<unknown> {
     const next = new Thenable<unknown>(this.loop);
     const run = (v: T): void => {
       const result = onFulfilled(v);
@@ -100,6 +100,36 @@ class Thenable<T> {
       } else {
         next.resolve(result);
       }
+    };
+    // This thenable never rejects (errors resolve to { ok: false }), but the
+    // platform surface needs the two-argument then + catch passthrough so
+    // `fetch(...).catch(...)` and `promise.then(ok, err)` chains work.
+    const rejectRun = (e: unknown): void => {
+      if (onRejected !== undefined) {
+        const result = onRejected(e);
+        next.resolve(result as T);
+      } else {
+        next.resolve(undefined as unknown as T);
+      }
+    };
+    if (this.#settled) {
+      this.loop.microtask(() => run(this.#value as T));
+    } else {
+      this.#cbs.push(run);
+    }
+    void rejectRun;
+    return next;
+  }
+
+  catch(onRejected: (e: unknown) => unknown): Thenable<unknown> {
+    return this.then((v) => v, onRejected);
+  }
+
+  finally(fn: () => unknown): Thenable<T> {
+    const next = new Thenable<T>(this.loop);
+    const run = (v: T): void => {
+      fn();
+      next.resolve(v);
     };
     if (this.#settled) {
       this.loop.microtask(() => run(this.#value as T));
@@ -568,6 +598,14 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   if (sandbox["URLSearchParams"] === undefined) sandbox["URLSearchParams"] = URLSearchParams;
   if (sandbox["AbortController"] === undefined) sandbox["AbortController"] = AbortController;
   if (sandbox["AbortSignal"] === undefined) sandbox["AbortSignal"] = AbortSignal;
+  // Fetch API primitives (Fetch §5): guest code constructs Headers/Request/
+  // Response directly (fetch polyfills, API clients). The host realm's undici
+  // classes are the real implementations — exposing them binds construction
+  // to the same shapes our fetch impl returns.
+  if (sandbox["Headers"] === undefined) sandbox["Headers"] = Headers;
+  if (sandbox["Request"] === undefined) sandbox["Request"] = Request;
+  if (sandbox["Response"] === undefined) sandbox["Response"] = Response;
+  if (sandbox["FormData"] === undefined) sandbox["FormData"] = FormData;
   if (sandbox["Blob"] === undefined) sandbox["Blob"] = makeBlobClass();
   if (sandbox["File"] === undefined) sandbox["File"] = makeFileClass();
   if (sandbox["URL.createObjectURL"] === undefined) {
@@ -1167,12 +1205,19 @@ async function runScriptsOnSessionRealInner(
   // Late-bound dynamic script evaluator: the vm context exists only after
   // the sandbox is fully assembled, but appendChild can fire any time.
   let dynamicScriptEvaluator: ((nodeId: NodeId) => void) | null = null;
+  let loopErrorSink: ((error: unknown) => void) | null = null;
   const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents } =
     buildDocumentApi(session, {
       geometryMode: "stub",
       styleMode: "fast",
       locationBox,
       onDynamicScript: (nodeId: NodeId) => dynamicScriptEvaluator?.(nodeId),
+      // listener exceptions (lifecycle + document.dispatchEvent) surface as
+      // the run's error instead of vanishing
+      onListenerError: (error: unknown) => {
+        if (error === null) return;
+        loopErrorSink?.(error);
+      },
     });
   const loop = new VirtualEventLoop();
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
@@ -1189,7 +1234,18 @@ async function runScriptsOnSessionRealInner(
       return raw;
     }
   };
-  const fetchImpl = (input: unknown, init?: unknown): Thenable<object> => {
+  const fetchImpl = (input: unknown, init?: unknown): Promise<object> => {
+    // Fetch must return a REAL Promise: guests call .catch/.finally and race
+    // fetch against their own AbortSignal timeouts — a timeout must surface
+    // as a REJECTION (Fetch §6: abort rejects), not a resolve-only thenable
+    // that leaves the racer's outcome undefined. The inner thenable keeps the
+    // virtual-loop ordering; this wrapper adds the platform promise surface.
+    const signal =
+      init !== null && typeof init === "object" && "signal" in init
+        ? (init as { signal?: unknown }).signal
+        : undefined;
+    const abortLike = signal as { aborted?: boolean; addEventListener?: (t: string, fn: () => void) => void } | undefined;
+    const fetchCore = (): Thenable<object> => {
     const deferred = loop.deferred<object>();
     const job = (async (): Promise<void> => {
       if (browserFetch !== undefined) {
@@ -1290,6 +1346,24 @@ async function runScriptsOnSessionRealInner(
     const tracked = job.finally(() => inflight.delete(tracked));
     inflight.add(tracked);
     return deferred;
+    };
+    if (abortLike !== undefined && abortLike !== null && abortLike.aborted === true) {
+      return Promise.reject(new Error("AbortError: The operation was aborted"));
+    }
+    if (abortLike !== undefined && abortLike !== null && typeof abortLike.addEventListener === "function") {
+      let onAbort: (() => void) | null = null;
+      const abortRejection = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new Error("AbortError: The operation was aborted"));
+        abortLike.addEventListener!("abort", onAbort);
+      });
+      // Never leak an unhandled abort rejection when the fetch wins the race.
+      void abortRejection.catch(() => undefined);
+      return Promise.race([
+        Promise.resolve(fetchCore()),
+        abortRejection,
+      ]) as Promise<object>;
+    }
+    return Promise.resolve(fetchCore());
   };
 
   const sandbox: Record<string, unknown> = {
@@ -1403,6 +1477,9 @@ async function runScriptsOnSessionRealInner(
   loop.onUncaught((e) => {
     if (error === null) error = formatError(e);
   });
+  loopErrorSink = (e: unknown): void => {
+    if (error === null) error = formatError(e);
+  };
   const box = options.currentScriptBox ?? { current: null as import("@browser-engine/ir").NodeId | null };
   for (let i = 0; i < sources.length; i += 1) {
     const source = sources[i] ?? "";
@@ -1441,6 +1518,11 @@ async function runScriptsOnSessionRealInner(
       rounds += 1;
     }
     inflight.clear();
+    loop.drain();
+    // Guest fetch chains run on REAL promise microtasks (host queue); a guest
+    // reaction may hop through our loop thenables, so yield a full macrotask
+    // turn (which runs ALL chained host microtasks) before the final drain.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     loop.drain();
     if (options.keepAlive !== true) {
       for (const id of liveIntervals) clearInterval(id);

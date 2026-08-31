@@ -267,6 +267,14 @@ export type DocumentApiOptions = {
    * attributes, fetches the (already-resolved) src, evaluates, and drains.
    */
   readonly onDynamicScript?: (nodeId: NodeId) => void;
+  /**
+   * Error sink for exceptions thrown by guest event listeners that the
+   * document object dispatches directly (DOMContentLoaded lifecycle,
+   * document.dispatchEvent): per HTML each listener error is reported as an
+   * uncaught exception and independent listeners still run. The runner
+   * connects this to its uncaught-error record.
+   */
+  readonly onListenerError?: (error: unknown) => void;
 };
 
 export function buildDocumentApi(
@@ -3091,8 +3099,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       for (const fn of set) {
         try {
           fn(event);
-        } catch {
-          // Guest/page code may throw here; swallowed by design.
+        } catch (error) {
+          // HTML: a listener exception is reported as uncaught; the
+          // remaining listeners still run.
+          if (options.onListenerError !== undefined) options.onListenerError(error);
         }
       }
       return true;
@@ -3377,8 +3387,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       for (const fn of [...set]) {
         try {
           fn(dcl);
-        } catch {
-          // Guest/page code may throw here; swallowed by design.
+        } catch (error) {
+          // HTML: report the exception; the remaining listeners still run.
+          if (options.onListenerError !== undefined) options.onListenerError(error);
         }
       }
     }

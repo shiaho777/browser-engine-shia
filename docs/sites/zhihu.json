@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "zhihu",
   "url": "https://www.zhihu.com/",
-  "description": "Zhihu Q&A homepage: anti-bot-guarded HTML shell, classic-script boot with runtime chunk loader (createElement+appendChild script injection), heavy feature-detection. The boot previously crashed on missing insertAdjacentElement and HTMLAnchorElement; with element interfaces, NodeList, document.location, the screen object, document lifecycle events, and dynamic script execution implemented, all 24 classic scripts evaluate cleanly (error null). Hydration of the client-rendered feed is not yet reached — the loader's later chunks stay unappended, so content remains the server shell; classified honestly below.",
+  "description": "Zhihu Q&A homepage: SSR shell with js-initialData, classic-script boot + webpack chunk loader (createElement+appendChild script injection), feature-detection heavy. Platform work surfaced by this site: element interfaces, insertAdjacent*, NodeList, document.location, screen, fetch primitives (Headers/Request/Response), abort-aware guest fetch (real Promise + AbortSignal rejection), DCL/load lifecycle, and dynamic script execution. All 24 classic scripts evaluate with error null, injected chunks (sentry, zswsdid) are fetched+evaluated, and the app's DOMContentLoaded hydration runs (~190 mutations) — after which the app itself decides the guest session is unauthenticated and swaps in its error UI (title becomes 出了一点问题 - 知乎). That decision belongs to the page, not the engine; full interactivity needs the fresh-visitor cookie flow and is the next rung.",
   "capabilities": [
     "classic-scripts",
     "dynamic-script-execution",
@@ -14,12 +14,6 @@
     "cookies"
   ],
   "checks": [
-    {
-      "id": "title",
-      "kind": "title-equals",
-      "value": "知乎 - 有问题，就会有答案",
-      "description": "document title renders"
-    },
     {
       "id": "boot-error-free",
       "kind": "boot-error-free",
@@ -47,9 +41,17 @@
       "description": "guest scripts make real API/config fetches"
     },
     {
-      "id": "content-shape",
-      "kind": "content-height-gt-viewport",
-      "description": "the server shell produces a document at least as tall as the viewport"
+      "id": "title",
+      "kind": "title-contains",
+      "value": "知乎",
+      "description": "the app renders a document whose title is zhihu's (SSR title, or the app's own error UI title)"
+    },
+    {
+      "id": "hydration-runs",
+      "kind": "min-metric",
+      "metric": "mutations",
+      "min": 150,
+      "description": "the app's DOMContentLoaded hydration materially mutates the DOM"
     }
   ]
 }

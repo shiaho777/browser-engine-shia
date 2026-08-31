@@ -950,3 +950,69 @@ void test("DOMContentLoaded fires after classic scripts; window load follows", a
   assert.ok(names.includes("dcl"), "DOMContentLoaded must fire");
   assert.ok(names.includes("load"), "window load must fire");
 });
+
+void test("fetch primitives: Headers/Request/Response are constructible in the guest realm", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    const h = new Headers({ "content-type": "application/json" });
+    globalThis.headerType = typeof Headers;
+    globalThis.hasHeader = h.has("content-type");
+    globalThis.reqType = typeof Request;
+    globalThis.resType = typeof Response;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["headerType"], "function");
+  assert.equal(run.sandbox?.["hasHeader"], true);
+  assert.equal(run.sandbox?.["reqType"], "function");
+  assert.equal(run.sandbox?.["resType"], "function");
+});
+
+void test("guest fetch supports .catch chains (real promise surface)", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body><div id='a'></div></body></html>", "https://example.test/");
+  const transport = (url: string): Promise<Uint8Array | undefined> =>
+    Promise.resolve(url === "https://example.test/x" ? new TextEncoder().encode("body-x") : undefined);
+  const run = await runScriptsOnSessionReal(session, [`
+    fetch("https://example.test/x")
+      .catch(function () { return "rejected"; })
+      .then(function (r) { return r.text(); })
+      .then(function (b) { document.getElementById("a").setAttribute("data-via-catch", b); });
+  `], transport, {});
+  assert.equal(run.error, null);
+  const a = [...session.dom.nodes.values()].find((n) => n.attrs?.get("id") === "a");
+  assert.equal(a?.attrs?.get("data-via-catch"), "body-x", ".catch on guest fetch must pass through");
+});
+
+void test("guest fetch rejects on AbortSignal so timeout races surface as rejections", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body><div id='a'></div></body></html>", "https://example.test/");
+  const transport = (): Promise<Uint8Array | undefined> => new Promise(() => undefined);
+  const run = await runScriptsOnSessionReal(session, [`
+    const controller = new AbortController();
+    Promise.race([
+      fetch("https://example.test/slow", { signal: controller.signal }),
+      new Promise(function (_r, reject) { setTimeout(function () { controller.abort(); reject(new Error("client-timeout")); }, 5); }),
+    ]).then(function () {
+      document.getElementById("a").setAttribute("data-outcome", "resolved");
+    }, function (e) {
+      document.getElementById("a").setAttribute("data-outcome", e && e.message === "client-timeout" ? "timeout-caught" : String(e && e.message));
+    });
+  `], transport, {});
+  assert.equal(run.error, null);
+  const a = [...session.dom.nodes.values()].find((n) => n.attrs?.get("id") === "a");
+  assert.equal(a?.attrs?.get("data-outcome"), "timeout-caught",
+    "abort must reject the fetch so the client's timeout branch wins the race cleanly");
+});
+
+void test("listener exceptions in DOMContentLoaded surface as uncaught errors", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    document.addEventListener("DOMContentLoaded", function () {
+      throw new Error("dcl-listener-boom");
+    });
+  `], undefined, {});
+  assert.ok(run.error !== null && run.error.includes("dcl-listener-boom"),
+    "a throwing DCL listener must be reported, not swallowed");
+});
