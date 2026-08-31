@@ -877,28 +877,43 @@ void test("dynamic <script> execution: appended src script fetches, evaluates, a
     "<html><body><div id='out'></div></body></html>",
     "https://example.test/",
   );
-  const browserFetch = async (input: unknown): Promise<{ ok: boolean; status: number; url: string; text: () => Promise<string> }> => {
-    const href = String(input);
-    if (href.endsWith("/chunk.js")) {
-      return { ok: true, status: 200, url: href, text: async () => "globalThis.chunkRan = true; document.getElementById('out').textContent = 'chunk';" };
-    }
-    return { ok: false, status: 404, url: href, text: async () => "" };
+  const chunkCode = "globalThis.chunkRan = true; document.getElementById('out').textContent = 'chunk';";
+  const responseFor = (href: string): {
+    ok: boolean; status: number; url: string;
+    headers: { get: (name: unknown) => string | null; has: (name: unknown) => boolean };
+    text: () => Promise<string>;
+    json: () => Promise<unknown>;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  } => {
+    const body = href.endsWith("/chunk.js") ? chunkCode : "";
+    const status = href.endsWith("/chunk.js") ? 200 : 404;
+    return {
+      ok: status === 200,
+      status,
+      url: href,
+      headers: { get: () => null, has: () => false },
+      text: () => Promise.resolve(body),
+      json: () => Promise.resolve({}),
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+    };
   };
+  type FetchResponse = ReturnType<typeof responseFor>;
+  const browserFetch = (input: unknown): Promise<FetchResponse> => Promise.resolve(responseFor(String(input)));
   const run = await runScriptsOnSessionReal(session, [`
     const s = document.createElement("script");
     s.src = "/chunk.js";
     document.head.appendChild(s);
-  `], undefined, { browserFetch: browserFetch as never });
+  `], undefined, { browserFetch });
   assert.equal(run.error, null);
   await run.flushAsync!();
   type NId = Parameters<typeof session.dom.nodes.get>[0];
   const outId = [...session.dom.nodes.values()].find((n) => n.attrs?.get("id") === "out");
   const text = (outId?.children ?? []).map((c: NId) => {
     const node = session.dom.nodes.get(c);
-    return node && "text" in node ? String((node as { text?: string }).text ?? "") : "";
+    return node && "text" in node ? String(node.text ?? "") : "";
   }).join("");
   assert.equal(text, "chunk", "dynamically injected script must execute and mutate the DOM");
-  assert.equal((run.sandbox as Record<string, unknown> | undefined)?.["chunkRan"], true);
+  assert.equal(Boolean(run.sandbox?.["chunkRan"]), true);
 });
 void test("screen object exposes CSSOM View dimensions for mobile detection", async () => {
   const { runScriptsOnSessionReal } = await import("./event-loop.js");
@@ -929,8 +944,9 @@ void test("DOMContentLoaded fires after classic scripts; window load follows", a
   assert.equal(run.error, null);
   assert.equal(run.flushAsync !== undefined, true);
   await run.flushAsync!();
-  const order = (run.sandbox as Record<string, unknown> | undefined)?.["order"] as unknown;
+  const order: unknown = run.sandbox?.["order"];
   assert.ok(Array.isArray(order));
-  assert.ok((order as string[]).includes("dcl"), "DOMContentLoaded must fire");
-  assert.ok((order as string[]).includes("load"), "window load must fire");
+  const names: string[] = order.map((entry) => String(entry));
+  assert.ok(names.includes("dcl"), "DOMContentLoaded must fire");
+  assert.ok(names.includes("load"), "window load must fire");
 });
