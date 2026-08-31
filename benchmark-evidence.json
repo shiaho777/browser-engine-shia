@@ -5,8 +5,8 @@
   "metrics": {
     "handWrittenLines": 48756,
     "generatedLines": 5439,
-    "testLines": 26329,
-    "totalLines": 80524,
+    "testLines": 26345,
+    "totalLines": 80540,
     "cssPropertyCount": 340,
     "domMemberCount": 552,
     "platformFeatureCount": 892,

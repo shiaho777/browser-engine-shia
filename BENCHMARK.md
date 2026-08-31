@@ -27,8 +27,8 @@ We **lead** on 3 dimension(s) (Hand-written surface, compat-per-LOC, mechanism-d
 
 - Hand-written product lines: **48,756**
 - Generated lines: 5,439
-- Test lines: 26,329
-- Total system size: 80,524
+- Test lines: 26,345
+- Total system size: 80,540
 - CSS properties (data table): **340**
 - DOM interface members (IDL table): **552**
 - Platform features total: 892
