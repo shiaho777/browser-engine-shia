@@ -13,9 +13,9 @@ async function captureRequest(req: {
 }): Promise<{ url: string | undefined; headers: HeaderBag }> {
   let captured: { url: string | undefined; headers: HeaderBag } = { url: undefined, headers: {} };
   const origFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: string, init?: { headers?: HeaderBag }) => {
+  globalThis.fetch = ((input: string, init?: { headers?: HeaderBag }) => {
     captured = { url: input, headers: { ...(init?.headers ?? {}) } };
-    return new Response("<html></html>", { status: 200 });
+    return Promise.resolve(new Response("<html></html>", { status: 200 }));
   }) as typeof fetch;
   try {
     await nodeFetchNetworkStack.request(req);
