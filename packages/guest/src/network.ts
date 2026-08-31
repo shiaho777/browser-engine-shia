@@ -46,6 +46,13 @@ export interface NetworkRequest {
   readonly headers?: Readonly<Record<string, string>>;
   /** Optional request body bytes. */
   readonly body?: Uint8Array;
+  /**
+   * Fetch Metadata destination (Fetch §4.3): "document", "script", "style",
+   * "image", "empty", … — real browsers send Sec-Fetch-Dest on every request.
+   */
+  readonly destination?: string;
+  /** Fetch Metadata request mode: "navigate" | "cors" | "no-cors" | "same-origin". */
+  readonly mode?: string;
 }
 
 /** A minimal network response: status, headers, and the raw body bytes. */
@@ -110,10 +117,34 @@ export const nodeFetchNetworkStack: NetworkStack = {
       });
     }
 
-    const init: RequestInit = { method: req.method ?? "GET" };
-    if (req.headers !== undefined) {
-      init.headers = { ...req.headers };
+    const method = (req.method ?? "GET").toUpperCase();
+    const init: RequestInit = { method };
+    // Browser-default request fingerprint (Fetch §4.3 + UA-CH hints): direct
+    // stack users (resource loader, dynamic scripts) send what a real browser
+    // sends — no bare requests that bot-walls reject on sight.
+    const defaultHeaders: Record<string, string> = {
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      accept:
+        req.destination === "script"
+          ? "*/*"
+          : req.destination === "style"
+            ? "text/css,*/*;q=0.1"
+            : req.destination === "image"
+              ? "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+              : "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"macOS"',
+      "sec-fetch-dest": req.destination ?? "empty",
+      "sec-fetch-mode": req.mode ?? "cors",
+      "sec-fetch-site": secFetchSite(parsed, undefined),
+    };
+    if (req.mode === "navigate" || req.destination === "document") {
+      defaultHeaders["sec-fetch-user"] = "?1";
+      defaultHeaders["upgrade-insecure-requests"] = "1";
     }
+    init.headers = { ...defaultHeaders, ...(req.headers ?? {}) };
     if (req.body !== undefined) {
       // Copy into a fresh ArrayBuffer-backed view for the fetch body.
       init.body = req.body.slice();
@@ -182,8 +213,21 @@ export function createBrowserNetworkStack(options: BrowserNetworkOptions = {}): 
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": '"macOS"',
       "upgrade-insecure-requests": "1",
+      // Fetch Metadata (Fetch §4.3): Chrome sends Sec-Fetch-* on every request
+      // and server bot-walls gate on them. dest/mode come from the request
+      // when known; navigations default to document/navigate.
+      "sec-fetch-dest": req.destination ?? (method === "GET" && req.mode === undefined ? "document" : "empty"),
+      "sec-fetch-mode": req.mode ?? (req.destination === undefined && method === "GET" ? "navigate" : "cors"),
+      "sec-fetch-site": secFetchSite(parsed, baseUrl),
       ...(req.headers ?? {}),
     };
+    // sec-fetch-user is sent ONLY on navigations (Fetch Metadata: user activation hint)
+    if (req.mode === "navigate" || req.destination === "document") {
+      headers["sec-fetch-user"] = "?1";
+    }
+    for (const key of Object.keys(headers)) {
+      if (headers[key] === undefined) delete headers[key];
+    }
     const lower = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
     if (!lower.has("user-agent")) headers["user-agent"] = userAgent;
     if (baseUrl !== undefined) {
@@ -469,6 +513,25 @@ export function networkStackToFetchFn(stack: NetworkStack): (url: string) => Pro
   };
 }
 
+
+/** Fetch Metadata §4.3 Sec-Fetch-Site: the request initiator's relationship to the target. */
+function secFetchSite(parsed: URL, baseUrl: string | undefined): string {
+  if (baseUrl === undefined) return "none";
+  try {
+    const base = new URL(baseUrl);
+    if (base.origin === parsed.origin) return "same-origin";
+    // same-site = registrable domains equal; approximate with the last two
+    // labels (public-suffix-free approximation, matching common cases).
+    const siteOf = (host: string): string => {
+      const parts = host.split(".");
+      return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+    };
+    return siteOf(base.hostname) === siteOf(parsed.hostname) ? "same-site" : "cross-site";
+  } catch {
+    return "none";
+  }
+}
+
 export function networkStackToBrowserFetch(
   stack: NetworkStack,
   baseUrl?: string,
@@ -504,7 +567,8 @@ export function networkStackToBrowserFetch(
       }
     }
     try {
-      const res = await stack.request({ url, method, headers: headerIn });
+      // fetch() defaults: destination "empty", mode "cors" (Fetch §4.3).
+      const res = await stack.request({ url, method, headers: headerIn, destination: "empty", mode: "cors" });
       const body = res.body;
       const text = decoder.decode(body);
       const headers = {

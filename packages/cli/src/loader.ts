@@ -79,14 +79,35 @@ function acceptFor(url: string): string {
  * than bot walls.
  */
 function browserHeaders(url: string): Record<string, string> {
-  return {
+  // Fetch Metadata destination follows the accept guess (script/style/image/
+  // document); Chrome sends these on every request and bot-walls gate on them.
+  const dest = /\.css(\?|$)/i.test(url)
+    ? "style"
+    : /\.(png|jpe?g|gif|webp|avif|svg|ico|bmp)(\?|$)/i.test(url)
+      ? "image"
+      : /\.m?js(\?|$)/i.test(url)
+        ? "script"
+        : "document";
+  const mode = dest === "document" ? "navigate" : "no-cors";
+  const headers: Record<string, string> = {
     "User-Agent": BROWSER_USER_AGENT,
     Accept: acceptFor(url),
     "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
     "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     Pragma: "no-cache",
+    "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-fetch-dest": dest,
+    "sec-fetch-mode": mode,
+    "sec-fetch-site": "none",
   };
+  if (dest === "document") {
+    headers["sec-fetch-user"] = "?1";
+    headers["Upgrade-Insecure-Requests"] = "1";
+  }
+  return headers;
 }
 
 export const defaultFetch: FetchFn = async (url: string) => {
