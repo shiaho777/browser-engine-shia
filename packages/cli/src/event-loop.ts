@@ -92,6 +92,7 @@ class Thenable<T> {
   }
 
   then(onFulfilled: (v: T) => unknown, onRejected?: (e: unknown) => unknown): Thenable<unknown> {
+    void onRejected;
     const next = new Thenable<unknown>(this.loop);
     const run = (v: T): void => {
       const result = onFulfilled(v);
@@ -104,20 +105,11 @@ class Thenable<T> {
     // This thenable never rejects (errors resolve to { ok: false }), but the
     // platform surface needs the two-argument then + catch passthrough so
     // `fetch(...).catch(...)` and `promise.then(ok, err)` chains work.
-    const rejectRun = (e: unknown): void => {
-      if (onRejected !== undefined) {
-        const result = onRejected(e);
-        next.resolve(result as T);
-      } else {
-        next.resolve(undefined as unknown as T);
-      }
-    };
     if (this.#settled) {
       this.loop.microtask(() => run(this.#value as T));
     } else {
       this.#cbs.push(run);
     }
-    void rejectRun;
     return next;
   }
 
@@ -1361,7 +1353,7 @@ async function runScriptsOnSessionRealInner(
       return Promise.race([
         Promise.resolve(fetchCore()),
         abortRejection,
-      ]) as Promise<object>;
+      ]);
     }
     return Promise.resolve(fetchCore());
   };
