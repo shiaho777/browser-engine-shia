@@ -67,14 +67,25 @@ export {
   InputEvent,
   WheelEvent,
   CompositionEvent,
+  MessageEvent,
   EventTarget,
   type EventInit,
   type MouseEventInit,
   type KeyboardEventInit,
+  type MessageEventInit,
 } from "./event-system.js";
 
-// ---- Storage (localStorage / sessionStorage) ------------------------------
-export { StorageImpl } from "./storage.js";
+// ---- Storage (localStorage / sessionStorage / StorageEvent) ---------------
+export { StorageImpl, StorageEvent, StorageManagerImpl, createStorageProxy, type StorageEventInit } from "./storage.js";
+
+// ---- Web Locks (navigator.locks) ------------------------------------------
+export { Lock, LockManager, type LockInfo, type LockMode, type LockRequestOptions } from "./locks.js";
+
+// ---- FileReader (File API §4.3) -------------------------------------------
+export { FileReader } from "./file-reader.js";
+
+// ---- Channel messaging (HTML §9.4): MessageChannel / BroadcastChannel -----
+export { MessageChannel, MessagePort, makeBroadcastChannelClass } from "./channels.js";
 
 // ---- CSSStyleDeclaration (getComputedStyle return type) -------------------
 export { CSSStyleDeclarationImpl } from "./css-style-declaration.js";

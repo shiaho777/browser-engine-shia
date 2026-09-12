@@ -29,10 +29,11 @@ export class Event {
   #trusted = false;
   readonly #timeStamp = performance.now();
 
-  constructor(type?: string, init?: EventInit) {
-    // WebIDL: the `type` argument is mandatory and converted via DOMString,
-    // so a non-string (or its exotic toString) coerces here.
-    if (type === undefined) {
+  constructor(type: string, init: EventInit = {}) {
+    // WebIDL: the `type` argument is mandatory — zero-argument construction
+    // throws, but an explicit `undefined` is a real argument and converts to
+    // the DOMString "undefined".
+    if (arguments.length === 0) {
       throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present.");
     }
     this.#type = String(type);
@@ -135,7 +136,7 @@ export class UIEvent extends Event {
   readonly #detail: number;
   readonly #view: unknown;
 
-  constructor(type?: string, init?: UIEventInit & EventInit) {
+  constructor(type: string, init: UIEventInit & EventInit = {}) {
     super(type, init);
     this.#detail = init?.detail ?? 0;
     const view = init?.view;
@@ -173,7 +174,7 @@ export class MouseEvent extends UIEvent {
   readonly #metaKey: boolean;
   readonly #relatedTarget: unknown;
 
-  constructor(type?: string, init?: MouseEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: MouseEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#screenX = init?.screenX ?? 0;
     this.#screenY = init?.screenY ?? 0;
@@ -245,7 +246,7 @@ export class KeyboardEvent extends UIEvent {
   readonly #charCode: number;
   readonly #keyCode: number;
 
-  constructor(type?: string, init?: KeyboardEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: KeyboardEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#key = init?.key ?? "";
     this.#code = init?.code ?? "";
@@ -305,7 +306,7 @@ export interface KeyboardEventInit extends UIEventInit {
 export class CustomEvent extends Event {
   #detail: unknown = null;
 
-  constructor(type?: string, init?: CustomEventInit & EventInit) {
+  constructor(type: string, init: CustomEventInit & EventInit = {}) {
     super(type, init);
     this.#detail = init?.detail ?? null;
   }
@@ -333,7 +334,7 @@ export interface CustomEventInit extends EventInit {
 export class FocusEvent extends UIEvent {
   readonly #relatedTarget: unknown;
 
-  constructor(type?: string, init?: FocusEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: FocusEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#relatedTarget = init?.relatedTarget ?? null;
   }
@@ -354,7 +355,7 @@ export class InputEvent extends UIEvent {
   readonly #inputType: string;
   readonly #isComposing: boolean;
 
-  constructor(type?: string, init?: InputEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: InputEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#data = init?.data ?? null;
     this.#inputType = init?.inputType ?? "";
@@ -382,7 +383,7 @@ export class WheelEvent extends MouseEvent {
   readonly #deltaZ: number;
   readonly #deltaMode: number;
 
-  constructor(type?: string, init?: WheelEventInit & MouseEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: WheelEventInit & MouseEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#deltaX = init?.deltaX ?? 0;
     this.#deltaY = init?.deltaY ?? 0;
@@ -415,7 +416,7 @@ export class CompositionEvent extends UIEvent {
   readonly #data: string | null;
   readonly #locale: string;
 
-  constructor(type?: string, init?: CompositionEventInit & UIEventInit & EventInit) {
+  constructor(type: string, init: CompositionEventInit & UIEventInit & EventInit = {}) {
     super(type, init);
     this.#data = init?.data ?? "";
     this.#locale = init?.locale ?? "";
@@ -428,6 +429,64 @@ export class CompositionEvent extends UIEvent {
 export interface CompositionEventInit extends UIEventInit {
   data?: string | null;
   locale?: string;
+}
+
+// ---------------------------------------------------------------------------
+// MessageEvent
+// ---------------------------------------------------------------------------
+
+/** MessageEvent (HTML §9.4.2): postMessage/channel/BroadcastChannel delivery. */
+export class MessageEvent extends Event {
+  #data: unknown;
+  #origin: string;
+  #lastEventId: string;
+  #source: unknown;
+  #ports: readonly unknown[];
+
+  constructor(type: string, init: MessageEventInit & EventInit = {}) {
+    super(type, init);
+    this.#data = init?.data ?? null;
+    this.#origin = init?.origin ?? "";
+    this.#lastEventId = init?.lastEventId ?? "";
+    this.#source = init?.source ?? null;
+    this.#ports = init?.ports ?? [];
+  }
+
+  get data(): unknown { return this.#data; }
+  get origin(): string { return this.#origin; }
+  get lastEventId(): string { return this.#lastEventId; }
+  get source(): unknown { return this.#source; }
+  get ports(): readonly unknown[] { return this.#ports; }
+
+  /** Legacy initializer (HTML §9.4.2 initMessageEvent). */
+  initMessageEvent(
+    type?: unknown,
+    bubbles?: unknown,
+    cancelable?: unknown,
+    data?: unknown,
+    origin?: unknown,
+    lastEventId?: unknown,
+    source?: unknown,
+    ports?: readonly unknown[],
+  ): void {
+    if (type === undefined) {
+      throw new TypeError("Failed to execute 'initMessageEvent': 1 argument required, but only 0 present.");
+    }
+    this.initEvent(type, bubbles, cancelable);
+    this.#data = data ?? null;
+    this.#origin = origin === undefined ? "" : String(origin);
+    this.#lastEventId = lastEventId === undefined ? "" : String(lastEventId);
+    this.#source = source ?? null;
+    this.#ports = ports ?? [];
+  }
+}
+
+export interface MessageEventInit extends EventInit {
+  data?: unknown;
+  origin?: string;
+  lastEventId?: string;
+  source?: unknown;
+  ports?: readonly unknown[];
 }
 
 // ---------------------------------------------------------------------------
