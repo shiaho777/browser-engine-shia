@@ -438,6 +438,8 @@ interface CompoundSelector {
   readonly not: readonly CompoundSelector[];
   /** `:has(...)` relative selectors — each an inner complex that MUST match a descendant. */
   readonly has: readonly ComplexSelector[];
+  /** `:dir(ltr|rtl)` directionality constraints (Selects 4 / HTML §14.4.4). */
+  readonly dirs: readonly string[];
 }
 
 /** A parsed complex selector: compounds left→right, with the linking combinators. */
@@ -643,7 +645,26 @@ function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomT
       return false;
     }
   }
+  for (const dir of compound.dirs) {
+    if (elementDirectionality(domNode, dom) !== dir) return false;
+  }
   return true;
+}
+
+/**
+ * The element's directionality per HTML §14.4.4: its own `dir` attribute when
+ * it is `ltr`/`rtl`/`auto`, else the nearest ancestor's. `auto` resolves to
+ * `ltr` for our purposes (first-strong-character detection is a text-level
+ * concern, not a structural one). Default is `ltr`.
+ */
+function elementDirectionality(domNode: DomNode, dom: DomTree): string {
+  let cur: DomNode | undefined = domNode;
+  while (cur !== undefined) {
+    const dir = getAttr(cur, "dir")?.toLowerCase();
+    if (dir === "ltr" || dir === "rtl") return dir;
+    cur = cur.parent === null || cur.parent === undefined ? undefined : dom.nodes.get(cur.parent);
+  }
+  return "ltr";
 }
 
 /** Evaluate an `[attr op value]` constraint against an element. */
@@ -1032,6 +1053,7 @@ function parseCompound(token: string): CompoundSelector | null {
   const nth: NthConstraint[] = [];
   const not: CompoundSelector[] = [];
   const has: ComplexSelector[] = [];
+  const dirs: string[] = [];
 
   let i = 0;
   const len = token.length;
@@ -1098,6 +1120,10 @@ function parseCompound(token: string): CompoundSelector | null {
           const inner = parseHasArgument(arg.trim());
           if (inner === null) return null;
           has.push(inner);
+        } else if (name === "dir") {
+          const dir = arg.trim().toLowerCase();
+          if (dir !== "ltr" && dir !== "rtl") return null;
+          dirs.push(dir);
         } else {
           const axis = NTH_AXES[name];
           if (axis === undefined) return null;
@@ -1125,7 +1151,7 @@ function parseCompound(token: string): CompoundSelector | null {
     return null; // unsupported character.
   }
 
-  return { tag, id, classes, pseudoClasses, attributes, nth, not, has };
+  return { tag, id, classes, pseudoClasses, attributes, nth, not, has, dirs };
 }
 
 /**

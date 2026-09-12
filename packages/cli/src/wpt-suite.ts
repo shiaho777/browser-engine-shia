@@ -20,11 +20,24 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { MessageChannel, MessagePort, makeBroadcastChannelClass } from "@browser-engine/guest";
 
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
+import {
+  computedRole,
+  accessibleName,
+  accessibilityProperties,
+  isConnectedToDocument,
+  type A11yContext,
+  type A11yElement,
+} from "./accessibility.js";
+import {
+  makeGeneratedContentResolver,
+  type GeneratedContentResolver,
+} from "./generated-content.js";
 import {
   AbortController,
   AbortSignal,
@@ -33,12 +46,23 @@ import {
   DOMException,
   Event,
   EventTarget,
+  FileReader,
   FocusEvent,
   InputEvent,
   KeyboardEvent,
+  Lock,
+  LockManager,
+  MessageEvent,
   MouseEvent,
+  StorageEvent,
+  StorageImpl,
+  StorageManagerImpl,
   UIEvent,
   WheelEvent,
+  createStorageProxy,
+  globalObjectUrls,
+  makeBlobClass,
+  makeFileClass,
 } from "@browser-engine/guest";
 import type { WptReport, WptSubtest } from "./wpt.js";
 
@@ -116,12 +140,18 @@ function buildAsyncHarness(): AsyncHarness {
     step_timeout(f: unknown, ms?: unknown): number | undefined;
     done(): void;
     add_cleanup(f: unknown): void;
+    /** @internal The settle path (cleanups + finish) — promise_test uses it. */
+    _settle(status: WptSubtest["status"], message: string | null): void;
   }
 
+  /** Promises returned by cleanup functions — awaited before the file's
+   *  final settle and (for promise_test) before the next test starts. */
+  const cleanupPromises: Promise<unknown>[] = [];
   const makeTools = (finish: (status: WptSubtest["status"], message: string | null) => void): TestTools => {
     // Cleanup functions run once, when the test settles (real testharness
     // semantics — without them, tests that mutate the document pollute every
-    // later test in the same file).
+    // later test in the same file). Returned promises are collected so the
+    // harness can wait for async releases (e.g. held locks) to land.
     const cleanups: Array<() => void> = [];
     let settled = false;
     const settle = (status: WptSubtest["status"], message: string | null): void => {
@@ -130,7 +160,10 @@ function buildAsyncHarness(): AsyncHarness {
       const list = cleanups.splice(0);
       for (const cleanup of list) {
         try {
-          cleanup();
+          const r = cleanup() as unknown;
+          if (r !== null && typeof r === "object" && typeof (r as { then?: unknown }).then === "function") {
+            cleanupPromises.push(r as Promise<unknown>);
+          }
         } catch {
           // Cleanup errors must not mask the test result.
         }
@@ -140,7 +173,11 @@ function buildAsyncHarness(): AsyncHarness {
     const tools: TestTools = {
       step(f, ...args) {
         try {
-          return typeof f === "function" ? (f as (...a: unknown[]) => unknown)(...args) : undefined;
+          // testharness binds `this` to the test object inside stepped
+          // functions (tests call `this.step_func(...)` on themselves).
+          return typeof f === "function"
+            ? (f as (this: TestTools, ...a: unknown[]) => unknown).apply(tools, args)
+            : undefined;
         } catch (e) {
           const c = classify(e);
           settle(c.status, c.message);
@@ -178,7 +215,10 @@ function buildAsyncHarness(): AsyncHarness {
       add_cleanup(f) {
         if (typeof f === "function") cleanups.push(f as () => void);
       },
+      _settle: settle,
     };
+    // Keep the internal settle hook off enumeration paths.
+    Object.defineProperty(tools, "_settle", { value: settle, enumerable: false });
     return tools;
   };
 
@@ -219,27 +259,42 @@ function buildAsyncHarness(): AsyncHarness {
     return t;
   };
 
+  // promise_tests run SEQUENTIALLY (real testharness semantics): each test
+  // starts only after the previous test settled AND its async cleanups
+  // resolved — otherwise held locks / pending timers leak between tests.
+  let promiseSeq = Promise.resolve();
   const promiseTest = (func: unknown, name: unknown): void => {
     const n = typeof name === "string" ? name : "(unnamed promise_test)";
     if (typeof func !== "function") return;
-    let settled = false;
     let resolveDone!: () => void;
     pending.push(new Promise<void>((r) => (resolveDone = r)));
-    const finish = (status: WptSubtest["status"], message: string | null): void => {
-      if (settled) return;
-      settled = true;
-      push(n, status, message);
-      resolveDone();
-    };
-    void Promise.resolve()
-      .then(() => (func as (t: TestTools) => unknown)(makeTools(finish)))
-      .then(
-        () => finish("PASS", null),
-        (e: unknown) => {
-          const c = classify(e);
-          finish(c.status, c.message);
-        },
-      );
+    promiseSeq = promiseSeq.then(
+      () =>
+        new Promise<void>((testDone) => {
+          const cleanupsBefore = cleanupPromises.length;
+          let settled = false;
+          const finish = (status: WptSubtest["status"], message: string | null): void => {
+            if (settled) return;
+            settled = true;
+            push(n, status, message);
+            resolveDone();
+            // Wait for THIS test's async cleanups before the next test runs.
+            void Promise.allSettled(cleanupPromises.slice(cleanupsBefore)).then(() => testDone());
+          };
+          const t = makeTools(finish);
+          // Completion goes through _settle so async cleanups run and are
+          // awaited before the NEXT promise_test starts.
+          void Promise.resolve()
+            .then(() => (func as (t: TestTools) => unknown)(t))
+            .then(
+              () => t._settle("PASS", null),
+              (e: unknown) => {
+                const c = classify(e);
+                t._settle(c.status, c.message);
+              },
+            );
+        }),
+    );
   };
 
   const globals: Record<string, unknown> = {
@@ -341,6 +396,13 @@ export async function runWptHtml(
   const sandbox: Record<string, unknown> = { document, ...globals, ...harness.globals };
   const sandboxLocation: Record<string, unknown> = {
     href: options.documentUrl ?? "wpt://doc",
+    get origin() {
+      try {
+        return new URL(String(this["href"])).origin;
+      } catch {
+        return "null";
+      }
+    },
     get hash() {
       const href = String(this["href"]);
       const index = href.indexOf("#");
@@ -430,8 +492,191 @@ export async function runWptHtml(
     });
   };
 
+  // ---- Platform primitives the corpus exercises (real implementations) ----
+  // Web Storage (HTML §12.3): proxy-wrapped Storage areas + StorageEvent.
+  // Each sandbox gets its OWN Storage subclass — tests pollute
+  // `Storage.prototype` (defineProperty / accessors) and a shared class
+  // object would leak that pollution into the next file's sandbox.
+  class SandboxStorage extends StorageImpl {}
+  sandbox["Storage"] = SandboxStorage;
+  const localArea = new SandboxStorage();
+  const sessionArea = new SandboxStorage();
+  sandbox["localStorage"] = createStorageProxy(localArea);
+  sandbox["sessionStorage"] = createStorageProxy(sessionArea);
+  sandbox["StorageEvent"] = StorageEvent;
+  // File API: the guest Blob/File classes + FileReader + object URLs.
+  sandbox["Blob"] = makeBlobClass();
+  sandbox["File"] = makeFileClass();
+  sandbox["FileReader"] = FileReader;
+  if (typeof (URL as { createObjectURL?: unknown }).createObjectURL !== "function") {
+    (URL as unknown as { createObjectURL?: unknown }).createObjectURL = (blob: unknown): string =>
+      globalObjectUrls.createObjectURL(blob);
+    (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL = (url: unknown): void =>
+      globalObjectUrls.revokeObjectURL(url);
+  }
+  // Navigator + Web Locks (navigator.locks → a real LockManager). The
+  // returned promises are rewrapped into the GUEST realm's Promise so that
+  // `result instanceof Promise`/`Promise.resolve(p) === p` checks hold inside
+  // the vm context. The realm's Promise intrinsic is only reachable via
+  // runInContext AFTER createContext — resolved lazily into RealmPromise.
+  let RealmPromise: PromiseConstructor = Promise;
+  const guestify = (p: Promise<unknown>): Promise<unknown> =>
+    new RealmPromise((res, rej) => p.then(res, rej));
+  class GuestLockManager extends LockManager {
+    override request(...args: Parameters<LockManager["request"]>): Promise<unknown> {
+      return guestify(super.request(...args));
+    }
+    override query(): Promise<{ held: never[]; pending: never[] }> {
+      return guestify(super.query()) as Promise<{ held: never[]; pending: never[] }>;
+    }
+  }
+  class GuestStorageManager extends StorageManagerImpl {
+    override estimate(): Promise<{ usage: number; quota: number }> {
+      return guestify(super.estimate()) as Promise<{ usage: number; quota: number }>;
+    }
+    override persisted(): Promise<boolean> {
+      return guestify(super.persisted()) as Promise<boolean>;
+    }
+    override persist(): Promise<boolean> {
+      return guestify(super.persist()) as Promise<boolean>;
+    }
+  }
+  sandbox["navigator"] = {
+    userAgent: "browser-engine-shia (WPT harness)",
+    locks: new GuestLockManager(),
+    storage: new GuestStorageManager(localArea, sessionArea),
+  };
+  sandbox["Lock"] = Lock;
+  sandbox["LockManager"] = GuestLockManager;
+  // HTML §9.4 messaging: real structured clone + channels from the host
+  // platform (Node's implementations ARE spec implementations — the same
+  // reuse doctrine as URL/Streams).
+  sandbox["structuredClone"] = structuredClone;
+  sandbox["MessageChannel"] = MessageChannel;
+  sandbox["MessagePort"] = MessagePort;
+  sandbox["BroadcastChannel"] = makeBroadcastChannelClass(
+    () => String(sandboxLocation["origin"] ?? ""),
+  );
+  sandbox["MessageEvent"] = MessageEvent;
+  /** window.postMessage(data, "*"): self-delivery as a queued task. */
+  sandbox["postMessage"] = (data: unknown, _targetOrigin?: unknown): void => {
+    const event = new MessageEvent("message", { data, origin: "", source: sandbox });
+    setTimeout(() => {
+      const handler = sandbox["onmessage"];
+      if (typeof handler === "function") (handler as (e: unknown) => void)(event);
+      windowTarget.dispatchEvent(event);
+    }, 0);
+  };
+
+  /**
+   * testdriver seam: `test_driver` backs the accessibility commands the
+   * WPT corpus exercises — computed role/label run the engine's real ARIA
+   * + AccName computation over the live element wrappers.
+   */
+  // Generated-content seam: resolve `::before`/`::after` text (strings,
+  // attr(), counters, `content: x / "alt"`) from the kernel-produced sheets.
+  const docRoot = (document as { documentElement?: A11yElement }).documentElement;
+  const generatedContent: GeneratedContentResolver =
+    docRoot === undefined
+      ? () => ""
+      : makeGeneratedContentResolver(session.styleSheets(), docRoot, (el, sel) => {
+          const m = (el as unknown as { matches?: (s: string) => boolean }).matches;
+          return typeof m === "function" ? m.call(el, sel) : false;
+        });
+  const a11yContext: A11yContext = {
+    getElementById: (id) =>
+      (document as { getElementById?: (i: string) => unknown }).getElementById?.(id) as A11yElement | null,
+    querySelectorAll: (selector) =>
+      ((document as { querySelectorAll?: (s: string) => unknown }).querySelectorAll?.(selector) ?? []) as ArrayLike<A11yElement>,
+    getComputedStyle: (el) => {
+      const g = (globals as Record<string, unknown>)["getComputedStyle"];
+      if (typeof g !== "function") return { getPropertyValue: () => "" };
+      const decl = (g as (e: unknown) => unknown)(el) as { getPropertyValue?: (n: string) => unknown };
+      return {
+        getPropertyValue: (n: string) => {
+          const v = decl?.getPropertyValue?.(n);
+          return typeof v === "string" ? v : v === undefined ? "" : String(v);
+        },
+      };
+    },
+    shadowChildrenOf: (el) => {
+      const root = (el as unknown as { shadowRoot?: { childNodes?: ArrayLike<A11yElement> } | null }).shadowRoot;
+      // undefined = no shadow root (light DOM renders); [] = empty shadow root.
+      if (root === null || root === undefined || root.childNodes === undefined) return undefined;
+      const out: A11yElement[] = [];
+      for (let i = 0; i < root.childNodes.length; i += 1) out.push(root.childNodes[i] as A11yElement);
+      return out;
+    },
+    slotAssignmentOf: (slot) => {
+      if (slot.localName !== "slot") return undefined;
+      // Walk up to the shadow root (the wrapper exposing `host`). A slot
+      // outside a shadow tree renders its own fallback content → undefined.
+      let p = (slot as unknown as { parentNode?: unknown }).parentNode;
+      for (let depth = 0; p !== null && p !== undefined && depth < 20; depth += 1) {
+        const host = (p as { host?: unknown }).host;
+        if (host !== null && host !== undefined) {
+          const name = slot.getAttribute("name");
+          const light = (host as { childNodes?: ArrayLike<A11yElement> }).childNodes;
+          const out: A11yElement[] = [];
+          if (light !== undefined) {
+            for (let i = 0; i < light.length; i += 1) {
+              const n = light[i] as A11yElement;
+              // Named slots take elements whose `slot` attr matches; the
+              // default slot takes every node without a `slot` attr.
+              const target = n.nodeType === 1 ? n.getAttribute("slot") : null;
+              if ((name ?? "") === (target ?? "")) out.push(n);
+            }
+          }
+          return out;
+        }
+        p = (p as { parentNode?: unknown }).parentNode;
+      }
+      return undefined;
+    },
+    pseudoContent: (el, which) => generatedContent(el, which),
+    documentElement: docRoot,
+  };
+  const a11yIds = new Map<A11yElement, string>();
+  let a11yIdSeq = 0;
+  const a11yNodes = new Map<string, A11yElement>();
+  const a11yIdFor = (el: A11yElement): string => {
+    const existing = a11yIds.get(el);
+    if (existing !== undefined) return existing;
+    const id = `ax-${++a11yIdSeq}`;
+    a11yIds.set(el, id);
+    a11yNodes.set(id, el);
+    return id;
+  };
+  sandbox["test_driver"] = {
+    // Detached elements are not in the accessibility tree: role/label are "".
+    get_computed_role: (el: unknown) =>
+      Promise.resolve(
+        isConnectedToDocument(el as A11yElement, a11yContext)
+          ? computedRole(el as A11yElement, a11yContext)
+          : "",
+      ),
+    get_computed_label: (el: unknown) =>
+      Promise.resolve(
+        isConnectedToDocument(el as A11yElement, a11yContext)
+          ? accessibleName(el as A11yElement, a11yContext, new Set())
+          : "",
+      ),
+    get_accessibility_properties_for_element: (el: unknown) =>
+      Promise.resolve(accessibilityProperties(el as A11yElement, a11yContext, a11yIdFor)),
+    get_accessibility_properties_for_accessibility_node: (id: unknown) => {
+      const el = a11yNodes.get(String(id));
+      return Promise.resolve(
+        el === undefined ? null : accessibilityProperties(el, a11yContext, a11yIdFor),
+      );
+    },
+  };
+
   let harnessError: string | null = null;
   vm.createContext(sandbox);
+  // The contextified realm's own intrinsics (not reachable as sandbox props):
+  // locks/messaging promises must be guest-realm Promises for WPT identity
+  // assertions like `Promise.resolve(p) === p`.
+  RealmPromise = vm.runInContext("Promise", sandbox) as PromiseConstructor;
   guestContext = sandbox;
   try {
     for (const script of extractScripts(html)) {

@@ -165,8 +165,82 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       }
       fail("expected a DOMException", desc);
     },
+    assert_throws_quotaexceedederror(func: unknown, requested?: unknown, quota?: unknown, desc?: unknown): void {
+      try {
+        (func as () => void)();
+      } catch (e) {
+        const name = (e as { name?: unknown } | null)?.name;
+        if (name !== "QuotaExceededError") {
+          fail(`expected QuotaExceededError but threw ${formatValue(e)}`, desc);
+        }
+        if (typeof requested === "number" && (e as { requested?: unknown }).requested !== requested) {
+          fail(`expected requested=${requested} but got ${formatValue((e as { requested?: unknown }).requested)}`, desc);
+        }
+        if (typeof quota === "number" && (e as { quota?: unknown }).quota !== quota) {
+          fail(`expected quota=${quota} but got ${formatValue((e as { quota?: unknown }).quota)}`, desc);
+        }
+        return;
+      }
+      fail("expected a QuotaExceededError", desc);
+    },
     assert_unreached(desc?: unknown): void {
       fail("reached unreachable code", desc);
+    },
+    // Async rejection assertions (testharness.js promise_rejects_* family):
+    // the argument is a promise OR a function returning one; the returned
+    // promise rejects with WptAssertionError when the expectation fails.
+    async promise_rejects_js(_t: unknown, ctor: unknown, promiseOrFunc: unknown, desc?: unknown): Promise<void> {
+      const p = typeof promiseOrFunc === "function" ? (promiseOrFunc as () => unknown)() : promiseOrFunc;
+      try {
+        await (p as Promise<unknown>);
+      } catch (e) {
+        const matchesRealm = typeof ctor === "function" && e instanceof (ctor as new () => object);
+        const matchesName =
+          typeof e === "object" && e !== null && typeof ctor === "function" &&
+          (e as { name?: unknown }).name === (ctor as { name?: unknown }).name;
+        if (!matchesRealm && !matchesName) {
+          fail(`expected rejection with ${formatValue(ctor)} but threw ${formatValue(e)}`, desc);
+        }
+        return;
+      }
+      fail("expected a rejected promise", desc);
+    },
+    async promise_rejects_dom(_t: unknown, type: unknown, promiseOrFunc: unknown, desc?: unknown): Promise<void> {
+      const p = typeof promiseOrFunc === "function" ? (promiseOrFunc as () => unknown)() : promiseOrFunc;
+      try {
+        await (p as Promise<unknown>);
+      } catch (e) {
+        const name = (e as { name?: unknown } | null)?.name;
+        if (name !== type) {
+          fail(`expected rejection with ${formatValue(type)} but threw ${formatValue(e)}`, desc);
+        }
+        return;
+      }
+      fail("expected a rejected promise", desc);
+    },
+    async promise_rejects_exactly(_t: unknown, exception: unknown, promiseOrFunc: unknown, desc?: unknown): Promise<void> {
+      const p = typeof promiseOrFunc === "function" ? (promiseOrFunc as () => unknown)() : promiseOrFunc;
+      try {
+        await (p as Promise<unknown>);
+      } catch (e) {
+        if (e !== exception) {
+          fail("expected the rejection to be the given exception", desc);
+        }
+        return;
+      }
+      fail("expected a rejected promise", desc);
+    },
+    async promise_rejects_quotaexceedederror(_t: unknown, promiseOrFunc: unknown, _requested?: unknown, _quota?: unknown, desc?: unknown): Promise<void> {
+      const p = typeof promiseOrFunc === "function" ? (promiseOrFunc as () => unknown)() : promiseOrFunc;
+      try {
+        await (p as Promise<unknown>);
+      } catch (e) {
+        if ((e as { name?: unknown } | null)?.name !== "QuotaExceededError") {
+          fail(`expected QuotaExceededError rejection but threw ${formatValue(e)}`, desc);
+        }
+        return;
+      }
+      fail("expected a QuotaExceededError rejection", desc);
     },
     assert_not_own_property(obj: unknown, name: unknown, desc?: unknown): void {
       if (typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, String(name))) {

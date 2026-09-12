@@ -40,6 +40,7 @@ import {
   type DomNode,
   type DomTree,
   type NodeId,
+  type StyleSheet,
   nodeId,
 } from "@browser-engine/ir";
 import {
@@ -427,6 +428,17 @@ export class FineSession {
   computed(node: NodeId): ReturnType<typeof cascade> {
     this.#flushSeeds();
     return this.#db.query(qFineComputed, { url: this.#url, node });
+  }
+
+  /**
+   * The document's parsed stylesheets (via the kernel). Exposed so consumers
+   * that reason over style RULES — accessibility generated-content
+   * resolution, CSSOM views — share the incremental sheet pipeline instead of
+   * re-parsing `<style>` text themselves.
+   */
+  styleSheets(): readonly StyleSheet[] {
+    this.#flushSeeds();
+    return this.#db.query(qFineSheets, this.#url);
   }
 
   setExternalSheetLoader(loader: SheetLoader | undefined): void {

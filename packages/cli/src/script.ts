@@ -1799,11 +1799,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         // carrying the host's children position.
         const shadowRootId = session.createElement("#shadow-root");
         session.setAttribute(shadowRootId, "data-shadow-mode", mode);
+        shadowRootIds.set(nodeId, { rootId: shadowRootId, mode });
         // Record the host → shadow-children composition. The shadow root's
         // children are what the host renders.
         compositionMutator?.registerHost(nodeId, shadowRootId);
         mutations += 1;
         return makeShadowRoot(shadowRootId, mode);
+      },
+      /** ShadowRoot host accessor: open roots are reachable via `el.shadowRoot`. */
+      get shadowRoot(): object | null {
+        const entry = shadowRootIds.get(nodeId);
+        if (entry === undefined || entry.mode === "closed") return null;
+        return makeShadowRoot(entry.rootId, entry.mode);
       },
       appendChild(child: unknown): unknown {
         const childId = idFromWrapper(child);
@@ -1953,6 +1960,26 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         const state = nodeState.get(nodeId) ?? {};
         state.checked = Boolean(value);
         nodeState.set(nodeId, state);
+      },
+      // IDL-reflected `type` (input/button/ol/link…) — content attribute.
+      get type(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("type") ?? "";
+      },
+      set type(value: unknown) {
+        session.setAttribute(nodeId, "type", coerceGuestString(value));
+        mutations += 1;
+      },
+      // IDL-reflected boolean `switch` (input[type=checkbox] experimental).
+      get switch(): boolean {
+        return session.dom.nodes.get(nodeId)?.attrs?.has("switch") ?? false;
+      },
+      set switch(value: unknown) {
+        if (value) {
+          session.setAttribute(nodeId, "switch", "");
+        } else {
+          session.removeAttribute(nodeId, "switch");
+        }
+        mutations += 1;
       },
       getBoundingClientRect(): object {
         gBcrCalls += 1;
@@ -3820,24 +3847,31 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 
   const compositionMutator: CompositionMutator | null = options.compositionControl ?? null;
 
+  /** Host node → its shadow root (written by attachShadow; read by shadowRoot). */
+  const shadowRootIds = new Map<NodeId, { rootId: NodeId; mode: "open" | "closed" }>();
+
   /**
    * A ShadowRoot wrapper: a DocumentFragment-shaped handle over the shadow
    * tree's root node. Guest code appends INTO it to build shadow content.
    */
+  const shadowRootWrappers = new Map<NodeId, object>();
   const makeShadowRoot = (rootId: NodeId, mode: "open" | "closed"): object => {
+    const existing = shadowRootWrappers.get(rootId);
+    if (existing !== undefined) return existing;
     const frag = makeElementCached(rootId);
     Object.defineProperties(frag, {
       mode: { value: mode, enumerable: true },
       host: { get: () => makeElementCached(nodeIdOfHost(rootId)), enumerable: true },
     });
+    shadowRootWrappers.set(rootId, frag);
     return frag;
   };
 
-  /** Resolve the host element id for a shadow root (the composition map).
-   * The composition stores host → shadow children (not the root id), so the
-   * ShadowRoot's `host` getter is best-effort: the shadow root's own id. */
+  /** Resolve the host element id for a shadow root via the attachShadow map. */
   const nodeIdOfHost = (shadowRootId: NodeId): NodeId => {
-    void options.compositionControl?.read();
+    for (const [hostId, entry] of shadowRootIds) {
+      if (entry.rootId === shadowRootId) return hostId;
+    }
     return shadowRootId;
   };
 
