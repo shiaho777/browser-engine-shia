@@ -46,3 +46,7 @@ export function coverageSource(font: FontFace): GlyphCoverageSource {
       rasterizeOutline(font.outlineOf(glyphId), fontSizePx / font.unitsPerEm),
   };
 }
+
+// ---- E1: the REAL HarfBuzz shaping adapter (the TextShaper seam) -----------
+export { createHarfBuzzShaper } from "./harfbuzz-shaper.js";
+export type { ShapingFont, ShapedGlyph, ShapedRun, TextShaper } from "./text-shaper-types.js";

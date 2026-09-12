@@ -95,6 +95,124 @@ void test("runEventDrivenReal handles a 404 (missing resource) without error", a
   assert.equal(run.mutations, 1);
 });
 
+void test("readyState follows the parsing lifecycle: loading during scripts, interactive at DCL, complete at load", async () => {
+  // Regression guard for the shiaho.sbs blind spot: i18n deferred hydration
+  // to DOMContentLoaded when readyState was "loading", but the runner
+  // reported a constant "complete", so the page translated with empty tables
+  // and stayed on raw i18n keys forever.
+  const source = `
+    var el = document.getElementById("a");
+    el.setAttribute("data-at-eval", document.readyState);
+    document.addEventListener("DOMContentLoaded", function () {
+      el.setAttribute("data-at-dcl", document.readyState);
+    });
+    window.addEventListener("load", function () {
+      el.setAttribute("data-at-load", document.readyState);
+    });
+  `;
+  const run = await runEventDrivenReal(HTML, source, () => Promise.resolve(undefined));
+  assert.equal(run.error, null);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-at-eval"), "loading");
+  assert.equal(dom.getElementById("a").getAttribute("data-at-dcl"), "interactive");
+  assert.equal(dom.getElementById("a").getAttribute("data-at-load"), "complete");
+});
+
+void test("guest crypto (WebCrypto) is available to classic scripts", async () => {
+  // Cloudflare-style beacon bundles call crypto.getRandomValues at import
+  // time; without it every such page reports a script error.
+  const source = `
+    var buf = new Uint8Array(4);
+    crypto.getRandomValues(buf);
+    document.getElementById("a").setAttribute("data-crypto", typeof crypto.randomUUID === "function" ? "1" : "0");
+  `;
+  const run = await runEventDrivenReal(HTML, source, () => Promise.resolve(undefined));
+  assert.equal(run.error, null);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-crypto"), "1");
+});
+
+void test("a fetch started inside .then settles instead of stalling silently", async () => {
+  // Regression guard for the shiaho.sbs stats blind spot: loadHomepageStats
+  // chains fetch -> json -> DOM, and the flush loop used to observe
+  // quiescence while host-side reactions were still in flight, so nested
+  // chains never settled and the page sat on zeros with zero errors.
+  const enc = new TextEncoder();
+  const transport = (url: string): Promise<Uint8Array | undefined> =>
+    Promise.resolve(url.endsWith("/api/stats") ? enc.encode('{"n":7}') : undefined);
+  const source = `
+    var el = document.getElementById("a");
+    fetch("/api/stats").then(function (r) { return r.text(); }).then(function (t) {
+      el.setAttribute("data-t", t.slice(0, 8));
+      return fetch("/api/stats").then(function (r2) { return r2.json(); });
+    }).then(function (j) {
+      el.setAttribute("data-j", String(j.n));
+    });
+  `;
+  const run = await runEventDrivenReal(HTML, source, transport);
+  assert.equal(run.error, null);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-t"), '{"n":7}');
+  assert.equal(dom.getElementById("a").getAttribute("data-j"), "7");
+});
+
+void test("a wall-clock timer fires under the real-transport runner", async () => {
+  const source = `
+    setTimeout(function () { document.getElementById("a").setAttribute("data-t", "fired"); }, 50);
+  `;
+  const run = await runEventDrivenReal(HTML, source, () => Promise.resolve(undefined));
+  assert.equal(run.error, null);
+  assert.equal(run.timers, 1);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-t"), "fired");
+});
+
+void test("a slow fetch completes within the flush budget instead of stalling", async () => {
+  const enc = new TextEncoder();
+  const slow = (): Promise<Uint8Array | undefined> =>
+    new Promise((resolve) => setTimeout(() => resolve(enc.encode('{"n":1}')), 800));
+  const source = `
+    fetch("https://example.test/slow").then(function (r) { return r.text(); }).then(function (t) {
+      document.getElementById("a").setAttribute("data-t", t.slice(0, 8));
+    });
+  `;
+  const run = await runEventDrivenReal(HTML, source, slow);
+  assert.equal(run.error, null);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-t"), '{"n":1}');
+});
+
+void test("an infinite rAF loop does not starve later animations", async () => {
+  // Regression guard for the shiaho.sbs stats stall: a particle canvas that
+  // re-queues rAF forever burned the lifetime frame budget in the first
+  // drain, so the count-up animation queued a second later never fired. The
+  // runaway guard is per-drain now; later animations still get frames.
+  const source = `
+    requestAnimationFrame(function spin() { requestAnimationFrame(spin); });
+    setTimeout(function () {
+      requestAnimationFrame(function () {
+        document.getElementById("a").setAttribute("data-late", "yes");
+      });
+    }, 0);
+  `;
+  const run = await runEventDrivenReal(HTML, source, () => Promise.resolve(undefined));
+  assert.equal(run.error, null);
+  const dom = run.sandbox?.["document"] as {
+    getElementById(id: string): { getAttribute(name: string): string | null };
+  };
+  assert.equal(dom.getElementById("a").getAttribute("data-late"), "yes");
+});
+
 void test("requestAnimationFrame schedules a callback that mutates the DOM on the next frame", () => {
   const source = `
     requestAnimationFrame(function () {

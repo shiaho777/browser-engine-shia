@@ -480,7 +480,35 @@ export const SHELL_HTML = `<!DOCTYPE html>
       }
     }
 
+
+    /** Merge the nested IPC frame with top-level envelope fields; the raw
+     * PNG bytes travel at the top level only (never inside the nested
+     * frame), so pass them through here. */
+    function mergeFramePayload(payload, viewport) {
+      if (!payload.frame) return payload;
+      return Object.assign({}, payload.frame, {
+        nav: payload.nav,
+        viewport: payload.viewport || viewport,
+        tabs: payload.tabs,
+        frameMode: payload.frameMode,
+        frameRev: payload.frameRev,
+        pngBytes: payload.pngBytes,
+      });
+    }
+
     async function attachFrameImage(payload) {
+      // Electron bridge path: raw PNG bytes arrive via structured clone —
+      // skip base64 + data-URL decoding (a 2MB frame saves ~30ms of main-
+      // thread encode/decode per frame).
+      if (payload.pngBytes instanceof Uint8Array || Array.isArray(payload.pngBytes)) {
+        const bytes = payload.pngBytes instanceof Uint8Array
+          ? payload.pngBytes
+          : Uint8Array.from(payload.pngBytes);
+        if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
+        frameBlobUrl = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+        frame.src = frameBlobUrl;
+        return;
+      }
       const mode = payload.frameMode || (payload.pngBase64 ? "base64" : "binary");
       if (mode === "binary" && useBinary) {
         const res = await fetch("/api/frame?r=" + encodeURIComponent(String(payload.frameRev || Date.now())));
@@ -498,10 +526,10 @@ export const SHELL_HTML = `<!DOCTYPE html>
     async function showFrame(payload, extra) {
       if (!payload) throw new Error("empty frame");
       if (payload.ok === false) throw new Error(payload.error || "request failed");
-      const frameData = payload.pngBase64 || payload.frameMode || payload.width
+      const frameData = payload.pngBase64 || payload.pngBytes || payload.frameMode || payload.width
         ? payload
         : payload.frame;
-      if (!frameData || (!frameData.pngBase64 && frameData.frameMode !== "binary" && !frameData.width)) {
+      if (!frameData || (!frameData.pngBase64 && !frameData.pngBytes && frameData.frameMode !== "binary" && !frameData.width)) {
         if (payload.frame === null) return;
         throw new Error("empty frame");
       }
@@ -511,7 +539,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
       contentH = frameData.height || payload.height;
       frame.removeAttribute("width");
       frame.removeAttribute("height");
-      await attachFrameImage(frameData.pngBase64 || frameData.frameMode ? frameData : payload);
+      await attachFrameImage(frameData.pngBase64 || frameData.pngBytes || frameData.frameMode ? frameData : payload);
       applyZoom();
       urlInput.value = frameData.url || frameData.source || payload.url || "";
       const vp = payload.viewport || lastViewport;
@@ -660,7 +688,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = measureViewport();
         const payload = await api.navigate(target, lastViewport);
         if (payload.ok === false) throw new Error(payload.error || "navigate failed");
-        await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode, frameRev: payload.frameRev }) : payload);
+        await showFrame(mergeFramePayload(payload, lastViewport));
       } catch (err) {
         engineLog("error", "navigate failed", err && err.message ? err.message : String(err));
         showError(err && err.message ? err.message : String(err));
@@ -680,7 +708,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = next;
         const payload = await api.setViewport(next);
         if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || next, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "viewport");
+          await showFrame(mergeFramePayload(payload, next), "viewport");
         }
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
@@ -700,7 +728,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = measureViewport();
         const payload = await api.back(lastViewport);
         if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+          await showFrame(mergeFramePayload(payload, lastViewport));
         }
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
@@ -715,7 +743,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = measureViewport();
         const payload = await api.forward(lastViewport);
         if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+          await showFrame(mergeFramePayload(payload, lastViewport));
         }
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
@@ -730,7 +758,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = measureViewport();
         const payload = await api.reload(lastViewport);
         if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+          await showFrame(mergeFramePayload(payload, lastViewport));
         }
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
@@ -762,7 +790,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         const text = await file.text();
         const payload = await api.loadHtml(text, file.name, lastViewport);
         if (payload.ok === false) throw new Error(payload.error || "load failed");
-        await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload);
+        await showFrame(mergeFramePayload(payload, lastViewport));
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
       } finally {
@@ -828,6 +856,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
               tabs: payload.tabs,
               frameMode: payload.frameMode,
               frameRev: payload.frameRev,
+              pngBytes: payload.pngBytes,
             })
           : payload;
         await showFrame(data, payload.navigated || data.navigated ? "navigated via hit-test" : (payload.editable ? "edit" : "click"));
@@ -942,7 +971,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
         lastViewport = measureViewport();
         api.scroll(0, 0, lastViewport, { settle: true }).then(async (payload) => {
           if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-            await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "scroll settle");
+            await showFrame(mergeFramePayload(payload, lastViewport), "scroll settle");
           }
         }).catch(() => {});
       }, 140);
@@ -959,7 +988,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
       lastViewport = measureViewport();
       api.scroll(dx, dy, lastViewport).then(async (payload) => {
         if (payload && (payload.pngBase64 || payload.frameMode === "binary" || (payload.frame && payload.frame.pngBase64))) {
-          await showFrame(payload.frame ? Object.assign({}, payload.frame, { nav: payload.nav, viewport: payload.viewport || lastViewport, tabs: payload.tabs, frameMode: payload.frameMode }) : payload, "wheel scroll");
+          await showFrame(mergeFramePayload(payload, lastViewport), "wheel scroll");
         }
       }).catch((err) => {
         showError(err && err.message ? err.message : String(err));

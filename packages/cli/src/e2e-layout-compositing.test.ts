@@ -354,9 +354,11 @@ void test("padding pushes in-flow children into the content area (children offse
     ".p { width: 200px; padding-top: 15px; padding-right: 0px; padding-bottom: 0px; padding-left: 25px } .c { height: 10px }",
   );
   const child = fragmentForNode(tree, elementsByTag(dom, "span")[0]!.id);
-  // The child's border-box origin is offset by the parent's left/top padding.
+  // The child's border-box origin is offset by the parent's padding; the
+  // in-line position is baseline-aware (B4): the 10px inline-level box sits
+  // with its BOTTOM on the line baseline, i.e. contentTop + (12.8 − 10).
   assert.equal(Number(child.box.borderBox.x), 25, "child inset by parent's left padding");
-  assert.equal(Number(child.box.borderBox.y), 15, "child inset by parent's top padding");
+  assert.equal(Number(child.box.borderBox.y), 17.8, "child at the baseline inside the padded content");
 });
 
 void test("getBoundingClientRect reflects the padded/bordered border box (single source still holds)", () => {
@@ -390,14 +392,16 @@ void test("text paints at the padded content origin, inside the box's padding", 
   // origin (offset by the padding), not the border-box origin.
   const dom = parseHtml(enc('<div class="p">hi</div>'));
   const sheets = [
+    uaStylesheet(),
     parseCss(enc(".p { width: 200px; padding-top: 12px; padding-right: 0px; padding-bottom: 0px; padding-left: 18px }")),
   ];
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   const list = paint(layout(dom, styleOf), styleOf);
   const text = list.commands.find((c) => c.op === "text");
   assert.ok(text !== undefined && text.op === "text");
-  assert.equal(Number(text.at.x), 18, "text x = parent left padding");
-  assert.equal(Number(text.at.y), 12, "text y = parent top padding");
+  // Page coordinates: the UA body margin (8px) + the parent's padding.
+  assert.equal(Number(text.at.x), 26, "text x = body margin + parent left padding");
+  assert.equal(Number(text.at.y), 20, "text y = body margin + parent top padding");
 });
 
 // ===========================================================================
@@ -480,6 +484,7 @@ void test("overflow:visible (the initial) pushes NO clip", () => {
 void test("the clip rectangle is the padding box, and the box's own background is NOT clipped", () => {
   const dom = parseHtml(enc('<div class="p"><span class="c"></span></div>'));
   const sheets = [
+    uaStylesheet(),
     parseCss(
       enc(
         ".p { width: 100px; height: 50px; padding-top: 5px; padding-right: 5px; padding-bottom: 5px; padding-left: 5px; overflow: hidden; background-color: blue } .c { height: 20px; background-color: red }",
@@ -847,8 +852,13 @@ void test("inline run: text + span + text flow on ONE horizontal line", () => {
   // The span box sits BETWEEN the two texts on the same line.
   const xs = fragments.map((f) => Number(f.box.borderBox.x));
   assert.ok(xs[0]! < xs[1]! && xs[1]! < xs[2]!, "members flow left to right (x increases)");
-  const ys = fragments.map((f) => Number(f.box.borderBox.y));
-  assert.equal(new Set(ys).size, 1, "all members share one line (same y)");
+  // B4: the members share one LINE via BASELINE alignment — the span's
+  // BOTTOM edge sits on the texts' baseline (text y + font ascent 12.8).
+  const spanFrag2 = fragments[1]!;
+  const textFrag0 = fragments[0]!;
+  const spanBottom = Number(spanFrag2.box.borderBox.y) + Number(spanFrag2.box.height);
+  const baseline = Number(textFrag0.box.borderBox.y) + 12.8;
+  assert.ok(Math.abs(spanBottom - baseline) < 0.01, "the span's bottom sits on the texts' baseline");
 });
 
 void test("inline run wraps to a second line when it overflows the width", () => {
@@ -872,7 +882,11 @@ void test("inline-block participates as an atomic unit on the same line", () => 
   const textNode = [...dom.nodes.values()].find((n) => n.kind === "text")!;
   const text = fragmentForNode(tree, textNode.id);
   assert.ok(Number(text.box.borderBox.x) < Number(spanFrag.box.borderBox.x), "text left of inline-block");
-  assert.equal(Number(text.box.borderBox.y), Number(spanFrag.box.borderBox.y), "same line (same y)");
+  // B4: one line via baseline alignment — the inline-block's bottom edge
+  // sits on the text's baseline (text y + 0.8 × 16 ascent).
+  const spanBottom = Number(spanFrag.box.borderBox.y) + Number(spanFrag.box.height);
+  const baseline = Number(text.box.borderBox.y) + 12.8;
+  assert.ok(Math.abs(spanBottom - baseline) < 0.01, "the inline-block's bottom sits on the text baseline");
 });
 
 void test("a block-level sibling breaks the inline run", () => {

@@ -2,10 +2,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import type { DecodedImage, DisplayList, DomNode, DomTree, FragmentTree, NodeId } from "@browser-engine/ir";
+import type { ComputedStyle, DecodedImage, DisplayList, DomNode, DomTree, FragmentTree, NodeId, PaintCmd, Px, Rect } from "@browser-engine/ir";
 import { nodeId, px } from "@browser-engine/ir";
 import { parseHtml } from "@browser-engine/html-parser";
-import { createComputedStyleResolver } from "@browser-engine/cascade";
+import { createComputedStyleResolverWithCache } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
 import { hitTest } from "@browser-engine/layout";
@@ -47,7 +47,7 @@ import {
   normalizeViewport,
   type EngineViewport,
 } from "./host-api.js";
-import { bootFineSession, createPageNetwork, type PageRuntime, type ScriptExecutionSummary } from "./engine-runtime.js";
+import { bootFineSession, createPageNetwork, type GuestDiagnostics, type PageRuntime, type ScriptExecutionSummary } from "./engine-runtime.js";
 import { networkStackToFetchFn } from "@browser-engine/guest";
 import { normalizeFocus, paintFocusOverlay, type EditFocus } from "./focus-overlay.js";
 export type { EditFocus } from "./focus-overlay.js";
@@ -72,6 +72,8 @@ export interface PageFrame {
   readonly width: number;
   readonly height: number;
   readonly pngBase64: string;
+  /** Raw PNG bytes: structured-clone-cheap over Electron IPC (no base64). */
+  readonly pngBytes?: Uint8Array;
   readonly bytes: number;
   readonly durationMs: number;
   readonly scriptsRun: number;
@@ -87,6 +89,9 @@ export interface PageFrame {
   readonly modulesEvaluated: number;
   readonly modulesLinked: number;
   readonly esmSupported: boolean;
+  /** Guest console messages + uncaught errors captured this frame (diagnostics). */
+  readonly consoleCount?: number;
+  readonly guestErrorCount?: number;
 }
 
 export type PageImageFetch = (src: string) => Promise<Uint8Array | undefined>;
@@ -112,6 +117,31 @@ export interface PageState {
   readonly focus: EditFocus | null;
   /** Present when loaded with keepAlive: lets a host pump guest work + repaint. */
   readonly runtime?: PageRuntime;
+  /**
+   * Snapshot of live guest diagnostics (console + uncaught errors + failed
+   * network calls) at frame time; `runtime.diagnostics` is the LIVE version.
+   */
+  readonly diagnostics?: GuestDiagnostics;
+  /**
+   * Cached document-space paint inputs for fast scrolling (built on first
+   * paint, reused by `fastScrollPaint` so a scroll re-rasterizes a shifted
+   * DisplayList instead of re-cascading + re-painting the whole tree). Cleared
+   * whenever the DOM / layout changes (`pumpFrame`, `repaintPage`, edits).
+   */
+  readonly scrollPaint?: ScrollPaintCache;
+}
+
+/**
+ * Document-space paint inputs cached across scroll frames. The DisplayList is
+ * in DOCUMENT coordinates (painted once with `scrollY: 0`); scrolling shifts
+ * it by `-scrollY` at raster time.
+ */
+export interface ScrollPaintCache {
+  readonly styleOf: (node: NodeId) => ComputedStyle;
+  readonly documentDisplayList: DisplayList;
+  /** Per-node cascade results for the CURRENT dom+sheets. Reusable by the
+   * next render ONLY when the DOM is verbatim unchanged (pure repaint). */
+  readonly styleCache?: Map<NodeId, ComputedStyle>;
 }
 
 export interface LoadPageOptions {
@@ -127,7 +157,7 @@ export interface LoadPageOptions {
  * so pending guest work mutates the DOM, then repaint. Returns the new state, or
  * the same state unchanged when the page has no live runtime.
  */
-export async function pumpFrame(page: PageState, settleMs = 200): Promise<PageState> {
+export async function pumpFrame(page: PageState, settleMs = 200, options: { readonly fastPaint?: boolean } = {}): Promise<PageState> {
   const runtime = page.runtime;
   if (runtime === undefined) return page;
   runtime.drainClassic();
@@ -135,14 +165,24 @@ export async function pumpFrame(page: PageState, settleMs = 200): Promise<PageSt
   if (runtime.settleModules !== null) {
     await runtime.settleModules(settleMs);
   }
-  return repaintPage(page, page.viewport, page.focus, page.scrollY);
+  // fastPaint: interactive feedback repaints at dpr1 (the settle path
+  // restores full DPR) — a full-DPR re-cascade after every click read as a
+  // multi-second freeze on photo-heavy pages.
+  const paintViewport =
+    options.fastPaint === true && page.viewport.devicePixelRatio !== 1
+      ? { ...page.viewport, devicePixelRatio: 1 }
+      : page.viewport;
+  const next = await repaintPage(page, paintViewport, page.focus, page.scrollY);
+  // repaintPage re-laid-out from the session's live DOM, so the rebuilt
+  // scrollPaint cache is already fresh; nothing stale survives.
+  return next;
 }
 
 /** Pump up to `count` frames, stopping early when guest work stops mutating the DOM. */
 export async function pumpFrames(
   page: PageState,
   count: number,
-  options: { readonly settleMs?: number; readonly idleStop?: boolean } = {},
+  options: { readonly settleMs?: number; readonly idleStop?: boolean; readonly skipIfIdle?: boolean; readonly fastPaint?: boolean } = {},
 ): Promise<{ page: PageState; frames: number; mutations: number }> {
   const settleMs = options.settleMs ?? 200;
   const startMutations = page.runtime?.mutations() ?? 0;
@@ -150,7 +190,23 @@ export async function pumpFrames(
   let frames = 0;
   for (let i = 0; i < count; i += 1) {
     const before = current.runtime?.mutations() ?? 0;
-    const next = await pumpFrame(current, settleMs);
+    // skipIfIdle (interactive paths): when the guest produced no mutations
+    // in this cycle, keep the CURRENT frame — a full re-cascade + raster for
+    // a no-op pump is what made clicks freeze for ~1s on photo-heavy pages.
+    if (options.skipIfIdle === true && frames === 0) {
+      const runtime = current.runtime;
+      if (runtime !== undefined) {
+        runtime.drainClassic();
+        await runtime.flushClassic();
+        if (runtime.settleModules !== null) {
+          await runtime.settleModules(settleMs);
+        }
+        if ((runtime.mutations() ?? 0) === before) {
+          break;
+        }
+      }
+    }
+    const next = await pumpFrame(current, settleMs, { fastPaint: options.fastPaint === true });
     frames += 1;
     current = next;
     if (options.idleStop === true && (current.runtime?.mutations() ?? 0) === before) break;
@@ -254,6 +310,8 @@ async function renderDom(
   focus: EditFocus | null = null,
   imageFetch?: (src: string) => Promise<Uint8Array | undefined>,
   scrollYInput = 0,
+  reusableStyleCache?: Map<NodeId, ComputedStyle>,
+  diagnostics?: GuestDiagnostics,
 ): Promise<{
   fragmentTree: FragmentTree;
   displayList: DisplayList;
@@ -264,6 +322,8 @@ async function renderDom(
   scrollY: number;
   decodedImages: Map<NodeId, DecodedImage>;
   bgImages: Map<string, DecodedImage>;
+  scrollPaint: ScrollPaintCache;
+  diagnostics?: GuestDiagnostics;
 }> {
   let t = performance.now();
   const viewportBox = { width: viewport.width, height: viewport.height };
@@ -279,7 +339,8 @@ async function renderDom(
   });
   t = mark("sheets", t);
   const origins = sheets.map((_, i) => (i === 0 ? ("ua" as const) : ("author" as const)));
-  const styleOf = createComputedStyleResolver(dom, sheets, viewportBox, origins);
+  const resolver = createComputedStyleResolverWithCache(dom, sheets, viewportBox, origins, undefined, reusableStyleCache);
+  const styleOf = resolver.styleOf;
   t = mark("styleResolver", t);
   const fragmentTree = layout(dom, styleOf, {
     shaper: pipelineShaper,
@@ -354,13 +415,18 @@ async function renderDom(
     withoutExtraStrips.push(item);
   }
   withoutExtraStrips.sort((a, b) => b.area - a.area || a.y - b.y || a.x - b.x);
+  // Dedupe by EXACT geometry + distinct content position only: carousels
+  // place many distinct cards at the same rounded coords (transforms aren't
+  // in the abs walk), so a coarse 8px-bucket cap used to discard most of
+  // them. Different img NODES are different content — keep every node,
+  // dropping only true same-position repeats (node id seen twice via
+  // duplicate fragments).
   const picked: typeof rankedImgs = [];
-  const geoCount = new Map<string, number>();
+  const seenExact = new Set<string>();
   for (const item of withoutExtraStrips) {
-    const key = `${Math.round(item.x / 8)}:${Math.round(item.y / 8)}:${Math.round(item.w / 8)}:${Math.round(item.h / 8)}`;
-    const n = geoCount.get(key) ?? 0;
-    if (n >= 2) continue;
-    geoCount.set(key, n + 1);
+    const key = `${item.x}:${item.y}:${item.w}:${item.h}:${item.id}`;
+    if (seenExact.has(key)) continue;
+    seenExact.add(key);
     picked.push(item);
     if (picked.length >= maxVisibleImages) break;
   }
@@ -423,11 +489,16 @@ async function renderDom(
   );
   const maxScroll = Math.max(0, contentHeight - height);
   const scrollYClamped = Math.min(scrollY, maxScroll);
-  const fullDisplayList = paint(fragmentTree, styleOf, (node) => images.get(node), {
-    clipMaxY: height,
-    scrollY: scrollYClamped,
+  // Document-space DisplayList (scrollY: 0): the viewport render clips this to
+  // the current window, and the SAME list is cached on the PageState so fast
+  // scrolling re-rasterizes a shifted clip instead of re-painting the tree.
+  const documentDisplayList = paint(fragmentTree, styleOf, (node) => images.get(node), {
+    scrollY: 0,
     imageBySrc,
   });
+  const shifted = shiftDisplayListCommands(documentDisplayList, -scrollYClamped);
+  const fullDisplayList =
+    scrollYClamped > 0 ? { commands: shifted } as unknown as DisplayList : documentDisplayList;
   t = mark("paint", t);
   if (PROFILE) console.error(`[profile] paintCmds=${fullDisplayList.commands.length} bg=${bgDecoded.size} dpr=${dpr}`);
   const displayList = clipDisplayListToViewport(fullDisplayList, height, widthLimit);
@@ -455,7 +526,61 @@ async function renderDom(
     scrollY: scrollYClamped,
     decodedImages: images,
     bgImages: bgDecoded,
+    scrollPaint: { styleOf, documentDisplayList, styleCache: resolver.cache },
+    ...(diagnostics !== undefined ? { diagnostics: snapshotDiagnostics(diagnostics) } : {}),
   };
+}
+
+/** Copy the LIVE diagnostic arrays so a frame carries a frozen snapshot. */
+function snapshotDiagnostics(diagnostics: GuestDiagnostics): GuestDiagnostics {
+  return {
+    console: [...diagnostics.console],
+    errors: [...diagnostics.errors],
+  };
+}
+
+/**
+ * Shift every geometry-bearing command by `(dx, dy)` — the viewport transform
+ * for a scrolled document-space DisplayList. Plain-value commands only, so
+ * this is a pure map with no upstream IR reads (Req 3.5).
+ */
+function shiftDisplayListCommands(list: DisplayList, dy: number): readonly PaintCmd[] {
+  if (dy === 0) return list.commands;
+  return list.commands.map((cmd): PaintCmd => {
+    switch (cmd.op) {
+      case "rect":
+        return { ...cmd, rect: shiftRect(cmd.rect) };
+      case "border":
+        return { ...cmd, rect: shiftRect(cmd.rect) };
+      case "image":
+        return { ...cmd, rect: shiftRect(cmd.rect) };
+      case "text":
+        return { ...cmd, at: { x: cmd.at.x, y: (Number(cmd.at.y) + dy) as import("@browser-engine/ir").Px } };
+      case "line":
+        return {
+          ...cmd,
+          from: { x: cmd.from.x, y: (Number(cmd.from.y) + dy) as import("@browser-engine/ir").Px },
+          to: { x: cmd.to.x, y: (Number(cmd.to.y) + dy) as import("@browser-engine/ir").Px },
+        };
+      case "push-clip":
+        return { ...cmd, rect: shiftRect(cmd.rect) };
+      case "gradient":
+        return { ...cmd, rect: shiftRect(cmd.rect) };
+      case "pop-clip":
+      case "pop-layer":
+        return cmd;
+      case "push-layer":
+        return cmd;
+    }
+  });
+  function shiftRect(rect: Rect): Rect {
+    return {
+      x: Number(rect.x) as Px,
+      y: (Number(rect.y) + dy) as Px,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
 }
 
 function toFrame(
@@ -467,6 +592,7 @@ function toFrame(
   durationMs: number,
   scripts: ScriptExecutionSummary,
   frameRev: number,
+  diagnostics?: GuestDiagnostics,
 ): PageFrame {
   return {
     url,
@@ -474,6 +600,7 @@ function toFrame(
     width,
     height,
     pngBase64: Buffer.from(png).toString("base64"),
+    pngBytes: png,
     bytes: png.byteLength,
     durationMs,
     scriptsRun: scripts.scripts,
@@ -489,6 +616,9 @@ function toFrame(
     modulesEvaluated: scripts.modulesEvaluated,
     modulesLinked: scripts.modulesLinked,
     esmSupported: scripts.esmSupported,
+    ...(diagnostics !== undefined
+      ? { consoleCount: diagnostics.console.length, guestErrorCount: diagnostics.errors.length }
+      : {}),
   };
 }
 
@@ -575,6 +705,7 @@ function finishPage(
       performance.now() - started,
       scripts,
       frameRev,
+      rendered.diagnostics,
     ),
   };
   let out = state;
@@ -583,6 +714,8 @@ function finishPage(
   if (imageBytes !== undefined) out = { ...out, imageBytes };
   if (rendered.decodedImages !== undefined) out = { ...out, decodedImages: rendered.decodedImages };
   if (rendered.bgImages !== undefined) out = { ...out, bgImages: rendered.bgImages };
+  if (rendered.scrollPaint !== undefined) out = { ...out, scrollPaint: rendered.scrollPaint };
+  if (rendered.diagnostics !== undefined) out = { ...out, diagnostics: rendered.diagnostics };
   return out;
 }
 
@@ -719,7 +852,7 @@ async function renderHtmlEngine(
       try {
         const early = await Promise.race([
           earlyCssWork,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
         ]);
         if (early !== null) {
           for (const [k, v] of early.cache) mergedCache.set(k, v);
@@ -732,22 +865,18 @@ async function renderHtmlEngine(
       stylesheetsOnly: true,
       existing: mergedCache,
     });
+    // Wait for external stylesheets with a HARD budget (early 1.2s + post
+    // 1.8s = 3s worst case, not unbounded network time). Whatever landed in
+    // the cache renders; stragglers would only pop in on a later full
+    // reload — first paint beats a styled-but-late frame.
     let postDone: { cache: Map<string, Uint8Array> } | null = null;
     try {
       const postOutcome = await Promise.race([
         postCssWork.then((post) => ({ done: true as const, post })),
-        new Promise<{ done: false }>((resolve) => setTimeout(() => resolve({ done: false }), 4000)),
+        new Promise<{ done: false }>((resolve) => setTimeout(() => resolve({ done: false }), 1800)),
       ]);
       if (postOutcome.done) {
         postDone = { cache: new Map(postOutcome.post.cache) };
-      } else {
-        const late = await Promise.race([
-          postCssWork,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-        if (late !== null) {
-          postDone = { cache: new Map(late.cache) };
-        }
       }
     } catch {
       // Guest/page code may throw here; swallowed by design.
@@ -818,6 +947,9 @@ async function renderHtmlEngine(
     combinedLoad,
     null,
     imageFetch,
+    0,
+    undefined,
+    boot.runtime?.diagnostics,
   );
   mark("renderDom", tBoot);
   const page = finishPage(
@@ -992,7 +1124,9 @@ export function fastScrollPaint(
   const dprIn = options.pixelRatio ?? viewport.devicePixelRatio ?? 1;
   const dpr =
     options.quality === "fast"
-      ? Math.max(1, Math.min(1.5, Number(dprIn) || 1))
+      ? 1 // scroll frames raster at dpr1: photo-heavy pages drop from
+        // ~150ms raster + ~1.8MB PNG to ~25ms + ~600KB; the settle frame
+        // (quality "full") repaints at true DPR once scrolling stops.
       : Math.max(1, Math.min(3, Number(dprIn) || 1));
   const rootFrag = page.fragmentTree.fragments.get(page.fragmentTree.root);
   const contentHeight = Math.max(
@@ -1001,26 +1135,37 @@ export function fastScrollPaint(
   );
   const maxScroll = Math.max(0, contentHeight - height);
   const scrollY = Math.max(0, Math.min(maxScroll, scrollYInput));
-  const sheets = documentStylesheets(page.dom, page.loader, {
-    type: "screen",
-    widthPx: width,
-    heightPx: height,
-  });
-  const origins = sheets.map((_, i) => (i === 0 ? ("ua" as const) : ("author" as const)));
-  const styleOf = createComputedStyleResolver(page.dom, sheets, { width, height }, origins);
   const decoded = page.decodedImages ?? new Map<NodeId, DecodedImage>();
   const bgImages = page.bgImages ?? new Map<string, DecodedImage>();
   const imageBySrc = (src: string) => bgImages.get(src);
-  const fullDisplayList = paint(
-    page.fragmentTree,
-    styleOf,
-    (node) => decoded.get(node),
-    {
-      clipMaxY: height,
-      scrollY,
-      imageBySrc,
-    },
-  );
+
+  // FAST PATH: reuse the cached document-space DisplayList + style resolver —
+  // scrolling is a pure viewport shift, so no cascade / no paint-tree walk.
+  // FALLBACK: cache absent (first paint predates it / viewport resized) → the
+  // previous re-cascade + re-paint path keeps behaviour correct.
+  const cache = page.scrollPaint;
+  let fullDisplayList: DisplayList;
+  if (cache !== undefined && page.viewport.width === width && page.viewport.height === height) {
+    const shifted = shiftDisplayListCommands(cache.documentDisplayList, -scrollY);
+    fullDisplayList = { commands: shifted } as unknown as DisplayList;
+  } else {
+    const sheets = documentStylesheets(page.dom, page.loader, {
+      type: "screen",
+      widthPx: width,
+      heightPx: height,
+    });
+    const origins = sheets.map((_, i) => (i === 0 ? ("ua" as const) : ("author" as const)));
+    const styleOf = createComputedStyleResolverWithCache(page.dom, sheets, { width, height }, origins).styleOf;
+    fullDisplayList = paint(
+      page.fragmentTree,
+      styleOf,
+      (node) => decoded.get(node),
+      {
+        scrollY: 0,
+        imageBySrc,
+      },
+    );
+  }
   const displayList = clipDisplayListToViewport(fullDisplayList, height, width);
   const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource, {
     clipMaxY: height,
@@ -1055,6 +1200,48 @@ export function fastScrollPaint(
   });
 }
 
+/**
+ * Evict the cascade entries a set of mutated nodes could have invalidated:
+ * each dirty node, everything below it (inherited properties flow down), and
+ * its following siblings (`+`/`~` selectors match by position). Everything
+ * else keeps its computed style, so a 10-node SPA tick re-cascades ~10
+ * subtrees instead of the whole document.
+ *
+ * `dirty === undefined` (no live session) means "cannot know" → drop the
+ * whole cache, which is the previous behaviour.
+ */
+function evictDirtyStyles(
+  cache: Map<NodeId, ComputedStyle>,
+  dom: DomTree,
+  dirty: ReadonlySet<NodeId> | undefined,
+): Map<NodeId, ComputedStyle> | undefined {
+  if (dirty === undefined) return undefined;
+  if (dirty.size === 0) return cache;
+  const drop = new Set<NodeId>();
+  const dropSubtree = (id: NodeId): void => {
+    if (drop.has(id)) return;
+    drop.add(id);
+    const node = dom.nodes.get(id);
+    if (node === undefined) return;
+    for (const child of node.children) dropSubtree(child);
+  };
+  for (const id of dirty) {
+    dropSubtree(id);
+    // Following siblings (and their subtrees) can match `+`/`~` rules whose
+    // left-hand side just changed.
+    const node = dom.nodes.get(id);
+    const parent = node?.parent === null || node?.parent === undefined ? undefined : dom.nodes.get(node.parent);
+    if (parent === undefined) continue;
+    let seen = false;
+    for (const sibling of parent.children) {
+      if (seen) dropSubtree(sibling);
+      if (sibling === id) seen = true;
+    }
+  }
+  for (const id of drop) cache.delete(id);
+  return cache;
+}
+
 export async function repaintPage(
   page: PageState,
   viewport: EngineViewport,
@@ -1062,10 +1249,52 @@ export async function repaintPage(
   scrollY: number = page.scrollY ?? 0,
 ): Promise<PageState> {
   const started = performance.now();
+  const viewportMatches =
+    page.viewport.width === viewport.width &&
+    page.viewport.height === viewport.height &&
+    page.viewport.devicePixelRatio === viewport.devicePixelRatio;
+  // The session's dirty-node record — NOT the guest mutation counter — is the
+  // authority on whether the DOM changed: host-side edits (attribute writes,
+  // text commits) never touch the guest counter, and trusting it would serve
+  // a stale frame.
+  const dirtyNodes = page.runtime?.session.takeDirtyNodes();
+  const domUnchanged = dirtyNodes !== undefined && dirtyNodes.size === 0;
+  // Nothing changed at all → skip cascade AND layout: the cached
+  // document-space display list is still exact, so re-clip and re-raster at
+  // the requested scroll position (full DPR). Turns no-op interactive frames
+  // from a full pipeline run into the raster path.
+  if (
+    domUnchanged &&
+    viewportMatches &&
+    focus === page.focus &&
+    page.scrollPaint?.styleCache !== undefined
+  ) {
+    return fastScrollPaint(page, viewport, scrollY, { quality: "full" });
+  }
   const imageBytes = page.imageBytes ?? new Map<string, Uint8Array>();
   const combinedLoad = makeCombinedImageLoader(page.loader, imageBytes, page.url);
   const imageFetch = makeCachingImageFetch(page.imageFetch, imageBytes, page.url);
-  const rendered = await renderDom(page.dom, page.url, viewport, combinedLoad, focus, imageFetch, scrollY);
+  // INCREMENTAL CASCADE: the guest mutated some nodes, so most styles are
+  // still valid. Evict only what a mutation can change — the node itself,
+  // its descendants (inherited properties) and its following siblings
+  // (sibling combinators) — and reuse the rest. A viewport or dpr change
+  // invalidates everything (lengths resolve against it).
+  const priorCache = page.scrollPaint?.styleCache;
+  const reusableCache =
+    priorCache !== undefined && viewportMatches
+      ? evictDirtyStyles(priorCache, page.dom, dirtyNodes)
+      : undefined;
+  const rendered = await renderDom(
+    page.dom,
+    page.url,
+    viewport,
+    combinedLoad,
+    focus,
+    imageFetch,
+    scrollY,
+    reusableCache,
+    page.runtime?.diagnostics,
+  );
   const next = finishPage(
     page.url,
     page.dom,
@@ -1079,7 +1308,8 @@ export async function repaintPage(
     page.imageFetch ?? imageFetch,
     imageBytes,
   );
-  return page.runtime !== undefined ? { ...next, runtime: page.runtime } : next;
+  // DOM unchanged (pure repaint) → the document-space paint cache stays valid.
+  return page.runtime !== undefined ? { ...next, runtime: page.runtime, scrollPaint: rendered.scrollPaint } : next;
 }
 
 export async function applyTextEdit(
@@ -1106,7 +1336,9 @@ export async function applyTextEdit(
   const imageBytes = page.imageBytes ?? new Map<string, Uint8Array>();
   const combinedLoad = makeCombinedImageLoader(page.loader, imageBytes, page.url);
   const imageFetch = makeCachingImageFetch(page.imageFetch, imageBytes, page.url);
-  const rendered = await renderDom(dom, page.url, viewport, combinedLoad, focus, imageFetch, page.scrollY ?? 0);
+  const rendered = await renderDom(dom, page.url, viewport, combinedLoad, focus, imageFetch, page.scrollY ?? 0, undefined, page.runtime?.diagnostics);
+  // DOM changed → the rebuilt scrollPaint cache from `rendered` is fresh and
+  // correct (renderDom re-laid-out the new DOM); finishPage attaches it.
   return finishPage(
     page.url,
     dom,
@@ -1190,15 +1422,15 @@ export async function loadPage(
     trimmed === "engine://home" ||
     trimmed === "/"
   ) {
-    return renderHtmlEngine(HOME_HTML, HOME_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(HOME_HTML, HOME_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
   }
 
   if (trimmed === DEMO_URL || trimmed === "engine://demo") {
-    return renderHtmlEngine(DEMO_HTML, DEMO_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(DEMO_HTML, DEMO_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
   }
 
   if (trimmed === LIVE_URL || trimmed === "engine://live") {
-    return renderHtmlEngine(LIVE_HTML, LIVE_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(LIVE_HTML, LIVE_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
   }
 
   if (trimmed === FONTS_URL || trimmed === "engine://fonts") {
@@ -1326,7 +1558,8 @@ export async function loadHtmlDocument(
   url = "engine://upload",
   viewportInput?: EngineViewport,
   runScripts = true,
+  keepAlive = false,
 ): Promise<PageState> {
   const viewport = normalizeViewport(viewportInput);
-  return renderHtmlEngine(html, url, viewport, { runScripts });
+  return renderHtmlEngine(html, url, viewport, { runScripts, ...(keepAlive ? { keepAlive: true } : {}) });
 }

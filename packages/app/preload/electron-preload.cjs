@@ -16,4 +16,5 @@ contextBridge.exposeInMainWorld("engineShell", {
   selectTab: (id) => ipcRenderer.invoke("shell:selectTab", id),
   closeTab: (id) => ipcRenderer.invoke("shell:closeTab", id),
   tabs: () => ipcRenderer.invoke("shell:tabs"),
+  diagnostics: () => ipcRenderer.invoke("shell:diagnostics"),
 });

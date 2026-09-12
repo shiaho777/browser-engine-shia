@@ -291,8 +291,9 @@ const ADVANCED_LAYOUT_TESTS: WptSubset = [
         styleTable(
           new Map([
             [1, makeStyle({ display: "table", width: 200 })],
-            [3, makeStyle({ display: "block", height: 20 })],
-            [4, makeStyle({ display: "block", height: 30 })],
+            [2, makeStyle({ display: "table-row" })],
+            [3, makeStyle({ display: "table-cell", height: 20 })],
+            [4, makeStyle({ display: "table-cell", height: 30 })],
           ]),
         ),
       );

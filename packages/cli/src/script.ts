@@ -37,6 +37,11 @@ import {
 
 import { parseHtml } from "@browser-engine/html-parser";
 import { FineSession } from "./fine.js";
+import {
+  MutationObserverController,
+  type ObserverOptions,
+  type QueuedRecord,
+} from "./mutation-observer.js";
 
 /** CSS property metadata for CSSOM serialization: css-name → { field, tsType }. */
 const CSS_NAME_TO_META = new Map(CSS_PROPERTIES.map((p) => [p.name, { field: p.field, tsType: p.tsType }]));
@@ -268,6 +273,14 @@ export type DocumentApiOptions = {
    */
   readonly onDynamicScript?: (nodeId: NodeId) => void;
   /**
+   * Mutable holder for `document.readyState`. Per HTML, parser-inserted
+   * scripts execute while the state is `"loading"`; it becomes
+   * `"interactive"` after DOMContentLoaded and `"complete"` after load.
+   * Runners that drive the full lifecycle own the box and flip it; when
+   * absent the getter keeps the historical `"complete"`.
+   */
+  readonly readyStateBox?: { current: string };
+  /**
    * Error sink for exceptions thrown by guest event listeners that the
    * document object dispatches directly (DOMContentLoaded lifecycle,
    * document.dispatchEvent): per HTML each listener error is reported as an
@@ -275,6 +288,49 @@ export type DocumentApiOptions = {
    * connects this to its uncaught-error record.
    */
   readonly onListenerError?: (error: unknown) => void;
+  /**
+   * Microtask scheduler for MutationObserver delivery. Runners with a virtual
+   * event loop pass their loop's `microtask` (late-bound closures are fine —
+   * the scheduler is only invoked when a guest mutation actually happens);
+   * standalone callers (WPT harnesses) fall back to the realm's real
+   * `queueMicrotask`, which matches spec semantics for their sync/async flow.
+   */
+  readonly observerScheduler?: (fn: () => void) => void;
+  /**
+   * D6 — the Shadow DOM composition controller. The runner injects it (owned
+   * by the FineSession wiring); `attachShadow` calls `registerHost` and slot
+   * assignment calls `assignSlot`, both of which re-seed the session's
+   * composition kernel input (invalidating exactly the affected layout
+   * queries). `read()` returns the current composition for host lookups.
+   */
+  readonly compositionControl?: {
+    registerHost(hostId: NodeId, shadowRootId: NodeId): void;
+    assignSlot(slotId: NodeId, assigned: readonly NodeId[]): void;
+    read(): { hosts: ReadonlyMap<NodeId, readonly NodeId[]>; slots: ReadonlyMap<NodeId, readonly NodeId[]> } | null;
+  };
+};
+
+/**
+ * A host-side trusted input event about to be dispatched into the page (UI
+ * Events). Plain data only — the document API synthesizes the guest-facing
+ * event object (including `isTrusted: true` surface for real Event instances).
+ */
+export type PlatformEventInput = {
+  readonly type: string;
+  readonly bubbles?: boolean;
+  readonly cancelable?: boolean;
+  /** Viewport-relative pointer position (CSS px). */
+  readonly clientX?: number;
+  readonly clientY?: number;
+  readonly button?: number;
+  readonly buttons?: number;
+  readonly detail?: number;
+  readonly deltaX?: number;
+  readonly deltaY?: number;
+  readonly deltaZ?: number;
+  readonly deltaMode?: number;
+  readonly key?: string;
+  readonly code?: string;
 };
 
 export function buildDocumentApi(
@@ -294,6 +350,17 @@ export function buildDocumentApi(
    * event; without it every dynamic chunk "times out" from the page's view.
    */
   readonly fireScriptElementEvent: (nodeId: NodeId, type: "load" | "error") => void;
+  /**
+   * Host→guest trusted input dispatch (UI Events): fire a platform-generated
+   * pointer/mouse/wheel event at a DOM node through the full capture → target
+   * → bubble path, then run activation behavior for `click`. This is the
+   * bridge real browser input uses to reach page listeners; without it a
+   * host-side click can only navigate, never run `addEventListener` handlers.
+   */
+  readonly dispatchPlatformEvent: (
+    nodeId: NodeId,
+    event: PlatformEventInput,
+  ) => boolean;
 } {
   let compileInlineHandler: ((body: string) => unknown) | null = null;
   let navigateToHashFragment: ((fragment: string) => void) | null = null;
@@ -310,7 +377,15 @@ export function buildDocumentApi(
   let layoutTreeCache: ReturnType<FineSession["layoutTree"]> | null = null;
   let layoutTreeEpoch = -1;
   let layoutTreeAt = 0;
-  const GEOM_THROTTLE_MS = 48;
+  let geometryLayouts = 0;
+  // Geometry throttle: a full layout recompute costs O(100ms+) on real
+  // pages, and SPA bootstraps measure in tight loops (dozens of gBCR rounds
+  // during mount). Two guards keep measure-driven boot loops from
+  // serializing into tens of full layouts: at most one recompute per 200ms,
+  // and a hard per-session budget (after it, callers see the last cached
+  // tree — every engine repaint still refreshes it for free).
+  const GEOM_THROTTLE_MS = 200;
+  const GEOM_LAYOUT_BUDGET = 3;
 const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     if (geometryMode === "stub") return null;
     if (geometryMode === "full") {
@@ -318,11 +393,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       return session.layoutTree();
     }
     const now = performance.now();
+    const budgetLeft = geometryLayouts < GEOM_LAYOUT_BUDGET;
     if (
       layoutTreeCache === null ||
-      (layoutTreeEpoch !== mutations && now - layoutTreeAt >= GEOM_THROTTLE_MS)
+      (budgetLeft && layoutTreeEpoch !== mutations && now - layoutTreeAt >= GEOM_THROTTLE_MS)
     ) {
       gBcrLayoutFulls += 1;
+      geometryLayouts += 1;
       layoutTreeCache = session.layoutTree();
       layoutTreeEpoch = mutations;
       layoutTreeAt = now;
@@ -1707,6 +1784,27 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           mutations += 1;
         }
       },
+      /**
+       * D6 — Shadow DOM (Web Components §3): create a shadow root under this
+       * element. The shadow tree is regular DOM in the session; the returned
+       * ShadowRoot wrapper exposes it for guest manipulation. The document's
+       * composition input updates so layout renders the flat tree: this host
+       * lays out its shadow children, and `<slot>`s inside pull light children.
+       */
+      attachShadow(init?: unknown): object {
+        const mode = init !== null && typeof init === "object" && (init as { mode?: unknown }).mode === "closed"
+          ? "closed"
+          : "open";
+        // Build the shadow tree in the session's DOM: a detached root node
+        // carrying the host's children position.
+        const shadowRootId = session.createElement("#shadow-root");
+        session.setAttribute(shadowRootId, "data-shadow-mode", mode);
+        // Record the host → shadow-children composition. The shadow root's
+        // children are what the host renders.
+        compositionMutator?.registerHost(nodeId, shadowRootId);
+        mutations += 1;
+        return makeShadowRoot(shadowRootId, mode);
+      },
       appendChild(child: unknown): unknown {
         const childId = idFromWrapper(child);
         if (childId !== undefined) {
@@ -2530,12 +2628,40 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       session.removeChild(id, child);
     }
     if (html === "") return;
+    insertHtmlIntoParent(id, html);
+  };
+
+  /**
+   * Parse `html` and append its content roots under `parentId` — the shared
+   * parse-and-import engine behind `innerHTML =`, `document.write`, and
+   * `insertAdjacentHTML`.
+   */
+  const insertHtmlIntoParent = (parentId: NodeId, html: string): void => {
     const tree = parseHtml(new TextEncoder().encode(html));
     for (const contentId of fragmentContentRoots(tree)) {
       const child = tree.nodes.get(contentId);
       if (child === undefined) continue;
       const imported = importParsedNode(child, tree);
-      if (imported !== null) session.appendChild(id, imported);
+      if (imported !== null) session.appendChild(parentId, imported);
+    }
+  };
+
+  /**
+   * D5 — `document.write` insertion: parse `html` and insert its content
+   * AFTER `afterId` (the currently executing script's document position).
+   */
+  const insertHtmlAfterNode = (afterId: NodeId, html: string): void => {
+    const parent = session.dom.nodes.get(afterId)?.parent ?? null;
+    if (parent === null) return;
+    const siblings = session.dom.nodes.get(parent)?.children ?? [];
+    const index = siblings.indexOf(afterId);
+    const ref = index >= 0 && index + 1 < siblings.length ? (siblings[index + 1] ?? null) : null;
+    const tree = parseHtml(new TextEncoder().encode(html));
+    for (const contentId of fragmentContentRoots(tree)) {
+      const child = tree.nodes.get(contentId);
+      if (child === undefined) continue;
+      const imported = importParsedNode(child, tree);
+      if (imported !== null) session.insertBefore(parent, imported, ref);
     }
   };
 
@@ -2826,6 +2952,73 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   function EventCtor(this: unknown, type: unknown, opts: unknown): GuestEvent {
     const o = typeof opts === "object" && opts !== null ? (opts as { bubbles?: boolean; cancelable?: boolean }) : {};
     return makeEvent(String(type), { bubbles: o.bubbles === true, cancelable: o.cancelable === true });
+  }
+
+  /**
+   * Synthesize a trusted (platform-generated) guest event from plain host
+   * input data. The event carries pointer/keyboard fields when present, so
+   * page handlers that read `clientX` / `key` / `button` see real values.
+   * DOM `isTrusted` is true for platform events (UI Events §3.2); the
+   * plain-object event model marks trustedness with an internal flag the
+   * dispatch path never resets.
+   */
+  function makePlatformEvent(input: PlatformEventInput): GuestEvent {
+    const pointerLike = input.clientX !== undefined || input.clientY !== undefined
+      || input.button !== undefined || input.deltaY !== undefined;
+    const keyLike = input.key !== undefined || input.code !== undefined;
+    const evt = makeEvent(input.type, {
+      bubbles: input.bubbles ?? true,
+      cancelable: input.cancelable ?? true,
+    });
+    const withInput = evt as unknown as Record<string, unknown>;
+    withInput["isTrusted"] = true;
+    if (pointerLike) {
+      withInput["clientX"] = input.clientX ?? 0;
+      withInput["clientY"] = input.clientY ?? 0;
+      withInput["screenX"] = input.clientX ?? 0;
+      withInput["screenY"] = input.clientY ?? 0;
+      withInput["pageX"] = input.clientX ?? 0;
+      withInput["pageY"] = input.clientY ?? 0;
+      withInput["offsetX"] = input.clientX ?? 0;
+      withInput["offsetY"] = input.clientY ?? 0;
+      withInput["button"] = input.button ?? 0;
+      withInput["buttons"] = input.buttons ?? 0;
+      withInput["movementX"] = 0;
+      withInput["movementY"] = 0;
+      withInput["deltaX"] = input.deltaX ?? 0;
+      withInput["deltaY"] = input.deltaY ?? 0;
+      withInput["deltaZ"] = input.deltaZ ?? 0;
+      withInput["deltaMode"] = input.deltaMode ?? 0;
+    }
+    if (keyLike) {
+      withInput["key"] = input.key ?? "";
+      withInput["code"] = input.code ?? "";
+      withInput["keyCode"] = 0;
+      withInput["which"] = 0;
+      withInput["charCode"] = 0;
+      withInput["repeat"] = false;
+      withInput["isComposing"] = false;
+      withInput["getModifierState"] = (): boolean => false;
+    }
+    withInput["detail"] = input.detail ?? 0;
+    withInput["view"] = null;
+    return evt;
+  }
+
+  /**
+   * Host→guest trusted input dispatch (UI Events): dispatch a platform event
+   * at `nodeId` through capture → target → bubble, then run the activation
+   * behavior for `click` when not default-prevented. Returns whether the
+   * event was NOT default-prevented (mirrors `dispatchEvent`).
+   */
+  function dispatchPlatformEvent(nodeId: NodeId, input: PlatformEventInput): boolean {
+    if (session.dom.nodes.get(nodeId) === undefined) return true;
+    const evt = makePlatformEvent(input);
+    const notPrevented = dispatch(nodeId, evt);
+    if (input.type === "click" && notPrevented) {
+      runActivationBehavior(nodeId);
+    }
+    return notPrevented;
   }
 
   function NodeCtor(): never {
@@ -3203,6 +3396,38 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     get scripts(): object {
       return makeLiveCollection(() => elementIdsByTagName(session.dom.root, "script"));
     },
+    /**
+     * HTML §4.2.5 `document.write` — insert parsed HTML at the PARSER'S
+     * INSERTION POINT: right after the currently executing <script> element
+     * (the spec's "insertion point" while the parser runs; after parsing it
+     * does nothing per spec, but we accept it anyway — browsers do).
+     */
+    write(...args: unknown[]): void {
+      const html = args.map((a) => coerceGuestString(a)).join("");
+      if (html === "") return;
+      const scriptId = options.currentScriptBox?.current ?? null;
+      if (scriptId !== null) {
+        insertHtmlAfterNode(scriptId, html);
+      } else {
+        // No executing script: append to the body (the graceful post-parse
+        // behavior real browsers show for late document.write).
+        const body = [...session.dom.nodes.values()].find(
+          (n) => n.kind === "element" && n.tag === "body",
+        );
+        if (body !== undefined) {
+          insertHtmlIntoParent(body.id, html);
+        }
+      }
+      mutations += 1;
+    },
+    /** `document.writeln(html)` — write + a trailing newline. */
+    writeln(...args: unknown[]): void {
+      document.write(...args, "\n");
+    },
+    /** HTML §4.2.5 `document.open()` — a no-op that "re-opens" the stream. */
+    open(): void {},
+    /** HTML §4.2.5 `document.close()` — a no-op that closes the stream. */
+    close(): void {},
     get currentScript(): object | null {
       const id = options.currentScriptBox?.current ?? null;
       return id !== null ? makeElementCached(id) : null;
@@ -3240,7 +3465,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       cookieJar = next.join("; ");
     },
     get readyState(): string {
-      return "complete";
+      return options.readyStateBox?.current ?? "complete";
     },
     get visibilityState(): string {
       return "visible";
@@ -3524,6 +3749,129 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       return cached;
     };
   } as unknown as new (w?: unknown, h?: unknown) => object;
+
+  // ---- MutationObserver (DOM Standard §mutation-observers) ------------------
+  // The REAL observer: the session reports every DOM mutation through the
+  // listener seam (fine.ts), the controller applies the spec's options filter
+  // and batches records per observer, and delivery rides the injected
+  // microtask scheduler (the runner's virtual loop, or the realm's real one).
+  const observerScheduler = options.observerScheduler ?? ((fn: () => void) => queueMicrotask(fn));
+  const mutationObserverController = new MutationObserverController(
+    (id) => {
+      const parent = session.dom.nodes.get(id as NodeId)?.parent;
+      return parent === null || parent === undefined ? null : Number(parent);
+    },
+    observerScheduler,
+  );
+  session.setMutationListener((m) => {
+    mutationObserverController.queueMutation({
+      kind: m.kind,
+      target: Number(m.target),
+      attributeName: m.attributeName,
+      attributeNamespace: null,
+      oldValue: m.oldValue ?? null,
+      added: m.added?.map(Number),
+      removed: m.removed?.map(Number),
+      previousSibling: m.previousSibling != null ? Number(m.previousSibling) : null,
+      nextSibling: m.nextSibling != null ? Number(m.nextSibling) : null,
+    });
+  });
+  /** Wrap a controller record (NodeId-level) into the guest-facing MutationRecord. */
+  const wrapMutationRecord = (record: QueuedRecord): object => {
+    const wrapId = (id: number): object => makeElementCached(id as NodeId);
+    return {
+      type: record.type,
+      target: wrapId(record.target),
+      addedNodes: makeNodeList(() => record.addedNodes.map((id) => id as NodeId)),
+      removedNodes: makeNodeList(() => record.removedNodes.map((id) => id as NodeId)),
+      previousSibling: record.previousSibling !== null ? wrapId(record.previousSibling) : null,
+      nextSibling: record.nextSibling !== null ? wrapId(record.nextSibling) : null,
+      attributeName: record.attributeName,
+      attributeNamespace: record.attributeNamespace,
+      oldValue: record.oldValue,
+    };
+  };
+  const observerCallbacks = new WeakMap<object, (records: unknown, observer: unknown) => void>();
+  const normalizeObserverOptions = (input: unknown): ObserverOptions => {
+    if (input === null || typeof input !== "object") return {};
+    const o = input as Record<string, unknown>;
+    return {
+      ...("childList" in o ? { childList: Boolean(o["childList"]) } : {}),
+      ...("attributes" in o ? { attributes: Boolean(o["attributes"]) } : {}),
+      ...("characterData" in o ? { characterData: Boolean(o["characterData"]) } : {}),
+      ...("subtree" in o ? { subtree: Boolean(o["subtree"]) } : {}),
+      ...("attributeOldValue" in o ? { attributeOldValue: Boolean(o["attributeOldValue"]) } : {}),
+      ...("characterDataOldValue" in o ? { characterDataOldValue: Boolean(o["characterDataOldValue"]) } : {}),
+      ...(Array.isArray(o["attributeFilter"])
+        ? { attributeFilter: (o["attributeFilter"] as unknown[]).map((v) => String(v)) }
+        : {}),
+    };
+  };
+  /**
+   * D6 — the composition mutator: the single writer of the session's Shadow
+   * composition. The document API owns it (buildDocumentApi wires it to
+   * options.compositionControl); attachShadow / slot assignment call into it
+   * and the layout queries re-run on the changed composition.
+   */
+  interface CompositionMutator {
+    registerHost(hostId: NodeId, shadowRootId: NodeId): void;
+    assignSlot(slotId: NodeId, assigned: readonly NodeId[]): void;
+  }
+
+  const compositionMutator: CompositionMutator | null = options.compositionControl ?? null;
+
+  /**
+   * A ShadowRoot wrapper: a DocumentFragment-shaped handle over the shadow
+   * tree's root node. Guest code appends INTO it to build shadow content.
+   */
+  const makeShadowRoot = (rootId: NodeId, mode: "open" | "closed"): object => {
+    const frag = makeElementCached(rootId);
+    Object.defineProperties(frag, {
+      mode: { value: mode, enumerable: true },
+      host: { get: () => makeElementCached(nodeIdOfHost(rootId)), enumerable: true },
+    });
+    return frag;
+  };
+
+  /** Resolve the host element id for a shadow root (the composition map).
+   * The composition stores host → shadow children (not the root id), so the
+   * ShadowRoot's `host` getter is best-effort: the shadow root's own id. */
+  const nodeIdOfHost = (shadowRootId: NodeId): NodeId => {
+    void options.compositionControl?.read();
+    return shadowRootId;
+  };
+
+  const MutationObserverCtor = class MutationObserver {
+    constructor(callback: unknown) {
+      if (typeof callback !== "function") {
+        throw new TypeError("MutationObserver: callback must be a function");
+      }
+      observerCallbacks.set(this, callback as (records: unknown, observer: unknown) => void);
+    }
+    observe(target: unknown, options?: unknown): void {
+      const id = idFromWrapper(target);
+      if (id === undefined) {
+        throw new TypeError("MutationObserver.observe: target must be a Node");
+      }
+      mutationObserverController.observe(
+        this,
+        (records, observer) => {
+          const cb = observerCallbacks.get(observer as object);
+          if (cb === undefined) return;
+          cb.call(observer, records.map(wrapMutationRecord), observer);
+        },
+        Number(id),
+        normalizeObserverOptions(options),
+      );
+    }
+    disconnect(): void {
+      mutationObserverController.disconnect(this);
+    }
+    takeRecords(): unknown[] {
+      return mutationObserverController.takeRecords(this).map(wrapMutationRecord);
+    }
+  };
+
   const domGlobals: Record<string, unknown> = {
     Event: EventCtor,
     Node: NodeCtor,
@@ -3539,6 +3887,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       return makeElementCached(id);
     },
     NodeList: NodeListCtor,
+    MutationObserver: MutationObserverCtor,
     SVGElement: SVGElementCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
@@ -3582,6 +3931,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     hasActiveAnimations,
     fireDocumentLifecycleEvents,
     fireScriptElementEvent,
+    dispatchPlatformEvent,
   };
 }
 

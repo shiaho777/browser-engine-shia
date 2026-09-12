@@ -6,16 +6,24 @@ import { isEsmSupported, runModuleScripts } from "./esm-runner.js";
 
 void test("ESM runner evaluates a simple module graph when SourceTextModule is available", async () => {
   if (!isEsmSupported()) {
+    // Console-completeness: the unsupported path must write to the
+    // diagnostics sink, not just the return value — otherwise a host reading
+    // only `diagnostics` sees zero modules and zero explanation.
+    const diagnostics = { console: [] as { level: string; message: string }[], errors: [] as string[] };
     const result = await runModuleScripts(
       new FineSession("<html><body></body></html>", "https://example.test/"),
       [{ url: "https://example.test/a.js", source: "export const n = 1;" }],
+      undefined,
+      { diagnostics },
     );
     assert.equal(result.supported, false);
     assert.match(result.errors[0] ?? "", /experimental-vm-modules/);
+    assert.ok(
+      diagnostics.errors.some((e) => /experimental-vm-modules/.test(e)),
+      "unsupported ESM must be loud in diagnostics.errors",
+    );
     return;
-  }
-
-  const sources = new Map<string, string>([
+  }  const sources = new Map<string, string>([
     [
       "https://example.test/entry.js",
       `import { value } from "./dep.js";

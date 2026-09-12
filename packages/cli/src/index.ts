@@ -58,6 +58,8 @@ export {
 
 import { formatStatus, runPhase0Checks } from "./checks.js";
 import { runRender } from "./render.js";
+import { runDiagnoseCommand } from "./diagnose.js";
+import { runDoctorCommand } from "./doctor.js";
 import { runWptCommand } from "./wpt-run.js";
 import { runWptSubsetsCommand } from "./wpt-subsets-run.js";
 
@@ -163,6 +165,27 @@ export {
   type ResourceResolver,
 } from "./wpt-suite.js";
 export {
+  parseDiagnoseArgs,
+  classifyDiagnoseBucket,
+  diagnoseInput,
+  formatDiagnoseReport,
+  runDiagnoseCommand,
+  type DiagnoseArgs,
+  type DiagnoseBucket,
+  type DiagnoseReport,
+} from "./diagnose.js";
+export {
+  parseDoctorArgs,
+  doctorSignature,
+  runDoctor,
+  formatDoctorResult,
+  runDoctorCommand,
+  DOCTOR_DEFAULT_MAX,
+  DOCTOR_DEFAULT_INTERVAL_MS,
+  type DoctorArgs,
+  type DoctorResult,
+} from "./doctor.js";
+export {
   parseWptArgs,
   runWptCommand,
   formatWptReport,
@@ -193,6 +216,7 @@ export {
   runScriptsOnSessionReal,
   type EventDrivenRun,
   type GuestBrowserFetch,
+  type GuestDiagnostics,
   type ScriptNetworkOptions,
 } from "./event-loop.js";
 export { runModuleScripts, isEsmSupported, type ModuleEntry, type ModuleRunResult } from "./esm-runner.js";
@@ -275,6 +299,12 @@ export async function runCli(argv: readonly string[] = process.argv.slice(2)): P
   const [command, ...rest] = argv;
   if (command === "render") {
     return runRender(rest);
+  }
+  if (command === "diagnose") {
+    return runDiagnoseCommand(rest);
+  }
+  if (command === "doctor") {
+    return runDoctorCommand(rest);
   }
   if (command === "wpt") {
     return runWptCommand(rest);

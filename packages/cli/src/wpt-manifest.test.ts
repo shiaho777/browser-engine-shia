@@ -96,3 +96,16 @@ void test("parseWptSubsetArgs accepts manifest dir, --wpt-root, --json, and --tr
   assert.equal(args.json, true);
   assert.equal(args.trace, true);
 });
+
+void test("parseWptSubsetArgs accepts --dir as an explicit manifest-dir option", () => {
+  const args = parseWptSubsetArgs(["--dir", "/tmp/imported/manifests"]);
+
+  assert.equal(args.manifestDir, "/tmp/imported/manifests");
+});
+
+void test("parseWptSubsetArgs rejects a manifest dir given both positionally and via --dir", () => {
+  assert.throws(
+    () => parseWptSubsetArgs(["/tmp/subsets", "--dir", "/tmp/other"]),
+    /given twice/,
+  );
+});

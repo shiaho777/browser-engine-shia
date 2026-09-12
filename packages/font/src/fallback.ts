@@ -34,6 +34,14 @@ export function fallbackCoverageSource(faces: readonly FontFace[]): GlyphCoverag
     return 0;
   };
 
+  // Glyph-atlas cache: scan-converting an outline is the most expensive per-
+  // pixel operation in the pipeline, and every repaint re-rasterizes the SAME
+  // (glyph, size) pairs. A page frame rasterizes each visible glyph once per
+  // frame without this; the cache turns repeat frames (scroll, pump, focus)
+  // into Map lookups. Key: `syntheticId @ fontSizePx*10` (0.1px granularity —
+  // the fractional sizes callers pass are stable per page zoom).
+  const atlas = new Map<string, GlyphRaster>();
+
   return {
     glyphId: resolve,
     advanceEm: (syntheticId: number): number => {
@@ -47,7 +55,12 @@ export function fallbackCoverageSource(faces: readonly FontFace[]): GlyphCoverag
       if (syntheticId <= 0) return EMPTY_RASTER;
       const slot = slots[syntheticId - 1];
       if (slot === undefined) return EMPTY_RASTER;
-      return rasterizeOutline(slot.face.outlineOf(slot.gid), fontSizePx / slot.face.unitsPerEm);
+      const key = `${syntheticId}@${Math.round(fontSizePx * 10)}`;
+      const hit = atlas.get(key);
+      if (hit !== undefined) return hit;
+      const raster = rasterizeOutline(slot.face.outlineOf(slot.gid), fontSizePx / slot.face.unitsPerEm);
+      atlas.set(key, raster);
+      return raster;
     },
   };
 }

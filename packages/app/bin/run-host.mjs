@@ -1,3 +1,4 @@
+import "./ensure-vm-modules.mjs";
 import { startAppServer } from "../dist/server.js";
 
 const port = Number(process.env.PORT || process.argv[2] || 7788);

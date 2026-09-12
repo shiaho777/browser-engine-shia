@@ -55,7 +55,7 @@ import { domTreesEquivalent, parseHtml, parseHtmlWithMetrics, serializeDom } fro
 import { parseCss } from "@browser-engine/css-parser";
 import { cascade } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
-import { documentStylesheets } from "./stylesheets.js";
+import { documentStylesheets, uaStylesheet } from "./stylesheets.js";
 import {
   computeScoreboard,
   runWptSubset,
@@ -461,7 +461,7 @@ const CSS_LAYOUT_TESTS: WptSubset = [
       // Block children stack top-to-bottom: y is monotonic and the next child's
       // y equals the running sum of prior margin-box heights (design.md §8.2).
       const dom = parseHtml(encode('<div><div class="a"></div><div class="b"></div></div>'));
-      const sheets = [parseCss(encode(".a { height: 30px } .b { height: 40px }"))];
+      const sheets = [uaStylesheet(), parseCss(encode(".a { height: 30px } .b { height: 40px }"))];
       const tree = layout(dom, (node) => cascade(dom, sheets, node));
       const divs = elementsByTag(dom, "div"); // [outer, a, b] in document order.
       const fragA = fragmentForNode(tree, divs[1]!.id);
@@ -480,7 +480,7 @@ const CSS_LAYOUT_TESTS: WptSubset = [
     capability: "layout-width-height",
     run: () => {
       const dom = parseHtml(encode("<div></div>"));
-      const sheets = [parseCss(encode("div { width: 120px; height: 60px }"))];
+      const sheets = [uaStylesheet(), parseCss(encode("div { width: 120px; height: 60px }"))];
       const tree = layout(dom, (node) => cascade(dom, sheets, node));
       const frag = fragmentForNode(tree, firstElementId(dom));
       expect(frag.box.borderBox.width === 120, `width did not resolve to 120px: ${frag.box.borderBox.width}`);
@@ -491,11 +491,12 @@ const CSS_LAYOUT_TESTS: WptSubset = [
     id: "phase2/css-layout/width-auto-fills.html",
     capability: "layout-width-height",
     run: () => {
-      // `width:auto` fills the containing block (the configured viewport width).
+      // `width:auto` fills the containing block: the BODY's content box
+      // (640 − 2×8px UA body margin = 624), exactly like a real browser.
       const dom = parseHtml(encode("<div></div>"));
-      const tree = layout(dom, (node) => cascade(dom, [], node), { viewportWidth: px(640) });
+      const tree = layout(dom, (node) => cascade(dom, [uaStylesheet()], node), { viewportWidth: px(640) });
       const frag = fragmentForNode(tree, firstElementId(dom));
-      expect(frag.box.borderBox.width === 640, `auto width must fill the 640px viewport: ${frag.box.borderBox.width}`);
+      expect(frag.box.borderBox.width === 624, `auto width fills the body content box: ${frag.box.borderBox.width}`);
     },
   },
   {
@@ -503,12 +504,13 @@ const CSS_LAYOUT_TESTS: WptSubset = [
     capability: "layout-margin",
     run: () => {
       const dom = parseHtml(encode("<div></div>"));
-      const sheets = [parseCss(encode("div { width: 100px; height: 10px; margin: 5px }"))];
+      const sheets = [uaStylesheet(), parseCss(encode("div { width: 100px; height: 10px; margin: 5px }"))];
       const tree = layout(dom, (node) => cascade(dom, sheets, node));
       const frag = fragmentForNode(tree, firstElementId(dom));
       expect(frag.box.marginBox.width === 110, `margin box width: ${frag.box.marginBox.width}`);
       expect(frag.box.marginBox.height === 20, `margin box height: ${frag.box.marginBox.height}`);
-      expect(frag.box.borderBox.x === 5, `border box offset by left margin: ${frag.box.borderBox.x}`);
+      // 8px UA body margin + the div's own 5px left margin.
+      expect(frag.box.borderBox.x === 13, `border box offset by body + own left margin: ${frag.box.borderBox.x}`);
     },
   },
   {
@@ -532,7 +534,7 @@ const CSS_LAYOUT_TESTS: WptSubset = [
     run: () => {
       // A short run that fits stays on one line: the box is one line tall (16px).
       const dom = parseHtml(encode("<div>hi</div>"));
-      const tree = layout(dom, (node) => cascade(dom, [], node));
+      const tree = layout(dom, (node) => cascade(dom, [uaStylesheet()], node));
       const textFrag = fragmentForNode(tree, firstTextId(dom));
       expect(textFrag.box.borderBox.height === 16, `single-line text height: ${textFrag.box.borderBox.height}`);
     },

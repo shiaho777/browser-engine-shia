@@ -73,7 +73,11 @@ const encodeResource = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /** Resource paths that OUR harness supplies, so a real include of them is a no-op. */
 function isHarnessResource(src: string): boolean {
-  return /testharness(report)?\.js|testdriver|\/common\/|idlharness/.test(src);
+  // Only skip what we actually provide (our testharness + the testharnessreport
+  // + testdriver + idlharness shims). `/common/` utility scripts are NOT ours —
+  // they must load from the checkout (e.g. subset-tests-by-key.js defines the
+  // `subsetTestByKey` the URL tests call).
+  return /testharness(report)?\.js|testdriver|idlharness/.test(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +370,24 @@ export async function runWptHtml(
   sandbox["InputEvent"] = InputEvent;
   sandbox["AbortController"] = AbortController;
   sandbox["AbortSignal"] = AbortSignal;
+  // Web Streams API: Node ships the spec-compliant implementation of
+  // ReadableStream / WritableStream / TransformStream — reuse it wholesale
+  // (the same principle as URL: Node's IS the platform implementation).
+  sandbox["ReadableStream"] = ReadableStream;
+  sandbox["WritableStream"] = WritableStream;
+  sandbox["TransformStream"] = TransformStream;
+  sandbox["ByteLengthQueuingStrategy"] = ByteLengthQueuingStrategy;
+  sandbox["CountQueuingStrategy"] = CountQueuingStrategy;
+  sandbox["ReadableStreamDefaultReader"] = ReadableStreamDefaultReader;
+  sandbox["ReadableStreamDefaultController"] = ReadableStreamDefaultController;
+  sandbox["WritableStreamDefaultWriter"] = WritableStreamDefaultWriter;
+  sandbox["WritableStreamDefaultController"] = WritableStreamDefaultController;
+  sandbox["TransformStreamDefaultController"] = TransformStreamDefaultController;
   sandbox["DOMException"] = DOMException;
+  // WHATWG URL: the engine reuses the platform parser (Node's URL is a
+  // spec-compliant WHATWG URL implementation); WPT url/* tests exercise it.
+  sandbox["URL"] = URL;
+  sandbox["URLSearchParams"] = URLSearchParams;
   sandbox["WheelEvent"] = WheelEvent;
   sandbox["CompositionEvent"] = CompositionEvent;
   sandbox["performance"] = { now: () => performance.now(), timeOrigin: 0 };
@@ -374,6 +395,40 @@ export async function runWptHtml(
   sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
   sandbox["removeEventListener"] = windowTarget.removeEventListener.bind(windowTarget);
   sandbox["dispatchEvent"] = windowTarget.dispatchEvent.bind(windowTarget);
+  /**
+   * WPT `fetch()` for test data: real WPT suites serve `resources/*.json` over
+   * HTTP, but our runner reads from the checkout directly. The seam is the
+   * same one used for `<script src>` includes (`resolveResource`), so data
+   * files load with the same path mapping. Returns a fetch-shaped Response
+   * with `.json()` / `.text()` / `.ok` / `.status`.
+   */
+  sandbox["fetch"] = (input: unknown, _init?: unknown): Promise<unknown> => {
+    const url = typeof input === "string" ? input : String(input);
+    const source = resolveResource?.(url);
+    if (source === undefined) {
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        url,
+        json: () => Promise.reject(new Error(`fetch: ${url} not found`)),
+        text: () => Promise.reject(new Error(`fetch: ${url} not found`)),
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      url,
+      json: () => {
+        try {
+          return Promise.resolve(JSON.parse(source));
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          return Promise.reject(err);
+        }
+      },
+      text: () => Promise.resolve(source),
+    });
+  };
 
   let harnessError: string | null = null;
   vm.createContext(sandbox);
