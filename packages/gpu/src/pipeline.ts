@@ -29,10 +29,14 @@ export interface GpuColor {
 export type Fragment =
   | { readonly kind: "solid"; readonly color: GpuColor }
   | {
+      /**
+       * A linear gradient (CSS Images §4): multi-stop interpolation along the
+       * gradient line at `angle` degrees clockwise from "to top" (0 = up,
+       * 90 = right, 180 = down).
+       */
       readonly kind: "linear-gradient";
-      readonly from: GpuColor;
-      readonly to: GpuColor;
-      readonly axis: "x" | "y";
+      readonly stops: readonly { readonly color: GpuColor; readonly position: number }[];
+      readonly angle: number;
     }
   | {
       /** A coverage mask (e.g. a rasterized glyph) modulated by `color`. */
@@ -105,20 +109,47 @@ export interface ClipRect {
   readonly rh?: number;
 }
 
+/** Sample a multi-stop gradient at position `t` (linear interpolation). */
+export function sampleGradientStops(
+  stops: readonly { readonly color: GpuColor; readonly position: number }[],
+  t: number,
+): GpuColor {
+  const first = stops[0];
+  if (first === undefined) return { r: 0, g: 0, b: 0, a: 0 };
+  if (t <= first.position) return first.color;
+  const last = stops[stops.length - 1]!;
+  if (t >= last.position) return last.color;
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const a = stops[i]!;
+    const b = stops[i + 1]!;
+    if (t >= a.position && t <= b.position) {
+      const span = b.position - a.position;
+      if (span <= 0) return b.color; // hard step between coincident stops.
+      const f = (t - a.position) / span;
+      return {
+        r: a.color.r + (b.color.r - a.color.r) * f,
+        g: a.color.g + (b.color.g - a.color.g) * f,
+        b: a.color.b + (b.color.b - a.color.b) * f,
+        a: a.color.a + (b.color.a - a.color.a) * f,
+      };
+    }
+  }
+  return last.color;
+}
+
 /** Evaluate a fragment shader at local quad coordinates `(u, v)` in `[0,1]`. */
-export function shade(fragment: Fragment, u: number, v: number): GpuColor {
-  switch (fragment.kind) {
+export function shade(fragment: Fragment, u: number, v: number): GpuColor {  switch (fragment.kind) {
     case "solid":
       return fragment.color;
     case "linear-gradient": {
-      const t = fragment.axis === "x" ? u : v;
-      const { from, to } = fragment;
-      return {
-        r: from.r + (to.r - from.r) * t,
-        g: from.g + (to.g - from.g) * t,
-        b: from.b + (to.b - from.b) * t,
-        a: from.a + (to.a - from.a) * t,
-      };
+      // CSS gradient-line projection in normalized quad space: direction
+      // (sin a, −cos a) through the center, line length |sin|+|cos|.
+      const rad = (fragment.angle * Math.PI) / 180;
+      const dx = Math.sin(rad);
+      const dy = -Math.cos(rad);
+      const len = Math.abs(dx) + Math.abs(dy);
+      const t = len > 0 ? ((u - 0.5) * dx + (v - 0.5) * dy) / len + 0.5 : 0.5;
+      return sampleGradientStops(fragment.stops, t);
     }
     case "coverage": {
       const cx = Math.min(fragment.width - 1, Math.max(0, Math.floor(u * fragment.width)));

@@ -22,6 +22,13 @@ export interface BorderSide {
   readonly color: Color;
 }
 
+/** One color stop on a linear gradient (CSS Images §4). */
+export interface GradientStop {
+  readonly color: Color;
+  /** Position along the gradient line, normalized to `[0,1]`. */
+  readonly position: number;
+}
+
 /** A positioned, shaped glyph (produced by the text shaper, e.g. HarfBuzz). */
 export interface Glyph {
   readonly glyphId: number;
@@ -51,6 +58,24 @@ export type Matrix = readonly [
 export type PaintCmd =
   | { readonly op: "rect"; readonly rect: Rect; readonly fill: Color; readonly radius?: Px }
   | { readonly op: "border"; readonly rect: Rect; readonly edges: Edges<BorderSide>; readonly radius?: Px }
+  | {
+      /** A linear gradient fill: color interpolated along the gradient line. */
+      readonly op: "gradient";
+      readonly rect: Rect;
+      /**
+       * The gradient stops, each with a position along the gradient line in
+       * `[0,1]`. Positions come from the author's percentages/lengths; when
+       * omitted they distribute evenly (CSS Images §4).
+       */
+      readonly stops: readonly GradientStop[];
+      /**
+       * The CSS gradient angle in degrees clockwise from "to top" (0deg = up,
+       * 90deg = right, 180deg = down; CSS Images §4). Direction keywords are
+       * normalized to degrees at parse time.
+       */
+      readonly angle: number;
+      readonly radius?: Px;
+    }
   | {
       readonly op: "text";
       readonly glyphs: readonly Glyph[];

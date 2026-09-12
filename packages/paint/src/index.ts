@@ -101,6 +101,9 @@ import type {
   Px,
   Rect,
 } from "@browser-engine/ir";
+import { parseLinearGradient } from "./gradient.js";
+export { parseLinearGradient } from "./gradient.js";
+export type { LinearGradient } from "./gradient.js";
 
 export const PACKAGE_NAME = "@browser-engine/paint" as const;
 
@@ -322,15 +325,35 @@ function emitBackground(
     if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
     out.push(cmd);
   }
-  // 2. background-image: url(...). A `background-image` value may list several
-  //    comma-separated layers; we resolve the first decodable one and paint it
-  //    into the padding box (the default `background-origin`), honoring
-  //    `background-size: cover|contain` for simple crop/fit. `background-repeat`
-  //    is not yet honoured (the image is painted once, stretched to the box).
+  // 2. background-image: url(...) or linear-gradient(...). A
+  //    `background-image` value may list several comma-separated layers; we
+  //    resolve the first decodable one and paint it into the padding box (the
+  //    default `background-origin`), honoring `background-size: cover|contain`
+  //    for simple crop/fit. `background-repeat` is not yet honoured (the image
+  //    is painted once, stretched to the box). A linear-gradient layer paints
+  //    as a gradient command (CSS Images §4: multi-stop, angle-aware).
+  const bgImage = stringField(style["backgroundImage"], "none");
+  const gradient = bgImage.includes("linear-gradient(")
+    ? parseLinearGradient(bgImage)
+    : null;
+  if (gradient !== null) {
+    const dest = copyRect(fragment.box.paddingBox);
+    const cmd: PaintCmd = {
+      op: "gradient",
+      rect: dest,
+      stops: gradient.stops,
+      angle: gradient.angle,
+    };
+    if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+    out.push(cmd);
+    // A gradient layer does not ALSO paint an image below it.
+    if (firstUrl(bgImage) === null) {
+      return;
+    }
+  }
   if (imageBySrc === undefined) {
     return;
   }
-  const bgImage = stringField(style["backgroundImage"], "none");
   const src = firstUrl(bgImage);
   if (src === null) {
     return;

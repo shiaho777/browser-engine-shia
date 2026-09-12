@@ -69,6 +69,7 @@ type PaintOp = PaintCmd["op"];
 const DEFAULT_SUPPORTED_OPS: ReadonlySet<PaintOp> = new Set<PaintOp>([
   "rect",
   "border",
+  "gradient",
   "text",
   "image",
   "push-clip",
@@ -291,6 +292,9 @@ export class ScreenshotBackend implements PaintBackend {
         return;
       case "image":
         blitImage(target, cmd.rect, cmd.src, clip, 1, cmd.radius !== undefined ? Number(cmd.radius) : 0);
+        return;
+      case "gradient":
+        fillGradient(target, cmd.rect, cmd.stops, cmd.angle, clip, 1, cmd.radius !== undefined ? Number(cmd.radius) : 0);
         return;
       // push/pop-clip and push/pop-layer are handled in `render`.
       case "push-clip":
@@ -670,6 +674,85 @@ function fillRect(
       blendPixel(surface, x, y, fill, opacity * cover);
     }
   }
+}
+
+/**
+ * Fill `rect` with a linear gradient (CSS Images §4): color interpolated
+ * along the gradient line. The line runs through the rect center at the CSS
+ * angle (degrees clockwise from "to top"), with the spec's length
+ * `|w·sin| + |h·cos|`; a pixel's gradient position `t` is the projection of
+ * `(pixel − center)` onto the direction, normalized to `[0,1]` over the line.
+ */
+function fillGradient(
+  surface: Surface,
+  rect: Rect,
+  stops: readonly { readonly color: Color; readonly position: number }[],
+  angleDeg: number,
+  clip: ClipBounds,
+  opacity: number,
+  radius = 0,
+): void {
+  if (stops.length === 0) return;
+  const region = intersect(rectToBounds(rect), clip);
+  const clipRounded = (clip.radius ?? 0) > 0;
+  const bx = Number(rect.x);
+  const by = Number(rect.y);
+  const bw = Number(rect.width);
+  const bh = Number(rect.height);
+  if (bw <= 0 || bh <= 0) return;
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+  const lineLen = Math.abs(bw * dx) + Math.abs(bh * dy);
+
+  for (let y = region.y0; y < region.y1; y += 1) {
+    for (let x = region.x0; x < region.x1; x += 1) {
+      let cover = 1;
+      if (clipRounded) {
+        cover = clipPixelCover(clip, x, y);
+        if (cover <= 0) continue;
+      }
+      if (radius > 0) {
+        cover *= roundedCover(x + 0.5, y + 0.5, bx, by, bw, bh, radius);
+        if (cover <= 0) continue;
+      }
+      // The pixel's gradient position: projection onto the direction, from
+      // the line's start (t=0) through the center (t=0.5).
+      const px = x + 0.5 - cx;
+      const py = y + 0.5 - cy;
+      const t = lineLen > 0 ? (px * dx + py * dy) / lineLen + 0.5 : 0.5;
+      const color = sampleGradient(stops, t);
+      blendPixel(surface, x, y, color, opacity * cover);
+    }
+  }
+}
+
+/** Sample the gradient color at position `t` (multi-stop interpolation). */
+function sampleGradient(
+  stops: readonly { readonly color: Color; readonly position: number }[],
+  t: number,
+): Color {
+  if (t <= stops[0]!.position) return stops[0]!.color;
+  const last = stops[stops.length - 1]!;
+  if (t >= last.position) return last.color;
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const a = stops[i]!;
+    const b = stops[i + 1]!;
+    if (t >= a.position && t <= b.position) {
+      const span = b.position - a.position;
+      if (span <= 0) return b.color; // hard step between coincident stops.
+      const f = (t - a.position) / span;
+      return {
+        r: a.color.r + (b.color.r - a.color.r) * f,
+        g: a.color.g + (b.color.g - a.color.g) * f,
+        b: a.color.b + (b.color.b - a.color.b) * f,
+        a: a.color.a + (b.color.a - a.color.a) * f,
+      };
+    }
+  }
+  return last.color;
 }
 
 /** Fill the four border edges that are not `none`, within `rect`. */

@@ -47,6 +47,61 @@ interface LayerFrame {
   readonly transform: Matrix6 | null;
   readonly filter: string | undefined;
   readonly clipDepth: number;
+  /** Drawn-content bounds in layer device px; filter/composite read only this. */
+  inkX0: number;
+  inkY0: number;
+  inkX1: number;
+  inkY1: number;
+  /** A draw of unbounded extent (e.g. `clear`) landed in the layer. */
+  unbounded: boolean;
+}
+
+/** Ink update: concrete device-px bounds, "unbounded", or nothing drawn (null). */
+type InkBounds = readonly [number, number, number, number] | "unbounded" | null;
+
+/** What a layer's filter/composite can touch — see {@link layerWindowOf}. */
+type LayerWindow = readonly [number, number, number, number] | "unbounded" | "empty";
+
+/**
+ * Total box-blur radius a `filter` string applies: every `blur(N)` runs 3
+ * box passes of radius `round(N)` (see `applyFilter`/`boxBlur`), so the
+ * post-blur alpha support extends `3 * Σ radii` past the drawn ink. Parses
+ * exactly like `applyFilter`'s blur branch (px optional, parseFloat prefix).
+ */
+function blurSpreadOf(filter: string | undefined): number {
+  if (filter === undefined) return 0;
+  let total = 0;
+  const re = /blur\(([^)]*)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(filter.toLowerCase())) !== null) {
+    const r = Number.parseFloat((m[1] ?? "").trim().replace(/px$/, ""));
+    if (Number.isFinite(r) && r > 0) total += Math.round(r);
+  }
+  return total;
+}
+
+/**
+ * The region of a layer that its filter and composite can affect:
+ *   - a window `[x0,y0,x1,y1)` fully containing everything: the drawn ink
+ *     grown by the blur support plus one pixel of slack (the +1 makes the
+ *     box-blur's window-edge clamps read zeros exactly where the unbounded
+ *     pass reads transparent zeros, so the bounded pass is byte-identical to
+ *     the full-frame one);
+ *   - `"unbounded"` = unknown extent (`clear` drew here) — full-frame passes;
+ *   - `"empty"` = nothing was drawn into the layer (every draw was clipped
+ *     out) — the layer is fully transparent, so filter and composite are
+ *     exact no-ops.
+ */
+function layerWindowOf(frame: LayerFrame, w: number, h: number): LayerWindow {
+  if (frame.unbounded) return "unbounded";
+  if (frame.inkX1 <= frame.inkX0 || frame.inkY1 <= frame.inkY0) return "empty";
+  const pad = blurSpreadOf(frame.filter) * 3 + 1;
+  return [
+    Math.max(0, frame.inkX0 - pad),
+    Math.max(0, frame.inkY0 - pad),
+    Math.min(w, frame.inkX1 + pad),
+    Math.min(h, frame.inkY1 + pad),
+  ];
 }
 
 /** Run a full display program serially on the GPU pipeline; returns the surface. */
@@ -78,34 +133,215 @@ export function renderProgram(program: DisplayProgram): GpuSurface {
         transform,
         filter: command.filter !== undefined && command.filter !== "none" ? command.filter : undefined,
         clipDepth: clipStack.length,
+        inkX0: w, inkY0: h, inkX1: 0, inkY1: 0,
+        unbounded: false,
       });
     } else if (command.op === "pop-layer") {
       const frame = frames.pop();
       if (frame === undefined) continue;
       targets.pop();
-      if (frame.filter !== undefined) applyFilter(frame.buf, w, h, frame.filter);
-      compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform);
+      const parent = frames[frames.length - 1];
+      // The window the filter may have written (ink + blur support) is what
+      // this pop can deposit into the parent — propagate THAT as parent ink,
+      // not the pre-filter ink (a blur spreads alpha past the drawn bounds).
+      const filterWin = layerWindowOf(frame, w, h);
+      if (frame.filter !== undefined) applyFilterBounded(frame.buf, w, h, frame.filter, frame);
+      const composited = compositeLayerBounded(current(), frame.buf, w, h, frame.opacity, frame.transform, frame);
+      if (parent !== undefined && composited !== null) {
+        // The pixels this pop wrote into the parent are the parent's ink too —
+        // a nested layer's content must constrain the parent's filter window.
+        if (composited === "unbounded" || filterWin === "unbounded") {
+          parent.unbounded = true;
+        } else if (filterWin !== "empty") {
+          parent.inkX0 = Math.min(parent.inkX0, filterWin[0], composited[0]);
+          parent.inkY0 = Math.min(parent.inkY0, filterWin[1], composited[1]);
+          parent.inkX1 = Math.max(parent.inkX1, filterWin[2], composited[2]);
+          parent.inkY1 = Math.max(parent.inkY1, filterWin[3], composited[3]);
+        }
+      }
       while (clipStack.length > frame.clipDepth) clipStack.pop();
     } else {
       applyCommand(current(), w, 0, h, clipStack, command);
+      const frame = frames[frames.length - 1];
+      if (frame !== undefined) {
+        const bounds = commandBounds(command, clipStack[clipStack.length - 1] as ClipRect, w, h);
+        if (bounds === "unbounded") {
+          frame.unbounded = true;
+        } else if (bounds !== null) {
+          frame.inkX0 = Math.min(frame.inkX0, bounds[0]);
+          frame.inkY0 = Math.min(frame.inkY0, bounds[1]);
+          frame.inkX1 = Math.max(frame.inkX1, bounds[2]);
+          frame.inkY1 = Math.max(frame.inkY1, bounds[3]);
+        }
+      }
     }
   }
   while (frames.length > 0) {
     const frame = frames.pop() as LayerFrame;
     targets.pop();
-    if (frame.filter !== undefined) applyFilter(frame.buf, w, h, frame.filter);
-    compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform);
+    const parent = frames[frames.length - 1];
+    const filterWin = layerWindowOf(frame, w, h);
+    if (frame.filter !== undefined) applyFilterBounded(frame.buf, w, h, frame.filter, frame);
+    const composited = compositeLayerBounded(current(), frame.buf, w, h, frame.opacity, frame.transform, frame);
+    if (parent !== undefined && composited !== null) {
+      if (composited === "unbounded" || filterWin === "unbounded") {
+        parent.unbounded = true;
+      } else if (filterWin !== "empty") {
+        parent.inkX0 = Math.min(parent.inkX0, filterWin[0], composited[0]);
+        parent.inkY0 = Math.min(parent.inkY0, filterWin[1], composited[1]);
+        parent.inkX1 = Math.max(parent.inkX1, filterWin[2], composited[2]);
+        parent.inkY1 = Math.max(parent.inkY1, filterWin[3], composited[3]);
+      }
+    }
   }
 
   return { width: w, height: h, pixels: base };
+}
+
+/**
+ * Device-px bounds a draw command touches (clamped to the current clip):
+ * `null` = draws nothing, `"unbounded"` = full-surface/unknown extent.
+ */
+function commandBounds(command: DisplayCommand, clip: ClipRect, w: number, h: number): InkBounds {
+  if (command.op === "quad") {
+    const x0 = Math.max(clip.x0, Math.floor(command.x));
+    const y0 = Math.max(clip.y0, Math.floor(command.y));
+    const x1 = Math.min(clip.x1, Math.ceil(command.x + command.w));
+    const y1 = Math.min(clip.y1, Math.ceil(command.y + command.h));
+    if (x1 <= x0 || y1 <= y0) return null;
+    // Concrete clamped bounds are exact even for full-width/full-height
+    // quads: rows/cols outside them are untouched, and the blur padding
+    // grows the window only by the finite blur support.
+    return [Math.max(0, x0), Math.max(0, y0), Math.min(w, x1), Math.min(h, y1)];
+  }
+  // `clear` resets the full surface (genuinely unbounded). Clip push/pop draw
+  // nothing — they only constrain later draws, whose bounds we already track.
+  if (command.op === "clear") return "unbounded";
+  if (command.op === "push-clip" || command.op === "pop-clip") return null;
+  return "unbounded";
 }
 
 function isIdentity(m: Matrix6): boolean {
   return m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 && m[4] === 0 && m[5] === 0;
 }
 
-/** Composite an offscreen layer onto `dest` (opacity + optional affine transform). */
-function compositeLayer(
+/**
+ * Composite only the layer's filter window (see {@link layerWindowOf}) —
+ * untouched layer pixels outside contribute nothing, so the composed frame is
+ * identical to the full-buffer pass. Transformed layers composite unbounded.
+ * `frame === null` runs the unbounded full-buffer path.
+ *
+ * Returns the destination region actually written (grown by any transform
+ * feedback, so a parent layer can treat it as its own ink), "unbounded" when
+ * that can't be known, or null when nothing was composited.
+ */
+function compositeLayerBounded(
+  dest: Uint8ClampedArray,
+  layer: Uint8ClampedArray,
+  w: number,
+  h: number,
+  opacity: number,
+  transform: Matrix6 | null,
+  frame: LayerFrame | null,
+): InkBounds {
+  if (opacity <= 0) return null;
+  // An untouched layer is transparent regardless of transform: nothing to
+  // filter, nothing to blend (the empty check must precede the transform
+  // branch — a transformed-but-empty layer would otherwise scan the frame).
+  if (frame !== null && !frame.unbounded && frame.inkX1 <= frame.inkX0 && frame.inkY1 <= frame.inkY0) {
+    return null;
+  }
+  const win = frame !== null && frame.transform === null ? layerWindowOf(frame, w, h) : "unbounded";
+  if (win === "unbounded") {
+    if (transform === null) {
+      compositeLayerUnbounded(dest, layer, w, h, opacity, null);
+      return [0, 0, w, h];
+    }
+    // Transformed: scan only the dest region the layer's ink window maps to.
+    // The ink window tracks what was DRAWN even on transformed layers; the
+    // bilinear sampler reads at most 1px past a sample, so a 1px pad keeps
+    // the result identical to the full-frame scan.
+    const inkWin: readonly [number, number, number, number] | null =
+      frame !== null && !frame.unbounded && frame.inkX1 > frame.inkX0 && frame.inkY1 > frame.inkY0
+        ? [Math.max(0, frame.inkX0 - 1), Math.max(0, frame.inkY0 - 1), Math.min(w, frame.inkX1 + 1), Math.min(h, frame.inkY1 + 1)]
+        : null;
+    const destWin = inkWin !== null ? transformDestBounds(transform, inkWin[2] - inkWin[0], inkWin[3] - inkWin[1], inkWin[0], inkWin[1], w, h) : null;
+    if (destWin !== null && destWin !== "unbounded") {
+      compositeLayerWindow(dest, layer, w, h, opacity, transform, destWin);
+      return destWin;
+    }
+    compositeLayerUnbounded(dest, layer, w, h, opacity, transform);
+    return transformDestBounds(transform, w, h);
+  }
+  if (win === "empty") return null; // fully transparent layer: blend nothing
+  // Bounded identity-transform composite: only the window can hold alpha > 0.
+  for (let y = win[1]; y < win[3]; y += 1) {
+    const rowBase = y * w;
+    for (let x = win[0]; x < win[2]; x += 1) {
+      const p = rowBase + x;
+      const a = (layer[p * 4 + 3] as number) / 255;
+      if (a <= 0) continue;
+      blendInto(dest, p * 4, {
+        r: layer[p * 4] as number,
+        g: layer[p * 4 + 1] as number,
+        b: layer[p * 4 + 2] as number,
+        a: a * opacity,
+      });
+    }
+  }
+  return [win[0], win[1], win[2], win[3]] as const;
+}
+
+/**
+ * Inverse-mapped composite over dest window `[dx0,dy0)..[dx1,dy1)` — the same
+ * loop as the transformed branch of {@link compositeLayerUnbounded}, restricted
+ * to a window (pixel-identical output, since each dest pixel is independent).
+ */
+function compositeLayerWindow(
+  dest: Uint8ClampedArray,
+  layer: Uint8ClampedArray,
+  w: number,
+  h: number,
+  opacity: number,
+  transform: Matrix6,
+  destWin: readonly [number, number, number, number],
+): void {
+  const inv = invert(transform);
+  if (inv === null) return;
+  const [ia, ib, ic, id, ie, iff] = inv;
+  for (let y = destWin[1]; y < destWin[3]; y += 1) {
+    for (let x = destWin[0]; x < destWin[2]; x += 1) {
+      const dx = x + 0.5;
+      const dy = y + 0.5;
+      const sample = bilinear(layer, w, h, ia * dx + ic * dy + ie - 0.5, ib * dx + id * dy + iff - 0.5);
+      if (sample === null || sample.a <= 0) continue;
+      blendInto(dest, (y * w + x) * 4, { r: sample.r, g: sample.g, b: sample.b, a: sample.a * opacity });
+    }
+  }
+}
+
+/**
+ * Destination bounds the forward transform `m` maps `[ox,oy)..[ox+sw,oy+sh)`
+ * to: map the window's four corners into dest space, bounding box, clamped.
+ */
+function transformDestBounds(m: Matrix6, sw: number, sh: number, ox = 0, oy = 0, dw?: number, dh?: number): InkBounds {
+  const W = dw ?? sw;
+  const H = dh ?? sh;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const [px, py] of [[ox, oy], [ox + sw, oy], [ox, oy + sh], [ox + sw, oy + sh]] as const) {
+    xs.push(m[0] * px + m[2] * py + m[4]);
+    ys.push(m[1] * px + m[3] * py + m[5]);
+  }
+  const x0 = Math.max(0, Math.floor(Math.min(...xs)));
+  const y0 = Math.max(0, Math.floor(Math.min(...ys)));
+  const x1 = Math.min(W, Math.ceil(Math.max(...xs)));
+  const y1 = Math.min(H, Math.ceil(Math.max(...ys)));
+  if (x1 <= x0 || y1 <= y0) return null;
+  return [x0, y0, x1, y1];
+}
+
+function compositeLayerUnbounded(
   dest: Uint8ClampedArray,
   layer: Uint8ClampedArray,
   w: number,
@@ -113,7 +349,6 @@ function compositeLayer(
   opacity: number,
   transform: Matrix6 | null,
 ): void {
-  if (opacity <= 0) return;
   if (transform === null) {
     for (let p = 0; p < w * h; p += 1) {
       const a = (layer[p * 4 + 3] as number) / 255;
@@ -173,6 +408,70 @@ function bilinear(buf: Uint8ClampedArray, w: number, h: number, x: number, y: nu
 }
 
 // ---- filters (real software passes) ---------------------------------------
+
+/**
+ * Apply `filter` to the layer, processing only the drawn-content window (see
+ * {@link layerWindowOf}). Everything outside is untouched transparent layer,
+ * so the bounded result is identical to the unbounded pass — falls back to
+ * full-frame when bounds are unknown.
+ */
+function applyFilterBounded(buf: Uint8ClampedArray, w: number, h: number, filter: string, frame: LayerFrame): void {
+  const win = layerWindowOf(frame, w, h);
+  if (win === "empty") return; // nothing drawn → the blur of nothing is nothing
+  if (win === "unbounded") {
+    applyFilter(buf, w, h, filter);
+    return;
+  }
+  applyFilterWindow(buf, w, filter, win[0], win[1], win[2], win[3]);
+}
+
+/**
+ * Run `applyFilter` over the window `[wx0,wy0)..[wx1,wy1)` only: crop the
+ * window into a scratch buffer, run the existing per-pixel kernels there, and
+ * write it back. The box-blur's edge clamp makes row/col runs independent of
+ * pixels outside the window, so the result matches the full-frame pass
+ * wherever the window's own pixels end up — and outside it, the layer is
+ * transparent both before and after, so the composed frame is identical.
+ */
+function applyFilterWindow(
+  buf: Uint8ClampedArray,
+  w: number,
+  filter: string,
+  wx0: number,
+  wy0: number,
+  wx1: number,
+  wy1: number,
+): void {
+  const winW = wx1 - wx0;
+  const winH = wy1 - wy0;
+  if (winW <= 0 || winH <= 0) return;
+  const window = new Uint8ClampedArray(winW * winH * 4);
+  for (let y = wy0; y < wy1; y += 1) {
+    const srcRow = y * w * 4;
+    const dstRow = (y - wy0) * winW * 4;
+    for (let x = wx0; x < wx1; x += 1) {
+      const s = srcRow + x * 4;
+      const d = dstRow + (x - wx0) * 4;
+      window[d] = buf[s] as number;
+      window[d + 1] = buf[s + 1] as number;
+      window[d + 2] = buf[s + 2] as number;
+      window[d + 3] = buf[s + 3] as number;
+    }
+  }
+  applyFilter(window, winW, winH, filter);
+  for (let y = wy0; y < wy1; y += 1) {
+    const dstRow = y * w * 4;
+    const srcRow = (y - wy0) * winW * 4;
+    for (let x = wx0; x < wx1; x += 1) {
+      const d = dstRow + x * 4;
+      const s = srcRow + (x - wx0) * 4;
+      buf[d] = window[s] as number;
+      buf[d + 1] = window[s + 1] as number;
+      buf[d + 2] = window[s + 2] as number;
+      buf[d + 3] = window[s + 3] as number;
+    }
+  }
+}
 
 function applyFilter(buf: Uint8ClampedArray, w: number, h: number, filter: string): void {
   const re = /([a-z-]+)\(([^)]*)\)/g;
