@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 49209,
-    "generatedLines": 5439,
-    "testLines": 26535,
-    "totalLines": 81183,
-    "cssPropertyCount": 340,
+    "handWrittenLines": 54472,
+    "generatedLines": 12855,
+    "testLines": 29935,
+    "totalLines": 97262,
+    "cssPropertyCount": 447,
     "domMemberCount": 552,
-    "platformFeatureCount": 892,
+    "platformFeatureCount": 999,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0009144668658172285,
-    "mechanismDensity": 18.126765429088174,
+    "compatPerLoc": 0.0008261124981641944,
+    "mechanismDensity": 18.339697459245116,
     "executionEvidence": {
       "subsetCount": 6,
       "files": 110,
@@ -20,11 +20,11 @@
       "passed": 462,
       "failed": 0,
       "errored": 0,
-      "queryCalls": 11290,
-      "recomputes": 3793,
-      "cacheHits": 7497,
+      "queryCalls": 9761,
+      "recomputes": 2779,
+      "cacheHits": 6982,
       "verifiedCacheHits": 23,
-      "dependencyReads": 181295,
+      "dependencyReads": 152675,
       "tracedStages": [
         "qFineComputed",
         "qFineLayout",
@@ -43,11 +43,11 @@
         "steps": [
           {
             "name": "prime",
-            "queryCalls": 588,
+            "queryCalls": 672,
             "recomputes": 172,
-            "cacheHits": 416,
+            "cacheHits": 500,
             "verifiedCacheHits": 0,
-            "dependencyReads": 8856,
+            "dependencyReads": 8771,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -59,11 +59,11 @@
           },
           {
             "name": "paint-only-edit",
-            "queryCalls": 592,
+            "queryCalls": 676,
             "recomputes": 5,
-            "cacheHits": 587,
+            "cacheHits": 671,
             "verifiedCacheHits": 167,
-            "dependencyReads": 9520,
+            "dependencyReads": 9700,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -75,11 +75,11 @@
           },
           {
             "name": "layout-affecting-edit",
-            "queryCalls": 724,
+            "queryCalls": 703,
             "recomputes": 6,
-            "cacheHits": 718,
+            "cacheHits": 697,
             "verifiedCacheHits": 166,
-            "dependencyReads": 9652,
+            "dependencyReads": 9727,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -101,11 +101,11 @@
             ]
           }
         ],
-        "queryCalls": 1905,
+        "queryCalls": 2052,
         "recomputes": 183,
-        "cacheHits": 1722,
+        "cacheHits": 1869,
         "verifiedCacheHits": 333,
-        "dependencyReads": 28367,
+        "dependencyReads": 28537,
         "tracedStages": [
           "qFineComputed",
           "qFineLayout",
@@ -128,11 +128,11 @@
           {
             "name": "prime",
             "mutations": 0,
-            "queryCalls": 42,
+            "queryCalls": 48,
             "recomputes": 16,
-            "cacheHits": 26,
+            "cacheHits": 32,
             "verifiedCacheHits": 0,
-            "dependencyReads": 432,
+            "dependencyReads": 521,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -145,11 +145,11 @@
           {
             "name": "script-paint-only",
             "mutations": 1,
-            "queryCalls": 46,
+            "queryCalls": 52,
             "recomputes": 5,
-            "cacheHits": 41,
+            "cacheHits": 47,
             "verifiedCacheHits": 11,
-            "dependencyReads": 511,
+            "dependencyReads": 621,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -162,11 +162,11 @@
           {
             "name": "script-layout-edit",
             "mutations": 1,
-            "queryCalls": 58,
+            "queryCalls": 59,
             "recomputes": 6,
-            "cacheHits": 52,
+            "cacheHits": 53,
             "verifiedCacheHits": 10,
-            "dependencyReads": 537,
+            "dependencyReads": 636,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -179,11 +179,11 @@
           {
             "name": "script-append-child",
             "mutations": 4,
-            "queryCalls": 61,
+            "queryCalls": 65,
             "recomputes": 8,
-            "cacheHits": 53,
+            "cacheHits": 57,
             "verifiedCacheHits": 10,
-            "dependencyReads": 615,
+            "dependencyReads": 708,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
@@ -194,11 +194,11 @@
             ]
           }
         ],
-        "queryCalls": 207,
+        "queryCalls": 224,
         "recomputes": 35,
-        "cacheHits": 172,
+        "cacheHits": 189,
         "verifiedCacheHits": 31,
-        "dependencyReads": 2095,
+        "dependencyReads": 2486,
         "tracedStages": [
           "qFineComputed",
           "qFineLayout",
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 49209,
-      "ourDisplay": "49,209 lines",
+      "ourValue": 54472,
+      "ourDisplay": "54,472 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2003,13 +2003,13 @@
         "confidence": "cited"
       },
       "verdict": "WIN",
-      "rationale": "Our hand-written surface is ~732× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+      "rationale": "Our hand-written surface is ~661× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
     },
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0009144668658172285,
-      "ourDisplay": "0.0009 passes/line",
+      "ourValue": 0.0008261124981641944,
+      "ourDisplay": "0.0008 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "compat-per-loc",
@@ -2027,17 +2027,17 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.126765429088174,
-      "ourDisplay": "18.13 features/kloc",
+      "ourValue": 18.339697459245116,
+      "ourDisplay": "18.34 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "892 platform features (CSS properties + DOM members) over 49,209 hand-written lines = 18.13 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "999 platform features (CSS properties + DOM members) over 54,472 hand-written lines = 18.34 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
       "label": "CSS-property coverage (raw count)",
-      "ourValue": 340,
-      "ourDisplay": "340 properties",
+      "ourValue": 447,
+      "ourDisplay": "447 properties",
       "competitor": {
         "engine": "CSS specifications (proxy for Chromium coverage)",
         "metric": "css-property-count",
@@ -2050,7 +2050,7 @@
         "confidence": "order-of-magnitude"
       },
       "verdict": "GAP",
-      "rationale": "We implement 340 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each."
+      "rationale": "We implement 447 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each."
     },
     {
       "id": "raw-interop",
