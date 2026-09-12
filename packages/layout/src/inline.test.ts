@@ -141,12 +141,18 @@ void test("a short run lays out on ONE line whose height === font-size (Req 15.3
   assert.ok(text.box.width <= 800);
 });
 
-void test("whitespace-only / empty text contributes a zero box (no line)", () => {
+void test("whitespace-only / empty text contributes no fragment (B1 tree-build drop)", () => {
+  // css2.1 §9.2.1.1 + B1: collapsible whitespace generates no anonymous block
+  // and no line boxes — the tree builder drops the run, so no text fragment.
   for (const content of ["", "   ", "\n\t "]) {
     const tree = layout(divWithText(content), BLOCK_STYLE);
-    const text = textFragmentOf(tree);
-    assert.equal(text.box.height, px(0), `"${content}" renders no line`);
-    assert.equal(text.box.width, px(0));
+    const div = tree.fragments.get(tree.root)!;
+    const body = tree.fragments.get(div.children[0]!)!;
+    assert.equal(
+      body.children.length,
+      0,
+      `"${content}" generates no line-box fragment`,
+    );
   }
 });
 

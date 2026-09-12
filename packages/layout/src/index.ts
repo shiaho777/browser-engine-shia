@@ -136,7 +136,30 @@ import type {
 
 import { defaultShaper } from "./text-shaper.js";
 import type { ShapingFont, TextShaper } from "./text-shaper.js";
-export { hitTest } from "./hit-test.js";
+import {
+  readDisplay,
+  readFloat,
+  readPosition,
+  readClear,
+} from "./display-classification.js";
+import { buildLayoutTree, type LayoutChild, type TableRow, type ShadowComposition } from "./tree-builder.js";
+export { hitTest, type HitTestOptions } from "./hit-test.js";
+
+export {
+  readDisplay,
+  isInlineLevelChild,
+  readFloat,
+  readPosition,
+  readClear,
+} from "./display-classification.js";
+export {
+  buildLayoutTree,
+  type LayoutChild,
+  type LayoutTree,
+  type TableRow,
+  type TableCell,
+  type ShadowComposition,
+} from "./tree-builder.js";
 
 export const PACKAGE_NAME = "@browser-engine/layout" as const;
 
@@ -206,6 +229,13 @@ export interface LayoutOptions {
   /** The root containing-block width. Defaults to {@link DEFAULT_VIEWPORT_WIDTH}. */
   readonly viewportWidth?: Px;
   /**
+   * D6 — the Shadow DOM composition view (host → shadow children,
+   * slot → assigned light children). When present, the tree builder renders
+   * the FLAT TREE: shadow hosts lay out their shadow content and `<slot>`
+   * elements are transparent pass-throughs of their assigned nodes.
+   */
+  readonly composition?: ShadowComposition;
+  /**
    * The text-shaping library used by inline layout (Req 15.3 / 8.1 / 8.3).
    * Defaults to {@link defaultShaper} (the metrics placeholder); inject a
    * HarfBuzz adapter here to swap in real shaping without touching the call
@@ -259,6 +289,33 @@ export function layout(
   const shaper: TextShaper = options?.shaper ?? defaultShaper;
   const quirksMode = options?.quirksMode ?? false;
   const viewportHeight = options?.viewportHeight ?? DEFAULT_VIEWPORT_HEIGHT;
+
+  // B1: the layout tree builder normalizes every container's children up
+  // front — inline runs pre-collected (anonymous-block semantics, css2.1
+  // §9.2.1.1), whitespace-only runs dropped, table structures fixed up so bare
+  // text in tables is wrapped (css-tables-3) instead of silently discarded.
+  // Pure and deterministic for identical (dom, styleOf) inputs.
+  const layoutTree = buildLayoutTree(dom, computedStyleOf, options?.composition);
+
+  /**
+   * D6 — the COMPOSED child ids of a node for the container-level layouts
+   * (flex / grid / multicol iterate children directly): the tree-builder's
+   * fixed-up entries flattened back to node ids (inline-run members as
+   * individual items — each becomes a flex/grid item). Falls back to the raw
+   * DOM children for nodes the builder never visited.
+   */
+  const layoutChildIds = (node: DomNode): readonly NodeId[] => {
+    const entries = layoutTree.childrenOf.get(node.id);
+    if (entries === undefined) return node.children;
+    const out: NodeId[] = [];
+    for (const entry of entries) {
+      if (entry.kind === "box") out.push(entry.node);
+      else if (entry.kind === "inline-run") out.push(...entry.nodes);
+      // Anonymous tables inside flex/grid: skipped at container level (rare;
+      // the block path renders them when reached via layoutNode).
+    }
+    return out;
+  };
 
   // Local mutable scaffolding — never escapes this call, so `layout` stays pure.
   const fragments = new Map<FragmentId, Fragment>();
@@ -328,16 +385,78 @@ export function layout(
     return undefined;
   }
 
+  /**
+   * A MAX-CONTENT width estimate as the MARGIN-BOX width (CSS 2.1 §10.3.7
+   * shrink-to-fit's "preferred width"): the width the element would take with
+   * no wrapping constraint. Text shapes as one unbroken run at its inherited
+   * font; inline boxes SUM their children (they sit on a line); block-ish
+   * boxes take the MAX over children (they stack); replaced boxes use their
+   * intrinsic size; a declared width wins. Flex/grid/table containers use the
+   * block approximation (their own intrinsic sizing is the B5 follow-up).
+   *
+   * `fontSizePx` is the inherited em basis (the parent's computed font-size,
+   * so an unstyled text child shapes at the size it would actually render).
+   */
+  function maxContentMarginBoxWidth(id: NodeId, fontSizePx: number): number {
+    const node = dom.nodes.get(id);
+    if (node === undefined || node.kind === "comment") return 0;
+    if (node.kind === "text") {
+      // E2: the max-content estimate measures the TRANSFORMED text (the same
+      // rendered-text view the inline layout shapes).
+      const style = computedStyleOf(id);
+      const text = applyTextTransform(node.text ?? "", readTextTransform(style));
+      if (text.trim().length === 0) return 0;
+      return Number(shaper.shapeLine(text, { fontSize: px(fontSizePx) }).advance);
+    }
+    if (node.kind !== "element") return 0;
+    const style = computedStyleOf(id);
+    if (style["display"] === "none") return 0;
+    const ownFont =
+      typeof style["fontSize"] === "number" && Number.isFinite(style["fontSize"])
+        ? (style["fontSize"] as number)
+        : fontSizePx;
+    const margin = resolveMargin(style);
+    const padding = resolvePadding(style, 0);
+    const border = resolveBorder(style);
+    const ownBox = margin.left + margin.right + padding.left + padding.right + border.left + border.right;
+    const declared = readLengthOr(style["width"]);
+    if (declared !== null) {
+      return declared + ownBox;
+    }
+    const intrinsic = resolveIntrinsicSize(node);
+    if (intrinsic !== undefined) {
+      return intrinsic.width + margin.left + margin.right;
+    }
+    const display = readDisplay(style);
+    let children = 0;
+    if (display === "inline" || display === "inline-block") {
+      for (const child of node.children) {
+        children += maxContentMarginBoxWidth(child, ownFont);
+      }
+    } else {
+      for (const child of node.children) {
+        children = Math.max(children, maxContentMarginBoxWidth(child, ownFont));
+      }
+    }
+    return children + ownBox;
+  }
+
   function layoutReplaced(node: DomNode, containingWidth: Px): Fragment {
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
     const padding = resolvePadding(style, containingWidth);
     const border = resolveBorder(style);
     const intrinsic = resolveIntrinsicSize(node);
+    // CSS Images 3 §5.4: without an intrinsic size a replaced box falls back
+    // to the DEFAULT OBJECT SIZE — 300×150px (not an invented ratio). A
+    // percent-width img inside a shrink-to-fit context then measures 300px
+    // wide instead of collapsing the whole ancestor chain to 0×0.
+    const DEFAULT_OBJECT_W = 300;
+    const DEFAULT_OBJECT_H = 150;
     const ratio =
       intrinsic !== undefined && intrinsic.width > 0
         ? intrinsic.height / intrinsic.width
-        : 9 / 16;
+        : DEFAULT_OBJECT_H / DEFAULT_OBJECT_W;
     const declaredW = typeof style["width"] === "number" ? (style["width"]) : null;
     const declaredH = typeof style["height"] === "number" ? (style["height"]) : null;
     let contentW: number;
@@ -367,13 +486,19 @@ export function layout(
       contentH = contentW * ratio;
     } else {
       contentW = Math.max(0, Number(resolveWidth(style, containingWidth, margin, padding, border)));
+      // A percent/auto width inside a still-zero containing chain (the img is
+      // the only sizeable content) resolves against the default object width
+      // so the box — and its shrink-to-fit ancestors — get a real size.
+      if (contentW <= 0 && percentOf(style["width"]) !== null) {
+        contentW = DEFAULT_OBJECT_W;
+      }
       contentH = contentW * ratio;
     }
     const box = buildBoxAtOrigin(margin, px(contentW), px(contentH), padding, border);
     return { node: node.id, box, children: [] };
   }
 
-  function layoutNode(id: NodeId, containingWidth: Px, containingHeight?: number, forceContentHeight?: number): Fragment | null {
+  function layoutNode(id: NodeId, containingWidth: Px, containingHeight?: number, forceContentHeight?: number, forceContentWidth?: number): Fragment | null {
     const node = dom.nodes.get(id);
     if (node === undefined || node.kind === "comment") {
       return null;
@@ -408,7 +533,7 @@ export function layout(
         return layoutMulticol(node, containingWidth);
       }
     }
-    return layoutBlock(node, containingWidth, containingHeight, forceContentHeight, undefined);
+    return layoutBlock(node, containingWidth, containingHeight, forceContentHeight, undefined, forceContentWidth);
   }
 
   /**
@@ -430,12 +555,17 @@ export function layout(
    *     `absolute` child is removed from flow (no `cursorY` advance) and placed
    *     at its insets relative to the container's content origin.
    */
-  function layoutBlock(node: DomNode, containingWidth: Px, containingHeight?: number, forceContentHeight?: number, maxHeight?: number): Fragment {
+  function layoutBlock(node: DomNode, containingWidth: Px, containingHeight?: number, forceContentHeight?: number, maxHeight?: number, forceContentWidth?: number): Fragment {
     const style = computedStyleOf(node.id);
     const margin = resolveMargin(style);
     const padding = resolvePadding(style, containingWidth);
     const border = resolveBorder(style);
-    const contentWidth = resolveWidth(style, containingWidth, margin, padding, border);
+    // A FORCED content width overrides the declared one (the flex shrink pass
+    // uses it: a shrunk item lays out at its distributed size even though it
+    // declares a wider width).
+    const contentWidth = forceContentWidth !== undefined
+      ? px(Math.max(0, forceContentWidth - padding.left - padding.right - border.left - border.right))
+      : resolveWidth(style, containingWidth, margin, padding, border);
 
     // Children register in this box's LOCAL frame — the fragment is still at the
     // origin here and only the box itself is offset by the grandparent later — so
@@ -458,7 +588,18 @@ export function layout(
 
     let cursorY = 0;
     let prevBottomMargin: number | null = null;
-    type AbsPending = { childNodeId: NodeId; childStyle: ComputedStyle | null };
+    type AbsPending = {
+      readonly childNodeId: NodeId;
+      readonly childStyle: ComputedStyle | null;
+      /**
+       * The child's STATIC position (CSS 2.1 §10.1): where its box would sit
+       * in normal flow — captured at the point the child is encountered, NOT
+       * the end of the container (pre-B2 every inset-less abspos child
+       * stacked at the flow's end).
+       */
+      readonly staticLeft: number;
+      readonly staticTop: number;
+    };
     type ChildSlot = { kind: "frag"; id: FragmentId } | { kind: "abs"; abs: AbsPending };
     const childSlots: ChildSlot[] = [];
     const activeFloats: { side: "left" | "right"; width: number; bottom: number }[] = [];
@@ -475,49 +616,64 @@ export function layout(
       return { left, right };
     }
 
-    for (let ci = 0; ci < node.children.length; ci += 1) {
-      const childNodeId = node.children[ci]!;
+    // B1: the child sequence comes from the layout tree — inline runs are
+    // pre-collected (anonymous-block semantics) and whitespace-only runs
+    // already dropped, so the loop below only dispatches per entry.
+    const fixedChildren: readonly LayoutChild[] = layoutTree.childrenOf.get(node.id) ??
+      [...node.children].map((childId) => ({ kind: "box", node: childId }) as const);
+
+    for (const entry of fixedChildren) {
+      // ---- inline formatting context -------------------------------------
+      // A pre-collected run of inline-level children (text nodes + display:
+      // inline / inline-block elements) flows left-to-right in line boxes
+      // instead of each taking its own vertical row.
+      if (entry.kind === "inline-run") {
+        // B3: the run flows BESIDE active floats — its available width is the
+        // span between the left and right intrusions at the run's band, and
+        // its x shifts past the left intrusion (CSS 2.1 §9.5: line boxes are
+        // narrowed by floats).
+        const runRoom = intrusionAt(cursorY);
+        const runAvail = Math.max(0, contentWidth - runRoom.left - runRoom.right);
+        const run = layoutInlineRun([...entry.nodes], px(runAvail), style);
+        for (const frag of run.fragments) {
+          childSlots.push({
+            kind: "frag",
+            id: register(offsetFragment(frag, contentLeft + runRoom.left, contentTop + cursorY)),
+          });
+        }
+        cursorY += run.height;
+        prevBottomMargin = null; // an inline run never participates in margin collapse.
+        continue;
+      }
+
+      // An anonymous table wrapping a naked row/cell sequence (css-tables-3
+      // generate_missing_parents). The anonymous table itself is TRANSPARENT
+      // (no fragment, no NodeId): its row fragments shift into this block's
+      // space and attach here directly; the cursor advances by its height.
+      if (entry.kind === "table") {
+        const { rowFrags, contentHeight, contentWidth: tableWidth } = layoutTableRows(
+          anonymousBlockStyle(),
+          entry.rows,
+          contentWidth,
+        );
+        void tableWidth;
+        for (const frag of rowFrags) {
+          childSlots.push({
+            kind: "frag",
+            id: register(offsetFragment(frag, contentLeft, contentTop + cursorY)),
+          });
+        }
+        cursorY += Number(contentHeight);
+        prevBottomMargin = null;
+        continue;
+      }
+
+      const childNodeId = entry.node;
       const childNode = dom.nodes.get(childNodeId);
       if (childNode === undefined || childNode.kind === "comment") {
         continue;
       }
       const childStyle = childStyleOf(childNodeId);
-
-      // ---- inline formatting context -------------------------------------
-      // A run of CONSECUTIVE inline-level children (text nodes + display:inline
-      // / inline-block elements) flows left-to-right in line boxes instead of
-      // each taking its own vertical row. Block-level members, positioned and
-      // floated boxes break the run.
-      if (isInlineLevelChild(childNode, childStyle)) {
-        const runIds: NodeId[] = [];
-        while (ci < node.children.length) {
-          const mId = node.children[ci]!;
-          const mNode = dom.nodes.get(mId);
-          if (mNode === undefined || mNode.kind === "comment") {
-            ci += 1;
-            continue;
-          }
-          const mStyle = childStyleOf(mId);
-          if (!isInlineLevelChild(mNode, mStyle)) {
-            break;
-          }
-          runIds.push(mId);
-          ci += 1;
-        }
-        ci -= 1; // the for-loop's ++ re-advances past the last run member.
-        const runFragments = layoutInlineRun(runIds, px(contentWidth), style);
-        let runHeight = 0;
-        for (const frag of runFragments) {
-          childSlots.push({
-            kind: "frag",
-            id: register(offsetFragment(frag, contentLeft, contentTop + cursorY)),
-          });
-          runHeight = Math.max(runHeight, Number(frag.box.marginBox.height));
-        }
-        cursorY += runHeight;
-        prevBottomMargin = null; // an inline run never participates in margin collapse.
-        continue;
-      }
 
       const float = childStyle === null ? "none" : readFloat(childStyle);
       const rawPosition = childStyle === null ? "static" : readPosition(childStyle);
@@ -529,7 +685,12 @@ export function layout(
             : rawPosition;
 
       if (position === "absolute") {
-        childSlots.push({ kind: "abs", abs: { childNodeId, childStyle } });
+        // Capture the STATIC position now (CSS 2.1 §10.1): the flow slot this
+        // child would have occupied — where an inset-less abspos box renders.
+        childSlots.push({
+          kind: "abs",
+          abs: { childNodeId, childStyle, staticLeft: contentLeft, staticTop: contentTop + cursorY },
+        });
         continue;
       }
 
@@ -540,13 +701,58 @@ export function layout(
         }
         const fw = childFrag.box.marginBox.width;
         const fh = childFrag.box.marginBox.height;
-        const dx =
-          float === "left" ? 0 : Math.max(0, contentWidth - fw);
+        // B3 — CSS 2.1 §9.5.1: a float goes as far to its SIDE and as far UP
+        // as possible: beside earlier same-side floats when the horizontal
+        // band has room (side-by-side rows), else below the shortest blocking
+        // float (the next band edge). Pre-B3 every same-side float stacked at
+        // dx = 0, overlapping the previous one.
+        let placeY = cursorY;
+        let dx = 0;
+        for (let guard = 0; guard < 64; guard += 1) {
+          const room = intrusionAt(placeY);
+          const available = Math.max(0, contentWidth - room.left - room.right);
+          if (fw <= available) {
+            dx =
+              float === "left"
+                ? room.left
+                : Math.max(0, contentWidth - room.right - fw);
+            break;
+          }
+          // Does not fit beside the current band's floats: advance to the next
+          // band edge — the SHORTEST bottom among the floats covering placeY.
+          let nextY = Number.POSITIVE_INFINITY;
+          for (const f of activeFloats) {
+            if (f.bottom > placeY) {
+              nextY = Math.min(nextY, f.bottom);
+            }
+          }
+          if (!Number.isFinite(nextY) || nextY <= placeY) {
+            // No blocking float can be passed (the float is wider than the
+            // whole content box): place at the far edge anyway.
+            dx = float === "left" ? 0 : Math.max(0, contentWidth - fw);
+            break;
+          }
+          placeY = nextY;
+          if (guard === 63) {
+            const roomFinal = intrusionAt(placeY);
+            dx =
+              float === "left"
+                ? roomFinal.left
+                : Math.max(0, contentWidth - roomFinal.right - fw);
+          }
+        }
         childSlots.push({
           kind: "frag",
-          id: register(offsetFragment(childFrag, contentLeft + dx, contentTop + cursorY)),
+          id: register(offsetFragment(childFrag, contentLeft + dx, contentTop + placeY)),
         });
-        activeFloats.push({ side: float, width: fw, bottom: cursorY + fh });
+        // The stored intrusion width: how far the float reaches from ITS
+        // side's content edge (left floats: dx + fw; right floats: the gap
+        // between the float's left edge and the right content edge).
+        activeFloats.push({
+          side: float,
+          width: float === "left" ? dx + fw : Math.max(0, contentWidth - dx),
+          bottom: placeY + fh,
+        });
         continue;
       }
 
@@ -602,62 +808,33 @@ export function layout(
 
     const hasAbsoluteSlots = childSlots.some((slot) => slot.kind === "abs");
     if (hasAbsoluteSlots) {
-      const inFlowContentHeight = Number(resolveHeight(style, px(cursorY), padding, border, containingHeight));
+      const inFlowContentHeight = Number(resolveHeight(style, px(cursorY), padding, border, containingHeight, Number(contentWidth)));
       const padCbW = contentWidth + padding.left + padding.right;
       const padCbH = inFlowContentHeight + padding.top + padding.bottom;
-      const padEdgeLeft = border.left;
-      const padEdgeTop = border.top;
+      // B2: the shared abspos solver, fed this container's geometry, each
+      // child's captured STATIC position, and the shrink-to-fit estimator.
+      // (This replaces an inline duplicate of the algorithm that — pre-B2 —
+      // dropped the static position and stretched auto width to full width.)
+      const shrinkToFit = (id: NodeId): number => maxContentMarginBoxWidth(id, 16);
       for (let si = 0; si < childSlots.length; si += 1) {
         const slot = childSlots[si]!;
         if (slot.kind !== "abs") continue;
         const item = slot.abs;
-        const absId = item.childNodeId;
-        const absStyle = item.childStyle;
-        const declaredTop = absStyle === null ? null : readLengthOr(absStyle["top"]);
-        const declaredLeft = absStyle === null ? null : readLengthOr(absStyle["left"]);
-        const declaredBottom = absStyle === null ? null : readLengthOr(absStyle["bottom"]);
-        const declaredRight = absStyle === null ? null : readLengthOr(absStyle["right"]);
-        let usedW = padCbW;
-        let forceH: number | undefined;
-        let topOffset: number;
-        let leftOffset: number;
-        if (declaredLeft !== null && declaredRight !== null) {
-          usedW = Math.max(0, padCbW - declaredLeft - declaredRight);
-          leftOffset = padEdgeLeft + declaredLeft;
-        } else if (declaredLeft !== null) {
-          leftOffset = padEdgeLeft + declaredLeft;
-        } else if (declaredRight !== null) {
-          leftOffset = padEdgeLeft;
-        } else {
-          leftOffset = contentLeft;
-        }
-        if (declaredTop !== null && declaredBottom !== null) {
-          forceH = Math.max(0, padCbH - declaredTop - declaredBottom);
-          topOffset = padEdgeTop + declaredTop;
-        } else if (declaredTop !== null) {
-          topOffset = padEdgeTop + declaredTop;
-        } else if (declaredBottom !== null) {
-          topOffset = padEdgeTop;
-        } else {
-          topOffset = contentTop + cursorY;
-        }
-        const childFrag = layoutNode(absId, px(usedW), forceH, forceH);
-        if (childFrag === null) {
-          childSlots[si] = { kind: "frag", id: register({ node: absId, box: buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0)), children: [] }) };
-          continue;
-        }
-        if (declaredLeft === null && declaredRight !== null) {
-          leftOffset = padEdgeLeft + Math.max(0, padCbW - declaredRight - Number(childFrag.box.marginBox.width));
-        }
-        if (declaredTop === null && declaredBottom !== null && forceH === undefined) {
-          topOffset = padEdgeTop + Math.max(0, padCbH - declaredBottom - Number(childFrag.box.marginBox.height));
-        }
-        let placed = offsetFragment(childFrag, leftOffset, topOffset);
-        if (forceH !== undefined && Number(placed.box.marginBox.height) < forceH - 0.5) {
-          const grow = forceH - Number(placed.box.marginBox.height);
-          placed = stretchFragmentHeight(placed, grow);
-        }
-        childSlots[si] = { kind: "frag", id: register(placed) };
+        const placed = placeAbsoluteFragment(
+          layoutNode,
+          item.childNodeId,
+          item.childStyle,
+          padCbW,
+          padCbH,
+          border.left,
+          border.top,
+          item.staticLeft,
+          item.staticTop,
+          shrinkToFit,
+        );
+        childSlots[si] = placed === null
+          ? { kind: "frag", id: register({ node: item.childNodeId, box: buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0)), children: [] }) }
+          : { kind: "frag", id: register(placed) };
       }
     }
 
@@ -671,7 +848,7 @@ export function layout(
     let contentHeight =
       forceContentHeight !== undefined
         ? px(Math.max(0, forceContentHeight))
-        : resolveHeight(style, px(cursorY), padding, border, containingHeight);
+        : resolveHeight(style, px(cursorY), padding, border, containingHeight, Number(contentWidth));
     if (maxHeight !== undefined) {
       const maxH = Math.max(0, maxHeight);
       if (Number(contentHeight) > maxH) {
@@ -701,9 +878,9 @@ export function layout(
     runIds: readonly NodeId[],
     containingWidth: Px,
     containerStyle: ComputedStyle,
-  ): Fragment[] {
+  ): { fragments: Fragment[]; height: number } {
     if (runIds.length === 0) {
-      return [];
+      return { fragments: [], height: 0 };
     }
 
     // A member is either a TEXT run (shaped word by word) or an ATOMIC box
@@ -721,17 +898,111 @@ export function layout(
       readonly wraps: boolean;
       readonly canBreakWord: boolean;
       readonly perCharWidths?: readonly number[];
+      /** The font's ascent: the text baseline sits this far below the box top. */
+      readonly ascent: number;
     }
     interface AtomicMember {
       readonly kind: "atomic";
       readonly nodeId: NodeId;
       readonly frag: Fragment; // laid out box (width is definite).
+      /**
+       * B4: the member's extent ABOVE ITS BASELINE. CSS: an inline-block's
+       * baseline is its last line's baseline, or its BOTTOM MARGIN EDGE when
+       * it has no in-flow line boxes — approximated here by the bottom edge
+       * (the conservative spec branch for overflow / empty inline-blocks).
+       */
+      readonly aboveBaseline: number;
+      /** B4: the vertical-align shift (px, positive = DOWN); `mode` carries top/bottom. */
+      readonly vshift: number;
+      readonly valignMode: "normal" | "top" | "bottom";
     }
     interface EmptyMember {
       readonly kind: "empty";
       readonly nodeId: NodeId; // whitespace-only text: contributes a zero box.
     }
     type Member = TextMember | AtomicMember | EmptyMember;
+
+    // ---- B4: baseline + vertical-align --------------------------------------
+    // The parent (strut) font metrics: the line is at least this tall even
+    // when its members are shorter (CSS 2.1 §10.8.1 "strut").
+    const parentFontSize = Number(containerStyle.fontSize);
+    const strutAscent = 0.8 * parentFontSize;
+    const strutDescent = 0.2 * parentFontSize;
+
+    /**
+     * Read a member's `vertical-align` and convert it to a placement mode +
+     * shift (px, POSITIVE = DOWN) relative to baseline alignment.
+     */
+    function readVerticalAlign(
+      style: ComputedStyle,
+    ): { mode: "normal" | "top" | "bottom" | "text-top" | "text-bottom"; shift: number } {
+      const value = style["verticalAlign"];
+      if (typeof value !== "string") return { mode: "normal", shift: 0 };
+      switch (value) {
+        case "baseline":
+          return { mode: "normal", shift: 0 };
+        case "top":
+          return { mode: "top", shift: 0 };
+        case "bottom":
+          return { mode: "bottom", shift: 0 };
+        case "text-top":
+          return { mode: "text-top", shift: 0 };
+        case "text-bottom":
+          return { mode: "text-bottom", shift: 0 };
+        case "middle":
+          return { mode: "normal", shift: 0 }; // handled geometrically below.
+        case "sub":
+          return { mode: "normal", shift: 0.25 * parentFontSize };
+        case "super":
+          return { mode: "normal", shift: -0.33 * parentFontSize };
+        default: {
+          // A <length> raises the box; a <percentage> is of the line-height.
+          const len = /^(-?\d+(?:\.\d+)?)(px|em|rem|%)?$/.exec(value.trim());
+          if (len === null) return { mode: "normal", shift: 0 };
+          const n = Number(len[1]);
+          if (!Number.isFinite(n)) return { mode: "normal", shift: 0 };
+          if (len[2] === "%") return { mode: "normal", shift: (-n / 100) * 1.2 * parentFontSize };
+          if (len[2] === "em" || len[2] === "rem") return { mode: "normal", shift: -n * parentFontSize };
+          return { mode: "normal", shift: -n };
+        }
+      }
+    }
+
+    /**
+     * Build an atomic member with its baseline data: the baseline is the
+     * bottom margin edge (the spec branch for overflow / no-line-box
+     * inline-blocks), shifted by the member's vertical-align.
+     */
+    const atomicMember = (memberId: NodeId, frag: Fragment): AtomicMember => {
+      const h = Number(frag.box.marginBox.height);
+      const style = computedStyleOf(memberId);
+      const va = readVerticalAlign(style);
+      let shift = va.shift;
+      if (va.mode === "text-top") {
+        // The box's TOP sits at the parent font's ascent edge:
+        // y = lineAscent − strutAscent ⇒ shift = h − strutAscent.
+        shift = h - strutAscent;
+      } else if (va.mode === "text-bottom") {
+        // The box's BOTTOM sits at the parent font's descent edge:
+        // y = lineAscent + strutDescent − h ⇒ shift = strutDescent.
+        shift = strutDescent;
+      } else if (style["verticalAlign"] === "middle") {
+        // The member's CENTER sits at baseline + half the parent's x-height
+        // (x-height ≈ 0.5em ⇒ half ≈ 0.25em). Default (baseline) places the
+        // member's TOP at baseline − h; middle wants top = baseline + xHalf − h/2,
+        // so the shift is xHalf + h/2.
+        const xHalf = 0.25 * parentFontSize;
+        shift = xHalf + h / 2;
+      }
+      return {
+        kind: "atomic",
+        nodeId: memberId,
+        frag,
+        aboveBaseline: h,
+        vshift: shift,
+        valignMode: va.mode === "text-top" || va.mode === "text-bottom" ? "normal" : va.mode,
+      };
+    };
 
     // ---- prepare members ---------------------------------------------------
     const members: Member[] = [];
@@ -743,10 +1014,12 @@ export function layout(
         continue;
       }
       if (node.kind === "text") {
-        const content = node.text ?? "";
+        // E2: the rendered-text view (text-transform applies before shaping).
         const style = computedStyleOf(node.id);
+        const content = applyTextTransform(node.text ?? "", readTextTransform(style));
         const fontSize = style.fontSize;
         const font: ShapingFont = { fontSize };
+        const fontAscent = font.ascentEm ?? 0.8 * Number(fontSize);
         const letterSpacing = readSpacing(style["letterSpacing"]);
         const wordSpacing = readSpacing(style["wordSpacing"]);
         const spaceAdvance = shaper.shapeLine(" ", font).advance + wordSpacing;
@@ -792,6 +1065,7 @@ export function layout(
           lineHeight: readLineHeight(style) * fontSize,
           wraps,
           canBreakWord,
+          ascent: fontAscent,
         });
       } else {
         // inline / inline-block element: an atomic box. The box SHRINK-WRAPS:
@@ -825,18 +1099,18 @@ export function layout(
           if (frag === null) {
             continue;
           }
-          members.push({ kind: "atomic", nodeId: memberId, frag });
+          members.push(atomicMember(memberId, frag));
         } else {
           const frag = layoutNode(memberId, containingWidth);
           if (frag === null) {
             continue;
           }
-          members.push({ kind: "atomic", nodeId: memberId, frag });
+          members.push(atomicMember(memberId, frag));
         }
       }
     }
     if (members.length === 0) {
-      return [];
+      return { fragments: [], height: 0 };
     }
 
     // ---- single-member fast paths (zero-regression) --------------------------
@@ -847,14 +1121,18 @@ export function layout(
     if (members.length === 1 && textMembers.length === 1 && members[0]!.kind === "text") {
       const node = dom.nodes.get(members[0]!.nodeId);
       if (node !== undefined && node.kind === "text") {
-        return [layoutInline(node, containingWidth, containerStyle)];
+        const single = layoutInline(node, containingWidth, containerStyle);
+        return { fragments: [single], height: Number(single.box.marginBox.height) };
       }
     }
     if (members.every((m) => m.kind === "empty")) {
-      return members.map((m) => {
-        const box = buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0));
-        return { node: (m).nodeId, box, children: [] };
-      });
+      return {
+        fragments: members.map((m) => {
+          const box = buildBoxAtOrigin(ZERO_MARGIN, px(0), px(0));
+          return { node: (m).nodeId, box, children: [] };
+        }),
+        height: 0,
+      };
     }
 
     // ---- greedy line boxing ------------------------------------------------
@@ -999,12 +1277,66 @@ export function layout(
       return 0; // start / left / justify (justify has no inter-word stretch here).
     };
 
-    // Cumulative line Y: each line sits below the max height of the lines above.
+    // ---- B4: baseline-aware line assembly -----------------------------------
+    // Two passes over the placed items: (1) compute each line's ascent/descent
+    // from its members' baseline extents (plus the parent-font strut), then
+    // (2) assign every item its y-in-line (baseline-aligned by default,
+    // vertical-align shifts / top / bottom placements per member).
+    const itemsByLine = new Map<number, Placed[]>();
+    for (const item of placed) {
+      const list = itemsByLine.get(item.line) ?? [];
+      list.push(item);
+      itemsByLine.set(item.line, list);
+    }
+    /** The member's extent above/below the baseline after its valign shift. */
+    const memberExtents = (member: Member): { above: number; below: number; h: number } => {
+      if (member.kind === "text") {
+        return { above: member.ascent, below: member.lineHeight - member.ascent, h: member.lineHeight };
+      }
+      if (member.kind === "atomic") {
+        const h = Number(member.frag.box.marginBox.height);
+        const top = -member.aboveBaseline + member.vshift; // relative to the baseline.
+        return { above: Math.max(0, -top), below: Math.max(0, top + h), h };
+      }
+      return { above: 0, below: 0, h: 0 };
+    };
+    const lineAscent: number[] = [];
+    const lineDescent: number[] = [];
+    const finalLineHeights: number[] = [];
+    for (let li = 0; li < lineWidths.length; li += 1) {
+      let ascent = strutAscent;
+      let descent = strutDescent;
+      for (const item of itemsByLine.get(li) ?? []) {
+        const ext = memberExtents(item.member);
+        ascent = Math.max(ascent, ext.above);
+        descent = Math.max(descent, ext.below);
+      }
+      lineAscent.push(ascent);
+      lineDescent.push(descent);
+      finalLineHeights.push(Math.max(ascent + descent, lineHeights[li]!));
+    }
+    /** An item's y WITHIN its line (top edge, relative to the line top). */
+    const yInLine = (item: Placed): number => {
+      const li = item.line;
+      if (item.member.kind === "atomic") {
+        const h = Number(item.member.frag.box.marginBox.height);
+        if (item.member.valignMode === "top") return 0;
+        if (item.member.valignMode === "bottom") return Math.max(0, finalLineHeights[li]! - h);
+        return Math.max(0, lineAscent[li]! - item.member.aboveBaseline + item.member.vshift);
+      }
+      if (item.member.kind === "text") {
+        return Math.max(0, lineAscent[li]! - item.member.ascent);
+      }
+      return 0;
+    };
+
+    // Cumulative line Y: each line sits below the FINAL (baseline-aware) height
+    // of the lines above.
     const lineY: number[] = [];
     let yAcc = 0;
-    for (let li = 0; li < lineWidths.length; li += 1) {
+    for (let li = 0; li < finalLineHeights.length; li += 1) {
       lineY.push(yAcc);
-      yAcc += lineHeights[li]!;
+      yAcc += finalLineHeights[li]!;
     }
 
     // ---- emit fragments -----------------------------------------------------
@@ -1037,19 +1369,22 @@ export function layout(
         emittedText.add(item.member.nodeId);
         const group = textGroups.get(item.member.nodeId)!;
         const first = group[0]!;
-        const firstLineY = lineY[first.line]!;
+        // B4: the text's TOP in its line = the line's ascent − the font's
+        // ascent (baseline alignment); the fragment's y is that line's y plus
+        // the in-line offset.
+        const firstTop = lineY[first.line]! + yInLine(first);
         const lastLine = group[group.length - 1]!.line;
         // Box: starts at the first item's in-line x (plus its line's align
         // shift); spans from the first line's top to the last line's bottom.
         const boxX = first.x + alignDeltaFor(first.line);
-        const boxY = firstLineY;
+        const boxY = firstTop;
         // Glyphs are relative to the box origin: each glyph's x is shifted back
         // by the first item's x (plus any per-line align delta difference), and
-        // its y is shifted up to the first line's top.
+        // its y follows the per-line baseline placement.
         const glyphs: LaidGlyph[] = [];
         let maxRight = 0;
         for (const gItem of group) {
-          const dY = lineY[gItem.line]! - firstLineY;
+          const dY = lineY[gItem.line]! + yInLine(gItem) - firstTop;
           const dX = alignDeltaFor(gItem.line) - alignDeltaFor(first.line);
           for (const g of gItem.glyphs ?? []) {
             glyphs.push({ ...g, x: px(Number(g.x) - first.x + dX), y: px(Number(g.y) + dY) });
@@ -1057,7 +1392,7 @@ export function layout(
           maxRight = Math.max(maxRight, lineWidths[gItem.line]!);
         }
         const width = px(Math.max(0, maxRight - first.x));
-        const height = px(lineY[lastLine]! + lineHeights[lastLine]! - firstLineY);
+        const height = px(lineY[lastLine]! + finalLineHeights[lastLine]! - firstTop);
         const box = buildBoxAtOrigin(ZERO_MARGIN, width, height);
         const firstText = first.member as TextMember;
         const textRun: TextRun = { fontSize: firstText.font.fontSize, glyphs };
@@ -1065,17 +1400,23 @@ export function layout(
         out.push(boxX > 0 || boxY > 0 ? offsetFragment(base, boxX, boxY) : base);
       } else if (item.member.kind === "atomic") {
         const dx = item.x + alignDeltaFor(item.line);
-        out.push(offsetFragment(item.member.frag, dx, lineYTop));
+        out.push(offsetFragment(item.member.frag, dx, lineYTop + yInLine(item)));
       }
       // "empty" members never reach `placed` (no line, no geometry).
     }
-    return out;
+    const runHeight = finalLineHeights.length > 0
+      ? lineY[finalLineHeights.length - 1]! + finalLineHeights[finalLineHeights.length - 1]!
+      : 0;
+    return { fragments: out, height: runHeight };
   }
 
   function layoutInline(node: DomNode, containingWidth: Px, containerStyle?: ComputedStyle): Fragment {
     const style = computedStyleOf(node.id);
     const fontSize = style.fontSize;
-    const content = node.text ?? "";
+    // E2 (CSS Text §3.1): the RENDERED text view applies text-transform —
+    // the DOM's text content is untouched; only the shaped glyph stream
+    // sees the transformed characters.
+    const content = applyTextTransform(node.text ?? "", readTextTransform(style));
     const font: ShapingFont = { fontSize };
 
     // Whitespace collapses to break opportunities; words are the unbreakable
@@ -1379,7 +1720,7 @@ export function layout(
       const orderedIds: { readonly id: NodeId; readonly order: number; readonly seq: number }[] = [];
       const colAbsIds: NodeId[] = [];
       let colSeq = 0;
-      for (const childNodeId of node.children) {
+      for (const childNodeId of layoutChildIds(node)) {
         const childNode = dom.nodes.get(childNodeId);
         if (childNode === undefined || childNode.kind === "comment") continue;
         if (childNode.kind === "text" && (childNode.text ?? "").trim().length === 0) continue;
@@ -1434,7 +1775,7 @@ export function layout(
       const contentHeight =
         forceContentHeight !== undefined
           ? px(Math.max(0, forceContentHeight))
-          : resolveHeight(style, px(usedMain), ZERO_MARGIN, ZERO_MARGIN, containingHeight);
+          : resolveHeight(style, px(usedMain), ZERO_MARGIN, ZERO_MARGIN, containingHeight, Number(contentWidth));
       for (const absId of colAbsIds) {
         const placed = placeAbsoluteFragment(
           layoutNode,
@@ -1446,6 +1787,7 @@ export function layout(
           0,
           0,
           0,
+          (id) => maxContentMarginBoxWidth(id, 16),
         );
         if (placed !== null) childIds.push(register(placed));
       }
@@ -1464,6 +1806,10 @@ export function layout(
       readonly order: number; // flex `order` (initial 0).
       readonly seq: number; // document order (for stable sort ties).
       readonly flexGrow: number; // `flex-grow` factor (initial 0).
+      /** B8: the `flex-shrink` factor (initial 1 — items shrink by default). */
+      readonly flexShrink: number;
+      /** B8: `flex-basis` as px, when declared. */
+      readonly flexBasis: number | null;
     }
     const rowItems: RowItem[] = [];
     let fixedOuterMain = 0;
@@ -1471,7 +1817,7 @@ export function layout(
     let totalGrow = 0;
     let itemSeq = 0;
     const absChildIds: NodeId[] = [];
-    for (const childNodeId of node.children) {
+    for (const childNodeId of layoutChildIds(node)) {
       const childNode = dom.nodes.get(childNodeId);
       if (childNode === undefined || childNode.kind === "comment") {
         continue;
@@ -1514,20 +1860,22 @@ export function layout(
       }
       const order = childStyle === null ? 0 : readOrder(childStyle);
       const flexGrow = childStyle === null ? 0 : readFlexGrow(childStyle);
+      const flexShrink = childStyle === null ? 1 : readFlexShrink(childStyle);
+      const flexBasis = childStyle === null ? null : readFlexBasis(childStyle);
       const seq = itemSeq;
       itemSeq += 1;
       if (declared !== null && !emptyShell) {
         const outer = declared + edges.left + edges.right;
         fixedOuterMain += outer;
-        rowItems.push({ nodeId: childNodeId, flexible: false, edges, fixedInnerWidth: px(declared), order, seq, flexGrow });
+        rowItems.push({ nodeId: childNodeId, flexible: false, edges, fixedInnerWidth: px(declared), order, seq, flexGrow, flexShrink, flexBasis });
       } else if (emptyShell) {
         flexibleCount += 1;
         totalGrow += flexGrow;
-        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow });
+        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow, flexShrink, flexBasis });
       } else {
         flexibleCount += 1;
         totalGrow += flexGrow;
-        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow });
+        rowItems.push({ nodeId: childNodeId, flexible: true, edges, fixedInnerWidth: px(0), order, seq, flexGrow, flexShrink, flexBasis });
       }
     }
 
@@ -1538,6 +1886,37 @@ export function layout(
     // set, fall back to equal shares (the original "equal columns" behaviour).
     const growShare = (item: { readonly flexGrow: number }): number =>
       totalGrow > 0 ? freeMain * (item.flexGrow / totalGrow) : freeMain / Math.max(1, flexibleCount);
+
+    // B8 — the SHRINK pass: when the fixed items' margin boxes overflow the
+    // main axis (freeMain was clamped to 0), every shrinkable fixed item gives
+    // up space proportional to shrink × basis. The floor is a min-content
+    // approximation (25% of the basis, ≥16px) so text never fully collapses.
+    // NOTE: only on a NON-wrapping container — with flex-wrap, line breaking
+    // happens first (items keep their basis and wrap), and per-line shrink is
+    // the follow-up (css-flexbox-1 §9.7 runs per line after line-breaking).
+    const shrinkAdjustments = new Map<NodeId, number>();
+    const wrap = readFlexWrap(style);
+    if (!wrap && fixedOuterMain > contentWidth) {
+      const deficit = fixedOuterMain - contentWidth;
+      let weightTotal = 0;
+      for (const item of rowItems) {
+        if (item.flexible) continue;
+        const basis = Number(item.fixedInnerWidth) || 16;
+        weightTotal += item.flexShrink * basis;
+      }
+      if (weightTotal > 0) {
+        for (const item of rowItems) {
+          if (item.flexible) continue;
+          const basis = Number(item.fixedInnerWidth) || 16;
+          const floor = Math.max(16, basis * 0.25);
+          const give = (deficit * item.flexShrink * basis) / weightTotal;
+          shrinkAdjustments.set(
+            item.nodeId,
+            Math.max(floor, basis - give - item.edges.left - item.edges.right),
+          );
+        }
+      }
+    }
     const justify = readJustifyContent(style);
     const align = readAlignItems(style);
     const flexGap = readFlexGap(style, contentWidth);
@@ -1557,7 +1936,6 @@ export function layout(
     // main axis start a new line; each line justifies independently and `align-
     // items` resolves against the LINE's cross size. `gap` adds `mainGap`
     // between items on a line and `rowGap` between lines.
-    const wrap = readFlexWrap(style);
     const rowGap = readFlexGap(style, contentWidth).cross;
     interface PlacedItem {
       readonly frag: Fragment;
@@ -1572,13 +1950,23 @@ export function layout(
     let line: { items: PlacedItem[]; width: number; height: number } = { items: [], width: 0, height: 0 };
     let maxHeight = 0;
     for (const item of orderedItems) {
-      // A flexible item is laid against its inner share (its grow share minus its
-      // own margins) so its auto width genuinely fills the distributed space; a
-      // fixed item keeps its declared width regardless of the containing value.
+      // B8 — resolve-flexible-lengths (simplified, CSS Flexbox §9.7):
+      //   - flexible item: its grow share (minus its own margins) as before;
+      //   - fixed item: its declared width, SHRUNK when the fixed items
+      //     overflow the main axis — each item gives up space proportional to
+      //     shrink × basis (the classic flexbox shrink), floored at a
+      //     min-content approximation so a declared width never collapses
+      //     below its text.
+      const shrunk = shrinkAdjustments.get(item.nodeId);
       const innerWidth = item.flexible
         ? px(Math.max(0, growShare(item) - item.edges.left - item.edges.right))
         : item.fixedInnerWidth;
-      const frag = layoutNode(item.nodeId, innerWidth, forceContentHeight ?? containingHeight);
+      // A shrunk fixed item: force its content width to the distributed size
+      // (its declared width loses to the shrink pass — CSS Flexbox §9.7).
+      const forceW = shrunk !== undefined
+        ? Math.max(0, Math.min(Number(innerWidth), shrunk) - item.edges.left - item.edges.right)
+        : undefined;
+      const frag = layoutNode(item.nodeId, innerWidth, forceContentHeight ?? containingHeight, undefined, forceW);
       if (frag === null) {
         continue;
       }
@@ -1625,7 +2013,7 @@ export function layout(
     const contentHeight =
       forceContentHeight !== undefined
         ? px(Math.max(0, forceContentHeight))
-        : resolveHeight(style, px(wrap ? yAcc : maxHeight), ZERO_MARGIN, ZERO_MARGIN, containingHeight);
+        : resolveHeight(style, px(wrap ? yAcc : maxHeight), ZERO_MARGIN, ZERO_MARGIN, containingHeight, Number(contentWidth));
     for (const absId of absChildIds) {
       const placed = placeAbsoluteFragment(
         layoutNode,
@@ -1637,6 +2025,7 @@ export function layout(
         0,
         0,
         0,
+        (id) => maxContentMarginBoxWidth(id, 16),
       );
       if (placed !== null) childIds.push(register(placed));
     }
@@ -1658,18 +2047,7 @@ export function layout(
     const contentWidth = resolveWidth(style, containingWidth, margin);
     const gaps = readGridGaps(style, contentWidth);
     const tracks = parseGridTracks(style["gridTemplateColumns"]);
-    const colCountHint = Math.max(1, tracks.length);
-    const trackBudget = Math.max(0, contentWidth - gaps.column * Math.max(0, colCountHint - 1));
-    const colWidths = resolveTrackWidths(tracks, trackBudget);
-    const colCount = Math.max(1, colWidths.length);
-    const colOffsets: number[] = [];
-    {
-      let acc = 0;
-      for (let i = 0; i < colCount; i += 1) {
-        colOffsets.push(acc);
-        acc += colWidths[i]! + (i < colCount - 1 ? gaps.column : 0);
-      }
-    }
+    const colCount = Math.max(1, tracks.length);
 
     type Placement = {
       nodeId: NodeId;
@@ -1677,7 +2055,7 @@ export function layout(
       row: number;
       colSpan: number;
       rowSpan: number;
-      frag: Fragment;
+      frag: Fragment | null;
     };
     const placements: Placement[] = [];
     const occupied = new Set<string>();
@@ -1713,7 +2091,7 @@ export function layout(
       }
     };
 
-    for (const childNodeId of node.children) {
+    for (const childNodeId of layoutChildIds(node)) {
       const childStyle = childStyleOf(childNodeId);
       if (childStyle !== null) {
         const pos = readPosition(childStyle);
@@ -1750,22 +2128,44 @@ export function layout(
         col = found.col;
         row = found.row;
       }
+      mark(row, col, rowSpan, colSpan);
+      placements.push({ nodeId: childNodeId, col, row, colSpan, rowSpan, frag: null });
+    }
+
+    // B7: resolve the track widths NOW — the placements are known, so `auto`
+    // tracks and minmax content clamps can measure each column's items.
+    const colCountHint = Math.max(1, tracks.length);
+    const trackBudget = Math.max(0, contentWidth - gaps.column * Math.max(0, colCountHint - 1));
+    const colContent = new Array<number>(colCount).fill(0);
+    for (const p of placements) {
+      const est = maxContentMarginBoxWidth(p.nodeId, 16);
+      colContent[p.col] = Math.max(colContent[p.col] ?? 0, est);
+    }
+    const colWidths = resolveTrackWidths(tracks, trackBudget, colContent);
+    const colOffsets: number[] = [];
+    {
+      let acc = 0;
+      for (let i = 0; i < colCount; i += 1) {
+        colOffsets.push(acc);
+        acc += colWidths[i]! + (i < colCount - 1 ? gaps.column : 0);
+      }
+    }
+    // Lay out every placed child at its (possibly multi-column) cell width.
+    for (const p of placements) {
       let cellW = 0;
-      for (let c = col; c < col + colSpan && c < colCount; c += 1) {
+      for (let c = p.col; c < p.col + p.colSpan && c < colCount; c += 1) {
         cellW += colWidths[c]!;
       }
-      const frag = layoutNode(childNodeId, px(Math.max(0, cellW)));
-      if (frag === null) {
-        continue;
-      }
-      mark(row, col, rowSpan, colSpan);
-      placements.push({ nodeId: childNodeId, col, row, colSpan, rowSpan, frag });
+      p.frag = layoutNode(p.nodeId, px(Math.max(0, cellW)));
+    }
+    for (let pi = placements.length - 1; pi >= 0; pi -= 1) {
+      if (placements[pi]!.frag === null) placements.splice(pi, 1);
     }
 
     const maxRow = placements.reduce((m, p) => Math.max(m, p.row + p.rowSpan), 0);
     const rowHeights = new Array<number>(Math.max(1, maxRow)).fill(0);
     for (const p of placements) {
-      rowHeights[p.row] = Math.max(rowHeights[p.row]!, p.frag.box.marginBox.height);
+      rowHeights[p.row] = Math.max(rowHeights[p.row]!, p.frag!.box.marginBox.height);
     }
     const rowOffsets: number[] = [];
     {
@@ -1780,7 +2180,7 @@ export function layout(
     for (const p of placements) {
       const x = colOffsets[p.col] ?? 0;
       const y = rowOffsets[p.row] ?? 0;
-      childIds.push(register(offsetFragment(p.frag, x, y)));
+      childIds.push(register(offsetFragment(p.frag!, x, y)));
     }
 
     const totalH =
@@ -1801,7 +2201,7 @@ export function layout(
 
     // Lay every child against the column width (those that produce a box).
     const frags: Fragment[] = [];
-    for (const childNodeId of node.children) {
+    for (const childNodeId of layoutChildIds(node)) {
       const frag = layoutNode(childNodeId, colWidth);
       if (frag !== null) frags.push(frag);
     }
@@ -1827,73 +2227,269 @@ export function layout(
   }
 
   /**
-   * Table layout BRANCH (task 7.1; Req 16.1). A basic table: the table's element
-   * children are ROWS, and each row's element children are CELLS. Cells in a row
-   * are laid left-to-right sharing a common column width (content width ÷ the
-   * widest row's cell count); each row is as tall as its tallest cell, and rows
-   * stack top-to-bottom. Row fragments are real {@link Fragment}s nested under
-   * the table, so the FragmentTree shape mirrors table → row → cell.
+   * A minimal unstyled ComputedStyle for anonymous boxes (css2.1: anonymous
+   * boxes have no author-controllable styling — margins/padding/border all
+   * zero, auto sizing). Only the fields the layout resolvers read are set.
    */
-  function layoutTable(node: DomNode, containingWidth: Px): Fragment {
-    const style = computedStyleOf(node.id);
+  const ANONYMOUS_STYLE = deepFreeze({
+    display: "block",
+    margin: ZERO_MARGIN,
+    width: "auto",
+    height: "auto",
+  }) as unknown as ComputedStyle;
+  function anonymousBlockStyle(): ComputedStyle {
+    return ANONYMOUS_STYLE;
+  }
+
+  /**
+   * Table layout BRANCH (task 7.1; Req 16.1), rebuilt on the layout tree's
+   * fixed-up row structure (B1): row groups expand transparently, non-row
+   * content wraps into anonymous rows, non-cell content inside a row wraps
+   * into anonymous cells — so bare text in tables is laid out, never dropped
+   * (the pre-B1 table layout silently discarded non-element children).
+   *
+   * Cells in a row share a common column width (content width ÷ the widest
+   * row's cell count); each row is as tall as its tallest cell; rows stack
+   * top-to-bottom. Real rows produce fragments (table → row → cell);
+   * anonymous rows and cells are TRANSPARENT (no fragment, no NodeId):
+   * their content attaches to the enclosing fragment, positioned in that
+   * space — so gBCR, hit-testing and paint see no synthetic nodes.
+   *
+   * Returns UNREGISTERED row-level fragments positioned in the table's
+   * content space, plus the geometry the caller needs to wrap or splice them.
+   */
+  /**
+   * B6 — automatic table layout's column sizing (css-tables-3 §7.2,
+   * simplified): measure each column's PREFERRED width as the max-content
+   * estimate of its widest cell, cap at the available table width, then:
+   *   - SURPLUS (preferred total < available): grow columns evenly, and
+   *     zero-width columns only (content-sized columns keep their size).
+   *   - DEFICIT: shrink columns proportionally toward a floor of ~25% of the
+   *     preferred width (the min-content approximation: the longest
+   *     unbreakable word).
+   *
+   * Real cells measure via {@link maxContentMarginBoxWidth} (declared widths
+   * win, replaced boxes use intrinsic size, inline content sums). Anonymous
+   * cells measure their fixed-up children (runs sum, boxes max).
+   */
+  function autoColumnWidths(
+    rows: readonly TableRow[],
+    columnCount: number,
+    available: number,
+  ): readonly Px[] {
+    if (columnCount === 0) return [px(available)];
+    const preferred: number[] = new Array<number>(columnCount).fill(0);
+    for (const row of rows) {
+      for (let ci = 0; ci < row.cells.length && ci < columnCount; ci += 1) {
+        const cell = row.cells[ci]!;
+        const est = cell.cellId !== null
+          ? maxContentMarginBoxWidth(cell.cellId, 16)
+          : anonymousCellMaxContent(cell.children ?? []);
+        preferred[ci] = Math.max(preferred[ci] ?? 0, est);
+      }
+    }
+    const total = preferred.reduce((a, b) => a + b, 0);
+    if (total <= 0) {
+      // No measurable content: fall back to equal columns.
+      return Array.from({ length: columnCount }, () => px(available / columnCount));
+    }
+    if (total > available) {
+      // DEFICIT: shrink proportionally, never below the per-column floor.
+      // The floor is capped at an equal share: one giant unbreakable word
+      // must not claim more than the table's even split (the table itself
+      // may still overflow — genuine min-content behavior).
+      const floors = preferred.map((w) =>
+        Math.min(Math.max(16, w * 0.25), Math.max(16, available / columnCount)),
+      );
+      const scaled = preferred.map((w) => (w / total) * available);
+      let result = preferred.map((_, i) => Math.max(floors[i]!, Math.min(available, scaled[i]!)));
+      // A second pass: when floors bind, the total can overshoot the
+      // available width — shave the excess from the columns still above
+      // their floor, proportional to their remaining shrink room.
+      let resultTotal = result.reduce((a, b) => a + b, 0);
+      for (let pass = 0; pass < 3 && resultTotal > available + 0.5; pass += 1) {
+        const room = result.map((w, i) => Math.max(0, w - floors[i]!));
+        const roomTotal = room.reduce((a, b) => a + b, 0);
+        if (roomTotal <= 0) break;
+        const excess = resultTotal - available;
+        result = result.map((w, i) => w - (excess * room[i]!) / roomTotal);
+        resultTotal = result.reduce((a, b) => a + b, 0);
+      }
+      // Rounding drift: the last column absorbs the remainder.
+      result[columnCount - 1] = Math.max(floors[columnCount - 1]!, result[columnCount - 1]! + (available - resultTotal));
+      return result.map((w) => px(w));
+    }
+    if (total < available) {
+      // SURPLUS: grow the columns with measured content evenly so the table
+      // still spans its width (an auto-width table fills its container).
+      const extra = (available - total) / columnCount;
+      return preferred.map((w) => px(w + extra));
+    }
+    return preferred.map((w) => px(w));
+  }
+
+  /** The max-content estimate of an anonymous cell's fixed-up children. */
+  function anonymousCellMaxContent(children: readonly LayoutChild[]): number {
+    let width = 0;
+    for (const child of children) {
+      if (child.kind === "inline-run") {
+        for (const member of child.nodes) {
+          width += maxContentMarginBoxWidth(member, 16);
+        }
+      } else if (child.kind === "box") {
+        width = Math.max(width, maxContentMarginBoxWidth(child.node, 16));
+      } else {
+        // A nested anonymous table: its widest row.
+        const rowMax = child.rows.reduce((m, r) => {
+          const rowW = r.cells.reduce((s, c) => s + (c.cellId !== null ? maxContentMarginBoxWidth(c.cellId, 16) : anonymousCellMaxContent(c.children ?? [])), 0);
+          return Math.max(m, rowW);
+        }, 0);
+        width = Math.max(width, rowMax);
+      }
+    }
+    return width;
+  }
+
+  function layoutTableRows(
+    style: ComputedStyle,
+    rows: readonly TableRow[],
+    containingWidth: Px,
+  ): { readonly rowFrags: readonly Fragment[]; readonly contentHeight: Px; readonly margin: Edges<Px>; readonly contentWidth: Px } {
     const margin = resolveMargin(style);
     const contentWidth = resolveWidth(style, containingWidth, margin);
 
-    // Collect the row elements and their cell-element ids (skip non-elements).
-    const rows: { readonly rowId: NodeId; readonly cellIds: readonly NodeId[] }[] = [];
-    for (const rowNodeId of node.children) {
-      const rowNode = dom.nodes.get(rowNodeId);
-      if (rowNode === undefined || rowNode.kind !== "element") {
-        continue;
-      }
-      const cellIds = rowNode.children.filter((cellId) => {
-        const cell = dom.nodes.get(cellId);
-        return cell !== undefined && cell.kind === "element";
-      });
-      rows.push({ rowId: rowNodeId, cellIds });
-    }
+    const columnCount = rows.reduce((max, r) => Math.max(max, r.cells.length), 0);
 
-    const columnCount = rows.reduce((max, r) => Math.max(max, r.cellIds.length), 0);
-    const columnWidth = columnCount > 0 ? px(contentWidth / columnCount) : contentWidth;
+    // ---- B6: automatic table layout (css-tables-3 §7.2, simplified) --------
+    // Each column's preferred width = the max-content estimate of the widest
+    // cell in it; surplus grows columns evenly; deficit shrinks them
+    // proportionally toward a per-column floor (≈ 25% of preferred — the
+    // min-content approximation: the longest unbreakable word).
+    const columnWidths = autoColumnWidths(rows, columnCount, Number(contentWidth));
 
-    const rowFragmentIds: FragmentId[] = [];
+    const rowFrags: Fragment[] = [];
     let cursorY = 0;
-    for (const { rowId, cellIds } of rows) {
-      // Lay out this row's cells across the shared column width.
+    for (const row of rows) {
+      // Each cell contributes either ONE fragment (a real cell element) or
+      // SEVERAL (an anonymous cell's inline runs / block children), all
+      // positioned in ROW space and still unregistered.
       const cellFrags: Fragment[] = [];
       let cursorX = 0;
-      const placedCellIds: FragmentId[] = [];
-      for (const cellId of cellIds) {
-        const cellFrag = layoutNode(cellId, columnWidth);
-        if (cellFrag === null) {
-          continue;
+      for (let ci = 0; ci < row.cells.length; ci += 1) {
+        const cell = row.cells[ci]!;
+        const columnWidth = columnWidths[ci] ?? columnWidths[0] ?? px(0);
+        if (cell.cellId !== null) {
+          // A real cell element: normal layout dispatch. The cell is a block
+          // container whose own children come from the layout tree.
+          const cellFrag = layoutNode(cell.cellId, columnWidth);
+          if (cellFrag !== null) {
+            cellFrags.push(offsetFragment(cellFrag, cursorX, 0));
+          }
+        } else {
+          // An anonymous cell (css-tables-3): its fixed-up content flows in
+          // the column width. Inline runs make line boxes; box children stack
+          // (with margin collapsing between them); nested anonymous tables
+          // splice recursively. All fragments stay in ROW space.
+          const children = cell.children ?? [];
+          let innerCursorY = 0;
+          let prevBottom: number | null = null;
+          for (const child of children) {
+            if (child.kind === "inline-run") {
+              const cellRun = layoutInlineRun([...child.nodes], columnWidth, style);
+              for (const frag of cellRun.fragments) {
+                cellFrags.push(offsetFragment(frag, cursorX, innerCursorY));
+              }
+              innerCursorY += cellRun.height;
+              prevBottom = null;
+              continue;
+            }
+            if (child.kind === "box") {
+              const childNode = dom.nodes.get(child.node);
+              if (childNode === undefined || childNode.kind === "comment") {
+                continue;
+              }
+              const childStyle = childStyleOf(child.node);
+              const childFrag = layoutNode(child.node, columnWidth);
+              if (childFrag === null) {
+                continue;
+              }
+              const childMargin = childStyle === null ? ZERO_MARGIN : resolveMargin(childStyle);
+              if (prevBottom !== null) {
+                const overlap =
+                  prevBottom + childMargin.top - collapsedMargin(prevBottom, childMargin.top);
+                innerCursorY -= overlap;
+              }
+              cellFrags.push(offsetFragment(childFrag, cursorX, innerCursorY));
+              innerCursorY += Number(childFrag.box.marginBox.height);
+              prevBottom = childMargin.bottom;
+              continue;
+            }
+            // A nested anonymous table inside an anonymous cell.
+            const nested = layoutTableRows(anonymousBlockStyle(), child.rows, columnWidth);
+            let nestedY = innerCursorY;
+            for (const nestedRow of nested.rowFrags) {
+              const shifted = offsetFragment(nestedRow, cursorX, nestedY);
+              cellFrags.push(shifted);
+              nestedY += Number(shifted.box.marginBox.height);
+            }
+            innerCursorY = nestedY;
+            prevBottom = null;
+          }
         }
-        const placed = offsetFragment(cellFrag, cursorX, 0);
-        cellFrags.push(placed);
         cursorX += columnWidth;
       }
+
       const rowHeight = cellFrags.reduce(
-        (max, cell) => Math.max(max, cell.box.marginBox.height),
+        (max, cell) => Math.max(max, Number(cell.box.marginBox.height)),
         0,
       );
-      // Register the cells (their geometry is relative to the row's content).
-      for (const placed of cellFrags) {
-        placedCellIds.push(register(placed));
+      if (row.rowId !== null) {
+        // A real row element: its own fragment; cells registered relative to
+        // it (registration order: cells, then the row — same as pre-B1).
+        const cellIds = cellFrags.map((frag) => register(frag));
+        const rowBox = buildBoxAtOrigin(ZERO_MARGIN, contentWidth, px(rowHeight));
+        rowFrags.push(
+          offsetFragment({ node: row.rowId, box: rowBox, children: cellIds }, 0, cursorY),
+        );
+      } else {
+        // An anonymous row: TRANSPARENT — no fragment. Its cell fragments
+        // shift from row space into table space and attach to the table.
+        for (const frag of cellFrags) {
+          rowFrags.push(offsetFragment(frag, 0, cursorY));
+        }
       }
-      // The row fragment spans the full content width and its tallest cell.
-      const rowBox = buildBoxAtOrigin(ZERO_MARGIN, contentWidth, px(rowHeight));
-      const rowFrag = offsetFragment(
-        { node: rowId, box: rowBox, children: placedCellIds },
-        0,
-        cursorY,
-      );
-      rowFragmentIds.push(register(rowFrag));
       cursorY += rowHeight; // rows stack top-to-bottom.
     }
 
-    const contentHeight = resolveHeight(style, px(cursorY));
+    return {
+      rowFrags,
+      contentHeight: resolveHeight(style, px(cursorY)),
+      margin,
+      contentWidth,
+    };
+  }
+
+  /** The row structure for a `display:table` element (B1 fixed-up). */
+  function tableRowsOf(node: DomNode): readonly TableRow[] {
+    const fixed = layoutTree.tableStructureOf.get(node.id);
+    if (fixed !== undefined) {
+      return fixed;
+    }
+    // Defensive fallback (the tree builder covers every element; this keeps
+    // layout total even for a node the builder never visited).
+    return buildLayoutTree(dom, computedStyleOf).tableStructureOf.get(node.id) ?? [];
+  }
+
+  function layoutTable(node: DomNode, containingWidth: Px): Fragment {
+    const style = computedStyleOf(node.id);
+    const { rowFrags, contentHeight, margin, contentWidth } = layoutTableRows(
+      style,
+      tableRowsOf(node),
+      containingWidth,
+    );
+    const children = rowFrags.map((frag) => register(frag));
     const box = buildBoxAtOrigin(margin, contentWidth, contentHeight);
-    return { node: node.id, box, children: rowFragmentIds };
+    return { node: node.id, box, children };
   }
 
   // Lay out from the document root (its containing block is the viewport, at
@@ -1979,6 +2575,22 @@ function percentOf(value: unknown): number | null {
     return v.value;
   }
   return null;
+}
+
+/**
+ * Parse the `aspect-ratio` computed value: `"auto"` → null; `"16 / 9"` (or
+ * a bare number) → width/height as a number. Accepts the string the cascade
+ * stores for this free-form property.
+ */
+function aspectRatioOf(style: ComputedStyle): number | null {
+  const raw = style["aspect-ratio"];
+  if (typeof raw !== "string" || raw.length === 0 || raw === "auto") return null;
+  const parts = raw.split("/");
+  const w = Number.parseFloat(parts[0] ?? "");
+  if (!Number.isFinite(w) || w <= 0) return null;
+  const h = parts.length > 1 ? Number.parseFloat(parts[1] ?? "") : 1;
+  if (!Number.isFinite(h) || h <= 0) return null;
+  return w / h;
 }
 
 /** Narrow an `unknown` value to a non-negative {@link Edges}<Px>, or `null`. */
@@ -2102,6 +2714,30 @@ function resolveBorder(style: ComputedStyle): Edges<Px> {
 /** The node's `box-sizing` (default `content-box`). */
 function readBoxSizing(style: ComputedStyle): "content-box" | "border-box" {
   return style["boxSizing"] === "border-box" ? "border-box" : "content-box";
+}
+
+/**
+ * The `text-transform` keyword (CSS Text §3.1, initial `none`), applied to the
+ * RENDERED text view before shaping — the DOM's text content is untouched
+ * (only the shaped glyph stream sees the transformed characters).
+ */
+function readTextTransform(style: ComputedStyle): "none" | "capitalize" | "uppercase" | "lowercase" {
+  const value = style["textTransform"];
+  return value === "capitalize" || value === "uppercase" || value === "lowercase" ? value : "none";
+}
+
+/**
+ * Apply `text-transform` to a text run (E2, CSS Text §3.1):
+ *   - `uppercase` / `lowercase`: locale-agnostic Unicode case mapping.
+ *   - `capitalize`: the FIRST LETTER of each word uppercased, the rest
+ *     unchanged (word boundaries = whitespace).
+ */
+function applyTextTransform(text: string, mode: "none" | "capitalize" | "uppercase" | "lowercase"): string {
+  if (mode === "none") return text;
+  if (mode === "uppercase") return text.toUpperCase();
+  if (mode === "lowercase") return text.toLowerCase();
+  // capitalize: uppercase the first LETTER of each whitespace-separated word.
+  return text.replace(/(^|\s)(\S)/gu, (_m, ws: string, ch: string) => ws + ch.toUpperCase());
 }
 
 /** The `line-height` multiplier (a unitless `<number>`); absent/invalid ⇒ 1.0. */
@@ -2256,6 +2892,7 @@ function resolveHeight(
   padding: Edges<Px> = ZERO_MARGIN,
   border: Edges<Px> = ZERO_MARGIN,
   containingHeight?: number,
+  contentWidth?: number,
 ): Px {
   const insetY = padding.top + padding.bottom + border.top + border.bottom;
   const boxSizing = readBoxSizing(style);
@@ -2276,6 +2913,18 @@ function resolveHeight(
       } else {
         content = boxSizing === "border-box" ? (pct * basis) / 100 - insetY : (pct * basis) / 100;
       }
+    } else if (
+      // `aspect-ratio: <w> / <h>`: a definite content width transfers to the
+      // height when the height is auto. This is how modern card layouts
+      // (`aspect-ratio: 16/9` wrappers with `width: 100%` images inside) get
+      // their boxes — without it every such card collapses to 0×0.
+      contentWidth !== undefined &&
+      Number.isFinite(contentWidth) &&
+      contentWidth > 0 &&
+      aspectRatioOf(style) !== null
+    ) {
+      const ratio = aspectRatioOf(style) as number;
+      content = boxSizing === "border-box" ? contentWidth / ratio - insetY : contentWidth / ratio;
     } else {
       content = contentHeight;
     }
@@ -2364,6 +3013,8 @@ function placeAbsoluteFragment(
   padEdgeTop: number,
   staticLeft: number,
   staticTop: number,
+  /** The shrink-to-fit (max-content) margin-box width estimate for the child. */
+  shrinkToFit: (id: NodeId) => number,
 ): Fragment | null {
   const declaredTop = childStyle === null ? null : readLengthOr(childStyle["top"]);
   const declaredLeft = childStyle === null ? null : readLengthOr(childStyle["left"]);
@@ -2376,11 +3027,15 @@ function placeAbsoluteFragment(
   if (declaredLeft !== null && declaredRight !== null) {
     usedW = Math.max(0, padCbW - declaredLeft - declaredRight);
     leftOffset = padEdgeLeft + declaredLeft;
-  } else if (declaredLeft !== null) {
-    leftOffset = padEdgeLeft + declaredLeft;
-  } else if (declaredRight !== null) {
-    leftOffset = padEdgeLeft;
+  } else if (declaredLeft !== null || declaredRight !== null) {
+    // CSS 2.1 §10.3.7: an auto-width abspos box (one inset anchored) is
+    // SHRINK-TO-FIT — min(available, max-content) — not full containing width.
+    const available = Math.max(0, padCbW - (declaredLeft ?? 0) - (declaredRight ?? 0));
+    usedW = Math.min(available, Math.max(0, shrinkToFit(childNodeId)));
+    leftOffset = declaredLeft !== null ? padEdgeLeft + declaredLeft : padEdgeLeft;
   } else {
+    // Static position (no insets): also shrink-to-fit per §10.3.7.
+    usedW = Math.min(padCbW, Math.max(0, shrinkToFit(childNodeId)));
     leftOffset = staticLeft;
   }
   if (declaredTop !== null && declaredBottom !== null) {
@@ -2520,147 +3175,6 @@ function makeRect(x: Px, y: Px, width: Px, height: Px): Rect {
  * keyword — which the `DisplayValue` union does not yet include because the
  * generator does not emit it — can still be matched by the layout dispatch.
  */
-/**
- * The set of display values the layout dispatcher recognizes as real layout
- * branches. Legacy/vendor values are normalized INTO these by {@link readDisplay}.
- */
-const LAYOUT_DISPLAYS: ReadonlySet<string> = new Set([
-  "block",
-  "inline",
-  "inline-block",
-  "flex",
-  "grid",
-  "table",
-  "none",
-]);
-
-/**
- * Read the computed `display` and NORMALIZE legacy / vendor / inline-variant
- * values into a layout branch the engine actually implements:
- *
- *   - `-webkit-box` / `-webkit-inline-box` / `-ms-flexbox` / `-ms-inline-flexbox`
- *     / `-webkit-inline-flex` → `flex` (every modern browser maps old flexbox
- *     to standard flex).
- *   - `inline-flex` / `inline-grid` / `inline-table` → the inner layout
- *     (`flex` / `grid` / `table`); the inline *outer* role awaits a real inline
- *     formatting context, so the box currently participates as a block — but its
- *     CHILDREN get the correct inner layout, which is where the visible damage
- *     was (children stacking vertically instead of flowing along a flex axis).
- *   - `list-item` → `block` (list markers are not yet rendered).
- *
- * Unrecognized / absent values fall back to the initial `inline`.
- */
-function readDisplay(style: ComputedStyle): string {
-  const value = style["display"];
-  if (typeof value !== "string") {
-    return "inline";
-  }
-  switch (value) {
-    case "-webkit-box":
-    case "-webkit-inline-box":
-    case "-ms-flexbox":
-    case "-ms-inline-flexbox":
-    case "-webkit-inline-flex":
-      return "flex";
-    case "inline-flex":
-      return "flex";
-    case "inline-grid":
-      return "grid";
-    case "inline-table":
-      return "table";
-    case "list-item":
-      return "block";
-    default:
-      return LAYOUT_DISPLAYS.has(value) ? value : "inline";
-  }
-}
-
-/**
- * Is this child an INLINE-LEVEL box (a member of the inline formatting context)?
- * Text nodes always are; elements are when they are in-flow, non-floated, and
- * declare `display: inline` / `inline-block`. Everything else (block/flex/grid/
- * table/none, positioned, floated) is block-level and BREAKS an inline run.
- * The raw `display` value is consulted (not the normalized one) so `inline-block`
- * participates in the run while `inline-flex` (normalized to flex) does not.
- */
-function isInlineLevelChild(node: DomNode, style: ComputedStyle | null): boolean {
-  if (node.kind === "text") {
-    return true;
-  }
-  if (node.kind !== "element" || style === null) {
-    return false;
-  }
-  const position = readPosition(style);
-  if (position === "absolute" || position === "fixed") {
-    return false;
-  }
-  if (readFloat(style) !== "none") {
-    return false;
-  }
-  const display = style["display"];
-  return display === "inline" || display === "inline-block";
-}
-
-/** The recognised `float` keywords; anything else (incl. absent) ⇒ `"none"`. */
-const FLOAT_VALUES: ReadonlySet<string> = new Set(["left", "right", "none"]);
-
-/**
- * The computed `float` (initial `"none"`). Narrowed from the open index
- * signature; an absent or unrecognised value is the initial `"none"`, so a
- * non-floated element takes the normal-flow path unchanged.
- */
-function readFloat(style: ComputedStyle): "left" | "right" | "none" {
-  const value = style["float"];
-  if (typeof value === "string" && FLOAT_VALUES.has(value)) {
-    return value as "left" | "right" | "none";
-  }
-  return "none";
-}
-
-/**
- * Read the `clear` keyword (initial `none`). Recognized values: `none`, `left`,
- * `right`, `both`, `inline-start`, `inline-end`. Anything else ⇒ `none`.
- */
-function readClear(style: ComputedStyle): string {
-  const value = style["clear"];
-  if (
-    typeof value === "string" &&
-    (value === "none" ||
-      value === "left" ||
-      value === "right" ||
-      value === "both" ||
-      value === "inline-start" ||
-      value === "inline-end")
-  ) {
-    return value;
-  }
-  return "none";
-}
-
-/** The recognised `position` keywords; anything else (incl. absent) ⇒ `"static"`. */
-const POSITION_VALUES: ReadonlySet<string> = new Set([
-  "static",
-  "relative",
-  "absolute",
-  "fixed",
-  "sticky",
-]);
-
-/**
- * The computed `position` (initial `"static"`). Narrowed from the open index
- * signature; an absent or unrecognised value is the initial `"static"`, so a
- * statically positioned element takes the normal-flow path unchanged. (Only
- * `relative` / `absolute` are acted on by the block branch today; `fixed` /
- * `sticky` fall back to static flow.)
- */
-function readPosition(style: ComputedStyle): "static" | "relative" | "absolute" | "fixed" {
-  const value = style["position"];
-  if (value === "relative") return "relative";
-  if (value === "absolute") return "absolute";
-  if (value === "fixed") return "fixed";
-  if (typeof value === "string" && POSITION_VALUES.has(value)) return "static";
-  return "static";
-}
 
 /**
  * The positioning insets (`top` / `left`) as offsets, in px, from the
@@ -2754,6 +3268,17 @@ function readOrder(style: ComputedStyle): number {
 function readFlexGrow(style: ComputedStyle): number {
   const value = style["flexGrow"];
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+/** The `flex-shrink` factor (initial 1 — items shrink by default). */
+function readFlexShrink(style: ComputedStyle): number {
+  const value = style["flexShrink"];
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 1;
+}
+
+/** The `flex-basis` as a px length, or null for auto/content keywords. */
+function readFlexBasis(style: ComputedStyle): number | null {
+  return readLengthOr(style["flexBasis"]);
 }
 
 /**
@@ -2869,10 +3394,26 @@ function readGridGaps(style: ComputedStyle, containingWidth: number): { row: num
   return { row, column };
 }
 
-type GridTrack = { readonly kind: "px"; readonly size: number } | { readonly kind: "fr"; readonly fr: number };
+type GridTrack =
+  | { readonly kind: "px"; readonly size: number }
+  | { readonly kind: "fr"; readonly fr: number }
+  | { readonly kind: "pct"; readonly ratio: number }
+  | { readonly kind: "auto" }
+  | { readonly kind: "minmax"; readonly min: GridTrack; readonly max: GridTrack };
 
+/** Parse one `grid-template-columns` track token (css-grid-1 §7). */
 function parseOneTrackToken(token: string): GridTrack {
   const t = token.trim();
+  // `minmax(<min>, <max>)` — a nested pair (the only functional form).
+  const mm = /^minmax\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)$/i.exec(t);
+  if (mm !== null) {
+    const min = parseOneTrackToken(mm[1]!);
+    const max = parseOneTrackToken(mm[2]!);
+    return { kind: "minmax", min, max };
+  }
+  if (t.toLowerCase() === "auto") {
+    return { kind: "auto" };
+  }
   const pxMatch = /^(-?\d+(?:\.\d+)?)px$/i.exec(t);
   if (pxMatch !== null) {
     return { kind: "px", size: Math.max(0, Number(pxMatch[1])) };
@@ -2880,6 +3421,10 @@ function parseOneTrackToken(token: string): GridTrack {
   const frMatch = /^(-?\d+(?:\.\d+)?)fr$/i.exec(t);
   if (frMatch !== null) {
     return { kind: "fr", fr: Math.max(0, Number(frMatch[1])) };
+  }
+  const pctMatch = /^(\d+(?:\.\d+)?)%$/.exec(t);
+  if (pctMatch !== null) {
+    return { kind: "pct", ratio: Math.max(0, Number(pctMatch[1])) / 100 };
   }
   const num = Number(t);
   if (Number.isFinite(num) && num > 0) {
@@ -2943,8 +3488,17 @@ function parseGridTracks(value: unknown): GridTrack[] {
         i = j + 1;
         continue;
       }
+      // A functional token (`minmax(…, …)`) contains spaces — consume to its
+      // matching close paren so the comma-space does not split it.
       let j = i;
-      while (j < s.length && !/\s/.test(s[j]!)) j += 1;
+      let depth = 0;
+      while (j < s.length) {
+        const ch = s[j]!;
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+        else if (depth === 0 && /\s/.test(ch)) break;
+        j += 1;
+      }
       tracks.push(parseOneTrackToken(s.slice(i, j)));
       i = j;
     }
@@ -2953,19 +3507,94 @@ function parseGridTracks(value: unknown): GridTrack[] {
   return [{ kind: "fr", fr: 1 }];
 }
 
-function resolveTrackWidths(tracks: readonly GridTrack[], budget: number): number[] {
+/**
+ * Resolve the track widths (B7 — css-grid-1 §12, simplified):
+ *   - `px` / `%` / bare numbers: fixed sizes (% of the track budget).
+ *   - `auto`: the column's content size (max-content estimate of its items),
+ *     capped at the budget.
+ *   - `fr`: the leftover after fixed + auto tracks, shared proportionally.
+ *   - `minmax(min, max)`: the base resolves from the min side; an `fr` max
+ *     participates in the leftover share with that min as its floor; a fixed
+ *     max caps the content-sized base.
+ *
+ * `colContent[i]` carries each column's max-content estimate (the grid's
+ * placed items bucketed by column); pass 0 for content-blind resolution.
+ */
+function resolveTrackWidths(
+  tracks: readonly GridTrack[],
+  budget: number,
+  colContent: readonly number[] = [],
+): number[] {
   if (tracks.length === 0) {
     return [Math.max(0, budget)];
   }
-  let fixed = 0;
-  let frSum = 0;
-  for (const t of tracks) {
-    if (t.kind === "px") fixed += t.size;
-    else frSum += t.fr;
+  const contentOf = (i: number): number => {
+    const c = colContent[i];
+    return c === undefined || !Number.isFinite(c) ? 0 : Math.min(c, budget);
+  };
+  /** A non-fr track's base size. */
+  const baseOf = (t: GridTrack, i: number): number => {
+    switch (t.kind) {
+      case "px":
+        return t.size;
+      case "pct":
+        return t.ratio * budget;
+      case "auto":
+        return contentOf(i);
+      case "minmax":
+        return baseOf(t.min, i);
+      case "fr":
+        return 0;
+    }
+  };
+  const base: number[] = tracks.map((t, i) => baseOf(t, i));
+  // The fr participants: top-level fr tracks + minmax tracks whose MAX is fr.
+  const frItems: { index: number; fr: number; min: number }[] = [];
+  tracks.forEach((t, i) => {
+    if (t.kind === "fr" && t.fr > 0) {
+      frItems.push({ index: i, fr: t.fr, min: 0 });
+    } else if (t.kind === "minmax" && t.max.kind === "fr" && t.max.fr > 0) {
+      frItems.push({ index: i, fr: t.max.fr, min: base[i] ?? 0 });
+    }
+  });
+  // Fixed total = everything except the fr shares.
+  const frIndexes = new Set(frItems.map((f) => f.index));
+  let fixedTotal = 0;
+  tracks.forEach((_, i) => {
+    if (!frIndexes.has(i)) fixedTotal += base[i] ?? 0;
+  });
+  const free = Math.max(0, budget - fixedTotal);
+  const frSum = frItems.reduce((a, f) => a + f.fr, 0);
+  if (frSum > 0 && free > 0) {
+    for (const f of frItems) {
+      base[f.index] = Math.max(f.min, (f.fr / frSum) * free);
+    }
+    // An fr floor (minmax min) can exceed its share — redistribute what the
+    // floored tracks took from the still-flexible ones.
+    const floored = frItems.filter((f) => (base[f.index] ?? 0) > (f.fr / frSum) * free + 0.5);
+    if (floored.length > 0 && floored.length < frItems.length) {
+      const flooredTake = floored.reduce((a, f) => a + (base[f.index] ?? 0), 0);
+      const flex = frItems.filter((f) => !floored.includes(f));
+      const flexShare = Math.max(0, free - flooredTake);
+      const flexSum = flex.reduce((a, f) => a + f.fr, 0);
+      if (flexSum > 0 && flexShare > 0) {
+        for (const f of flex) {
+          base[f.index] = Math.max(f.min, (f.fr / flexSum) * flexShare);
+        }
+      }
+    }
   }
-  const free = Math.max(0, budget - fixed);
-  const unit = frSum > 0 ? free / frSum : 0;
-  return tracks.map((t) => (t.kind === "px" ? t.size : t.fr * unit));
+  // minmax clamps: a fixed max caps the base.
+  tracks.forEach((t, i) => {
+    if (t.kind === "minmax") {
+      if (t.max.kind === "px") base[i] = Math.min(base[i] ?? 0, t.max.size);
+      else if (t.max.kind === "pct") base[i] = Math.min(base[i] ?? 0, t.max.ratio * budget);
+      else if (t.max.kind === "auto") base[i] = Math.min(base[i] ?? 0, Math.max(base[i] ?? 0, contentOf(i)));
+      if (t.min.kind === "px") base[i] = Math.max(base[i] ?? 0, t.min.size);
+      else if (t.min.kind === "pct") base[i] = Math.max(base[i] ?? 0, t.min.ratio * budget);
+    }
+  });
+  return base.map((w) => Math.max(0, w));
 }
 
 function parseGridPlacement(value: unknown): { start: number | null; span: number } {

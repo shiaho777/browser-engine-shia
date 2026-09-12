@@ -289,15 +289,17 @@ void test("the `<div>hello</div>` document lays out with text contributing geome
   assert.equal(div.box.height, text.box.marginBox.height);
 });
 
-void test("empty text contributes a zero-height fragment (still present)", () => {
+void test("empty text contributes no fragment (css2.1 §9.2.1.1: no line box)", () => {
   const dom = buildDom([
     { id: 0, kind: "document", parent: null, children: [1] },
     { id: 1, kind: "text", text: "", parent: 0, children: [] },
   ]);
   const tree = layout(dom, styleTable(new Map()));
   const root = tree.fragments.get(tree.root)!;
-  const text = tree.fragments.get(root.children[0]!)!;
-  assert.equal(text.box.height, px(0));
+  // B1: whitespace-only / empty inline runs are dropped at tree-build time —
+  // collapsible whitespace generates no anonymous block and no line boxes, so
+  // no zero-height text fragment remains in the tree.
+  assert.equal(root.children.length, 0);
 });
 
 void test("comment nodes produce no fragment", () => {
