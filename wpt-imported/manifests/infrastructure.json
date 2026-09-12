@@ -1,0 +1,11 @@
+{
+  "name": "imported-infrastructure",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "infrastructure/assumptions/document-fonts-ready.html",
+    "infrastructure/testdriver/click.html",
+    "infrastructure/testdriver/send_keys.html"
+  ],
+  "baselinePassCount": 0
+}

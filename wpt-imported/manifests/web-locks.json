@@ -1,0 +1,32 @@
+{
+  "name": "imported-web-locks",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "web-locks/acquire.https.any.html",
+    "web-locks/acquire.https.any.js",
+    "web-locks/held.https.any.html",
+    "web-locks/held.https.any.js",
+    "web-locks/ifAvailable.https.any.html",
+    "web-locks/ifAvailable.https.any.js",
+    "web-locks/lock-attributes.https.any.html",
+    "web-locks/lock-attributes.https.any.js",
+    "web-locks/mode-exclusive.https.any.html",
+    "web-locks/mode-exclusive.https.any.js",
+    "web-locks/mode-mixed.https.any.html",
+    "web-locks/mode-mixed.https.any.js",
+    "web-locks/mode-shared.https.any.html",
+    "web-locks/mode-shared.https.any.js",
+    "web-locks/query-empty.https.any.html",
+    "web-locks/query-empty.https.any.js",
+    "web-locks/query.https.any.html",
+    "web-locks/query.https.any.js",
+    "web-locks/resource-names.https.any.html",
+    "web-locks/resource-names.https.any.js",
+    "web-locks/signal.https.any.html",
+    "web-locks/signal.https.any.js",
+    "web-locks/steal.https.any.html",
+    "web-locks/steal.https.any.js"
+  ],
+  "baselinePassCount": 0
+}

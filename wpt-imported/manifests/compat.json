@@ -1,0 +1,11 @@
+{
+  "name": "imported-compat",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "compat/css-style-declaration-alias-enumeration.html",
+    "compat/webkit-box-item-shrink-001.html",
+    "compat/webkit-box-removing-triggering-anonymous-merge.html"
+  ],
+  "baselinePassCount": 0
+}

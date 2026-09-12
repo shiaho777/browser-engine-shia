@@ -1,0 +1,9 @@
+{
+  "name": "imported-cookies",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "cookies/attributes/domain.sub.html"
+  ],
+  "baselinePassCount": 0
+}

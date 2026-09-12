@@ -1,0 +1,15 @@
+{
+  "name": "imported-editing",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "editing/other/insert-text-in-void-element.tentative.html",
+    "editing/other/non-html-document.html",
+    "editing/plaintext-only/insertLineBreak.html",
+    "editing/run/backcolor.html",
+    "editing/run/bold.html",
+    "editing/run/insertimage.html",
+    "editing/run/outdent.html"
+  ],
+  "baselinePassCount": 0
+}

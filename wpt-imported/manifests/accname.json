@@ -1,0 +1,21 @@
+{
+  "name": "imported-accname",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "accname/basic.html",
+    "accname/name/comp_embedded_control.html",
+    "accname/name/comp_hidden_not_referenced.html",
+    "accname/name/comp_host_language_label.html",
+    "accname/name/comp_label.html",
+    "accname/name/comp_labelledby.html",
+    "accname/name/comp_labelledby_hidden_nodes.html",
+    "accname/name/comp_name_from_content.html",
+    "accname/name/comp_text_node.html",
+    "accname/name/comp_tooltip.html",
+    "accname/name/comp_tooltip.tentative.html",
+    "accname/name/shadowdom/basic.html",
+    "accname/name/shadowdom/slot.html"
+  ],
+  "baselinePassCount": 0
+}

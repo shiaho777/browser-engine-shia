@@ -1,0 +1,24 @@
+{
+  "name": "imported-navigation-api",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "navigation-api/navigate-event/defaultPrevented-navigation-preempted.html",
+    "navigation-api/navigate-event/event-constructor.html",
+    "navigation-api/navigate-event/navigate-destination-getState-back-forward.html",
+    "navigation-api/navigate-event/navigate-multiple-history-pushState.html",
+    "navigation-api/navigation-methods/navigate-same-document.html",
+    "navigation-api/navigation-methods/reload-state-and-info.html",
+    "navigation-api/navigation-methods/reload-state-undefined.html",
+    "navigation-api/navigation-methods/return-value/navigate-intercept-interrupted.html",
+    "navigation-api/navigation-methods/return-value/navigate-interrupted-within-onnavigate.html",
+    "navigation-api/navigation-methods/return-value/navigate-interrupted.html",
+    "navigation-api/navigation-methods/return-value/reload-intercept-rejected.html",
+    "navigation-api/navigation-methods/return-value/reload-intercept.html",
+    "navigation-api/navigation-methods/return-value/reload-preventDefault.html",
+    "navigation-api/ordering-and-transition/anchor-download-intercept.html",
+    "navigation-api/state/history-pushState.html",
+    "navigation-api/state/history-replaceState.html"
+  ],
+  "baselinePassCount": 0
+}

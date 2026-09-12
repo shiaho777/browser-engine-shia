@@ -1,0 +1,18 @@
+{
+  "name": "imported-xhr",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "xhr/blob-range.any.html",
+    "xhr/blob-range.any.js",
+    "xhr/formdata/constructor-formelement.html",
+    "xhr/formdata/constructor-submitter.html",
+    "xhr/formdata/set-blob.any.html",
+    "xhr/formdata/set-blob.any.js",
+    "xhr/progressevent-constructor.html",
+    "xhr/setrequestheader-bogus-name.htm",
+    "xhr/setrequestheader-bogus-value.htm",
+    "xhr/template-element.html"
+  ],
+  "baselinePassCount": 0
+}

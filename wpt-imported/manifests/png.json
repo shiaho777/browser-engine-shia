@@ -1,0 +1,9 @@
+{
+  "name": "imported-png",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "png/cicp-chunk.html"
+  ],
+  "baselinePassCount": 0
+}

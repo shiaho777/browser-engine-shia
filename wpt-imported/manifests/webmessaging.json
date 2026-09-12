@@ -1,0 +1,15 @@
+{
+  "name": "imported-webmessaging",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "webmessaging/Channel_postMessage_clone_port_error.any.html",
+    "webmessaging/Channel_postMessage_clone_port_error.any.js",
+    "webmessaging/broadcastchannel/basics.any.html",
+    "webmessaging/broadcastchannel/basics.any.js",
+    "webmessaging/broadcastchannel/interface.any.html",
+    "webmessaging/broadcastchannel/interface.any.js",
+    "webmessaging/broadcastchannel/opaque-origin.html"
+  ],
+  "baselinePassCount": 0
+}

@@ -1,0 +1,14 @@
+{
+  "name": "imported-permissions",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "permissions/all-permissions.html",
+    "permissions/edge-cases.https.html",
+    "permissions/idlharness.any.html",
+    "permissions/idlharness.any.js",
+    "permissions/idlharness.any.worker.html",
+    "permissions/permissionsstatus-name.html"
+  ],
+  "baselinePassCount": 0
+}

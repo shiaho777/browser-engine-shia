@@ -1,0 +1,10 @@
+{
+  "name": "imported-geolocation",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "geolocation/idlharness.https.window.html",
+    "geolocation/idlharness.https.window.js"
+  ],
+  "baselinePassCount": 0
+}

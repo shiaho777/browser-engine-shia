@@ -1,0 +1,11 @@
+{
+  "name": "imported-content-security-policy",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "content-security-policy/frame-src/frame-src-self-unique-origin.html",
+    "content-security-policy/img-src/img-src-self-unique-origin.html",
+    "content-security-policy/script-src/script-src-strict_dynamic_non_parser_inserted.html"
+  ],
+  "baselinePassCount": 0
+}

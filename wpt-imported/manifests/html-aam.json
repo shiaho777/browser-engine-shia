@@ -1,0 +1,19 @@
+{
+  "name": "imported-html-aam",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "html-aam/dir-role.tentative.html",
+    "html-aam/names.html",
+    "html-aam/roles-contextual.html",
+    "html-aam/roles-contextual.tentative.html",
+    "html-aam/roles-dynamic-switch.tentative.window.html",
+    "html-aam/roles-dynamic-switch.tentative.window.js",
+    "html-aam/roles-generic.html",
+    "html-aam/roles-generic.tentative.html",
+    "html-aam/roles.html",
+    "html-aam/roles.tentative.html",
+    "html-aam/table-roles.html"
+  ],
+  "baselinePassCount": 0
+}

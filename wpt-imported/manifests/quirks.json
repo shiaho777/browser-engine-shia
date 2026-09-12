@@ -1,0 +1,9 @@
+{
+  "name": "imported-quirks",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "quirks/hashless-hex-color/quirks.html"
+  ],
+  "baselinePassCount": 0
+}

@@ -1,0 +1,10 @@
+{
+  "name": "imported-resize-observer",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "resize-observer/callback-cross-realm-report-exception.html",
+    "resize-observer/observe.html"
+  ],
+  "baselinePassCount": 0
+}

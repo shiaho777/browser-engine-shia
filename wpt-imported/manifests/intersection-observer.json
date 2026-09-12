@@ -1,0 +1,12 @@
+{
+  "name": "imported-intersection-observer",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "intersection-observer/callback-cross-realm-report-exception.html",
+    "intersection-observer/edge-inclusive-intersection.html",
+    "intersection-observer/observer-attributes.html",
+    "intersection-observer/observer-exceptions.html"
+  ],
+  "baselinePassCount": 0
+}

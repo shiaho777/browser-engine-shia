@@ -1,0 +1,28 @@
+{
+  "name": "imported-webstorage",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "webstorage/defineProperty.window.html",
+    "webstorage/defineProperty.window.js",
+    "webstorage/event_constructor.window.html",
+    "webstorage/event_constructor.window.js",
+    "webstorage/event_initstorageevent.window.html",
+    "webstorage/event_initstorageevent.window.js",
+    "webstorage/event_session_oldvalue.html",
+    "webstorage/event_session_storagearea.html",
+    "webstorage/set.window.html",
+    "webstorage/set.window.js",
+    "webstorage/storage_enumerate.window.html",
+    "webstorage/storage_enumerate.window.js",
+    "webstorage/storage_local_setitem_quotaexceedederr.window.html",
+    "webstorage/storage_local_setitem_quotaexceedederr.window.js",
+    "webstorage/storage_session_setitem_quotaexceedederr.window.html",
+    "webstorage/storage_session_setitem_quotaexceedederr.window.js",
+    "webstorage/storage_session_window_open.window.html",
+    "webstorage/storage_session_window_open.window.js",
+    "webstorage/symbol-props.window.html",
+    "webstorage/symbol-props.window.js"
+  ],
+  "baselinePassCount": 0
+}

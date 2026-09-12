@@ -1,0 +1,19 @@
+{
+  "name": "imported-workers",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "workers/Worker_ErrorEvent_type.htm",
+    "workers/constructors/SharedWorker/setting-port-members.html",
+    "workers/constructors/Worker/same-origin.html",
+    "workers/data-url.html",
+    "workers/nested_worker.worker.html",
+    "workers/nested_worker_close_from_parent_worker.html",
+    "workers/nested_worker_close_self.worker.html",
+    "workers/nested_worker_importScripts.worker.html",
+    "workers/nested_worker_sync_xhr.worker.html",
+    "workers/nested_worker_terminate_from_document.html",
+    "workers/semantics/run-a-worker/003.html"
+  ],
+  "baselinePassCount": 0
+}

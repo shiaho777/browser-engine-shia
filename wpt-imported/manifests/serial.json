@@ -1,0 +1,10 @@
+{
+  "name": "imported-serial",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "serial/idlharness.https.any.html",
+    "serial/idlharness.https.any.js"
+  ],
+  "baselinePassCount": 0
+}

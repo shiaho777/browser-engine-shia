@@ -1,0 +1,11 @@
+{
+  "name": "imported-webxr",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "webxr/xrDevice_isSessionSupported_immersive_unsupported.https.html",
+    "webxr/xrDevice_isSessionSupported_inline.https.html",
+    "webxr/xrSession_end.https.html"
+  ],
+  "baselinePassCount": 0
+}

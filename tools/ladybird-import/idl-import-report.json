@@ -1,0 +1,3391 @@
+{
+  "generatedAt": "2026-09-07T08:07:00.720Z",
+  "source": "ladybird-master/Libraries/LibWeb (BSD-2-Clause)",
+  "files": {
+    "total": 665,
+    "parsed": 660,
+    "parseErrors": [
+      {
+        "file": "Geolocation/Geolocation.idl",
+        "error": "WebIDLParseError: Syntax error at line 8, since `interface Geolocation`:"
+      },
+      {
+        "file": "HTML/HTMLFormElement.idl",
+        "error": "WebIDLParseError: Syntax error at line 9, since `enum Autocomplete`:"
+      },
+      {
+        "file": "HTML/HTMLInputElement.idl",
+        "error": "WebIDLParseError: Syntax error at line 31, since `interface HTMLInputElement`:"
+      },
+      {
+        "file": "HTML/HTMLTextAreaElement.idl",
+        "error": "WebIDLParseError: Syntax error at line 15, since `interface HTMLTextAreaElement`:"
+      },
+      {
+        "file": "Internals/Internals.idl",
+        "error": "WebIDLParseError: Syntax error at line 33, since `interface Internals`:"
+      }
+    ]
+  },
+  "definitions": {
+    "total": 1309,
+    "interfacesConverted": 371,
+    "partialInterfacesMerged": 10,
+    "memberAdditionsOnExistingInterfaces": 71,
+    "skipped": {
+      "interface-mixin": 79,
+      "dictionary": 234,
+      "enum": 137,
+      "namespace": 4,
+      "typedef": 59,
+      "includes-statement": 153,
+      "callback": 35,
+      "callback-interface": 3,
+      "interface-without-expressible-members": 102
+    },
+    "skippedDetails": [
+      {
+        "reason": "interface-mixin",
+        "name": "ARIAMixin"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "Animatable"
+      },
+      {
+        "reason": "dictionary",
+        "name": "KeyframeAnimationOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GetAnimationsOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "AnimationPlayState"
+      },
+      {
+        "reason": "enum",
+        "name": "AnimationReplaceState"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "DocumentOrShadowRoot"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EffectTiming"
+      },
+      {
+        "reason": "dictionary",
+        "name": "OptionalEffectTiming"
+      },
+      {
+        "reason": "enum",
+        "name": "FillMode"
+      },
+      {
+        "reason": "enum",
+        "name": "PlaybackDirection"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ComputedEffectTiming"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AnimationPlaybackEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DocumentTimelineOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "CompositeOperation"
+      },
+      {
+        "reason": "enum",
+        "name": "CompositeOperationOrAuto"
+      },
+      {
+        "reason": "dictionary",
+        "name": "KeyframeEffectOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ScrollTimelineOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollAxis"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AnimationEventInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GlobalEventHandlers"
+      },
+      {
+        "reason": "namespace",
+        "name": "CSS"
+      },
+      {
+        "reason": "namespace",
+        "name": "CSS"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PropertyDefinition"
+      },
+      {
+        "reason": "namespace",
+        "name": "CSS"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollBehavior"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ScrollOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ScrollToOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CaretPositionFromPointOptions"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "DocumentOrShadowRoot"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollLogicalPosition"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ScrollIntoViewOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollIntoViewContainer"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CheckVisibilityOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CSSContainerCondition"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FunctionParameter"
+      },
+      {
+        "reason": "typedef",
+        "name": "CSSKeywordish"
+      },
+      {
+        "reason": "enum",
+        "name": "CSSMathOperator"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CSSMatrixComponentOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "CSSNumericBaseType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CSSNumericType"
+      },
+      {
+        "reason": "typedef",
+        "name": "CSSNumberish"
+      },
+      {
+        "reason": "typedef",
+        "name": "CSSPerspectiveValue"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CSSStyleProperties includes GeneratedCSSStyleProperties"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CSSStyleSheetInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "CSSUnparsedSegment"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "ElementCSSInlineStyle"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FontFaceDescriptors"
+      },
+      {
+        "reason": "enum",
+        "name": "FontFaceLoadStatus"
+      },
+      {
+        "reason": "enum",
+        "name": "FontFaceSetLoadStatus"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "FontFaceSource"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FontFaceSetLoadEventInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "LinkStyle"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaQueryListEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "OrientationType"
+      },
+      {
+        "reason": "enum",
+        "name": "OrientationLockType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TransitionEventInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GlobalEventHandlers"
+      },
+      {
+        "reason": "typedef",
+        "name": "ClipboardItems"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ClipboardUnsanitizedFormats"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ClipboardEventInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "ClipboardItemData"
+      },
+      {
+        "reason": "enum",
+        "name": "PresentationStyle"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ClipboardItemOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "CompressionFormat"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CompressionStream includes GenericTransformStream"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "DecompressionStream includes GenericTransformStream"
+      },
+      {
+        "reason": "enum",
+        "name": "SecurityPolicyViolationEventDisposition"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SecurityPolicyViolationEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CookieChangeEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CookieListItem"
+      },
+      {
+        "reason": "typedef",
+        "name": "CookieList"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CookieStoreGetOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "CookieSameSite"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CookieInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CookieStoreDeleteOptions"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CredentialUserData"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialData"
+      },
+      {
+        "reason": "enum",
+        "name": "CredentialMediationRequirement"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialRequestOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialCreationOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "FederatedCredential includes CredentialUserData"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FederatedCredentialRequestOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialRequestOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FederatedCredentialInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialCreationOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "PasswordCredential includes CredentialUserData"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialRequestOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PasswordCredentialData"
+      },
+      {
+        "reason": "typedef",
+        "name": "PasswordCredentialInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CredentialCreationOptions"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "enum",
+        "name": "KeyType"
+      },
+      {
+        "reason": "enum",
+        "name": "KeyUsage"
+      },
+      {
+        "reason": "typedef",
+        "name": "AlgorithmIdentifier"
+      },
+      {
+        "reason": "dictionary",
+        "name": "Algorithm"
+      },
+      {
+        "reason": "enum",
+        "name": "KeyFormat"
+      },
+      {
+        "reason": "dictionary",
+        "name": "RsaOtherPrimesInfo"
+      },
+      {
+        "reason": "dictionary",
+        "name": "JsonWebKey"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EncapsulatedKey"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EncapsulatedBits"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CharacterData includes ChildNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CharacterData includes NonDocumentTypeChildNode"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "ChildNode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CustomEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ElementCreationOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ImportNodeOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "DocumentReadyState"
+      },
+      {
+        "reason": "enum",
+        "name": "DocumentVisibilityState"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes DocumentOrShadowRoot"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes FontFaceSource"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes GlobalEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes NonElementParentNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes ParentNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "DocumentFragment includes ParentNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "DocumentFragment includes NonElementParentNode"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "DocumentOrShadowRoot"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "DocumentOrShadowRoot"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "DocumentType includes ChildNode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ShadowRootInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GetHTMLOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PointerLockOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes Animatable"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes ARIAMixin"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes ChildNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes NonDocumentTypeChildNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes ParentNode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Element includes Slottable"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EventInit"
+      },
+      {
+        "reason": "callback",
+        "name": "EventHandlerNonNull"
+      },
+      {
+        "reason": "typedef",
+        "name": "EventHandler"
+      },
+      {
+        "reason": "callback",
+        "name": "OnErrorEventHandlerNonNull"
+      },
+      {
+        "reason": "typedef",
+        "name": "OnErrorEventHandler"
+      },
+      {
+        "reason": "callback",
+        "name": "OnBeforeUnloadEventHandlerNonNull"
+      },
+      {
+        "reason": "typedef",
+        "name": "OnBeforeUnloadEventHandler"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GlobalEventHandlers"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowEventHandlers"
+      },
+      {
+        "reason": "callback-interface",
+        "name": "EventListener"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EventListenerOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AddEventListenerOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "MutationCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MutationObserverInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GetRootNodeOptions"
+      },
+      {
+        "reason": "callback-interface",
+        "name": "NodeFilter"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NonDocumentTypeChildNode"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NonElementParentNode"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "ParentNode"
+      },
+      {
+        "reason": "enum",
+        "name": "ShadowRootMode"
+      },
+      {
+        "reason": "enum",
+        "name": "SlotAssignmentMode"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "ShadowRoot includes DocumentOrShadowRoot"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "Slottable"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StaticRangeInit"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Text includes Slottable"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TextDecoderOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TextDecodeOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextDecoder includes TextDecoderCommon"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "TextDecoderCommon"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextDecoderStream includes TextDecoderCommon"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextDecoderStream includes GenericTransformStream"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TextEncoderEncodeIntoResult"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextEncoder includes TextEncoderCommon"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "TextEncoderCommon"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextEncoderStream includes TextEncoderCommon"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "TextEncoderStream includes GenericTransformStream"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaKeysRequirement"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaKeySystemConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaKeySystemMediaCapability"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaKeySessionType"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "Body"
+      },
+      {
+        "reason": "typedef",
+        "name": "XMLHttpRequestBodyInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "BodyInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "typedef",
+        "name": "HeadersInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "RequestInfo"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Request includes Body"
+      },
+      {
+        "reason": "dictionary",
+        "name": "RequestInit"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestDestination"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestMode"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestCredentials"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestCache"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestRedirect"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestDuplex"
+      },
+      {
+        "reason": "enum",
+        "name": "RequestPriority"
+      },
+      {
+        "reason": "enum",
+        "name": "ReferrerPolicy"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Response includes Body"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ResponseInit"
+      },
+      {
+        "reason": "enum",
+        "name": "ResponseType"
+      },
+      {
+        "reason": "enum",
+        "name": "EndingType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "BlobPropertyBag"
+      },
+      {
+        "reason": "typedef",
+        "name": "BlobPart"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FilePropertyBag"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "DocumentOrShadowRoot"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GlobalPrivacyControl"
+      },
+      {
+        "reason": "enum",
+        "name": "GamepadMappingType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GamepadEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "GamepadHapticsResult"
+      },
+      {
+        "reason": "enum",
+        "name": "GamepadHapticEffectType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GamepadEffectParameters"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DOMMatrix2DInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DOMMatrixInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DOMPointInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DOMQuadInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DOMRectInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "AbstractWorker"
+      },
+      {
+        "reason": "callback",
+        "name": "FrameRequestCallback"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "AnimationFrameProvider"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasCompositing"
+      },
+      {
+        "reason": "typedef",
+        "name": "CanvasImageSource"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasDrawImage"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasFillRule"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasDrawPath"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasFillStrokeStyles"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasFilters"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasImageData"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasImageSmoothing"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasPath"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasPathDrawingStyles"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasRect"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasSettings"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasShadowStyles"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasState"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasText"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasFontKerning"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasFontStretch"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasFontVariantCaps"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasTextRendering"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasTextDrawingStyles"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasTransform"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "CanvasUserInterface"
+      },
+      {
+        "reason": "typedef",
+        "name": "OffscreenRenderingContext"
+      },
+      {
+        "reason": "enum",
+        "name": "ImageSmoothingQuality"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasLineCap"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasLineJoin"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasTextAlign"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasTextBaseline"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasDirection"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasSettings"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasState"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasTransform"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasCompositing"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasImageSmoothing"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasFillStrokeStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasShadowStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasFilters"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasRect"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasDrawPath"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasUserInterface"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasText"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasDrawImage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasImageData"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasPathDrawingStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasTextDrawingStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "CanvasRenderingContext2D includes CanvasPath"
+      },
+      {
+        "reason": "enum",
+        "name": "CanvasColorType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CanvasRenderingContext2DSettings"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CloseEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CloseWatcherOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CommandEventInit"
+      },
+      {
+        "reason": "callback",
+        "name": "CustomElementConstructor"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ElementDefinitionOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "DOMParserSupportedType"
+      },
+      {
+        "reason": "callback",
+        "name": "FunctionStringCallback"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "DedicatedWorkerGlobalScope includes AnimationFrameProvider"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DragEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ValidityStateFlags"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ErrorEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EventSourceInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FormDataEventInit"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLAnchorElement includes HyperlinkElementUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLAnchorElement includes HTMLHyperlinkElementUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLAreaElement includes HyperlinkElementUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLAreaElement includes HTMLHyperlinkElementUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLBodyElement includes WindowEventHandlers"
+      },
+      {
+        "reason": "enum",
+        "name": "ButtonTypeState"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLButtonElement includes PopoverTargetAttributes"
+      },
+      {
+        "reason": "typedef",
+        "name": "RenderingContext"
+      },
+      {
+        "reason": "callback",
+        "name": "BlobCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "ClosedByAttribute"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FocusOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ShowPopoverOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TogglePopoverOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLElement includes GlobalEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLElement includes ElementContentEditable"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLElement includes HTMLOrSVGOrMathMLElement"
+      },
+      {
+        "reason": "enum",
+        "name": "EnterKeyHint"
+      },
+      {
+        "reason": "enum",
+        "name": "InputMode"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "ElementContentEditable"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLElement includes ElementCSSInlineStyle"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLFrameSetElement includes WindowEventHandlers"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "HTMLHyperlinkElementUtils"
+      },
+      {
+        "reason": "enum",
+        "name": "Decoding"
+      },
+      {
+        "reason": "enum",
+        "name": "PotentialDestination"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLLinkElement includes LinkStyle"
+      },
+      {
+        "reason": "enum",
+        "name": "Preload"
+      },
+      {
+        "reason": "enum",
+        "name": "CanPlayTypeResult"
+      },
+      {
+        "reason": "typedef",
+        "name": "MediaProvider"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "HTMLOrSVGOrMathMLElement"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AssignedNodesOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "HTMLStyleElement includes LinkStyle"
+      },
+      {
+        "reason": "enum",
+        "name": "ScopeAttribute"
+      },
+      {
+        "reason": "enum",
+        "name": "TrackKindAttribute"
+      },
+      {
+        "reason": "dictionary",
+        "name": "HashChangeEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollRestoration"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "HyperlinkElementUtils"
+      },
+      {
+        "reason": "typedef",
+        "name": "ImageBitmapSource"
+      },
+      {
+        "reason": "enum",
+        "name": "ImageOrientation"
+      },
+      {
+        "reason": "enum",
+        "name": "PremultiplyAlpha"
+      },
+      {
+        "reason": "enum",
+        "name": "ColorSpaceConversion"
+      },
+      {
+        "reason": "enum",
+        "name": "ResizeQuality"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ImageBitmapOptions"
+      },
+      {
+        "reason": "typedef",
+        "name": "ImageDataArray"
+      },
+      {
+        "reason": "enum",
+        "name": "ImageDataPixelFormat"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ImageDataSettings"
+      },
+      {
+        "reason": "typedef",
+        "name": "MessageEventSource"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MessageEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StructuredSerializeOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigateEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationInterceptOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "NavigationFocusReset"
+      },
+      {
+        "reason": "enum",
+        "name": "NavigationScrollBehavior"
+      },
+      {
+        "reason": "callback",
+        "name": "NavigationInterceptHandler"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationUpdateCurrentEntryOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationNavigateOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationReloadOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationResult"
+      },
+      {
+        "reason": "enum",
+        "name": "NavigationHistoryBehavior"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NavigationCurrentEntryChangeEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "NavigationType"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorContentUtils"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorCookies"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorPlugins"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorAutomationInformation"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes GlobalPrivacyControl"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorID"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorLanguage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorOnLine"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorContentUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorCookies"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorPlugins"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorConcurrentHardware"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorAutomationInformation"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorStorage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorLocks"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes NavigatorDeviceMemory"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorConcurrentHardware"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorDeviceMemory"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorID"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorLanguage"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorOnLine"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ImageEncodeOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "OffscreenRenderingContextId"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasSettings"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasState"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasTransform"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasCompositing"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasImageSmoothing"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasFillStrokeStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasShadowStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasFilters"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasRect"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasDrawPath"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasText"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasDrawImage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasImageData"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasPathDrawingStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasTextDrawingStyles"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "OffscreenCanvasRenderingContext2D includes CanvasPath"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PageSwapEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PageTransitionEventInit"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Path2D includes CanvasPath"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PopStateEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "PopoverTargetActionAttribute"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "PopoverTargetAttributes"
+      },
+      {
+        "reason": "enum",
+        "name": "PredefinedColorSpace"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PromiseRejectionEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "CORSSettingsAttribute"
+      },
+      {
+        "reason": "enum",
+        "name": "LazyLoadingAttribute"
+      },
+      {
+        "reason": "enum",
+        "name": "FetchPriorityAttribute"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SharedWorkerOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SharedWorker includes AbstractWorker"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StorageEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SubmitEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "TextTrackMode"
+      },
+      {
+        "reason": "enum",
+        "name": "TextTrackKind"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ToggleEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TrackEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WindowPostMessageOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes AnimationFrameProvider"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes GlobalEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes WindowEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes WindowLocalStorage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Window includes WindowSessionStorage"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowLocalStorage"
+      },
+      {
+        "reason": "typedef",
+        "name": "TimerHandler"
+      },
+      {
+        "reason": "callback",
+        "name": "VoidFunction"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowSessionStorage"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WorkerOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "WorkerType"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Worker includes AbstractWorker"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerGlobalScope includes FontFaceSource"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerGlobalScope includes WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Navigator includes GlobalPrivacyControl"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorID"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorLanguage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorOnLine"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorConcurrentHardware"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorStorage"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorLocks"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WorkerNavigator includes NavigatorDeviceMemory"
+      },
+      {
+        "reason": "typedef",
+        "name": "DOMHighResTimeStamp"
+      },
+      {
+        "reason": "typedef",
+        "name": "EpochTimeStamp"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "typedef",
+        "name": "PerformanceEntryList"
+      },
+      {
+        "reason": "enum",
+        "name": "IDBCursorDirection"
+      },
+      {
+        "reason": "enum",
+        "name": "IDBTransactionDurability"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBTransactionOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBObjectStoreParameters"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBDatabaseInfo"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBIndexParameters"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBGetAllOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "IDBRequestReadyState"
+      },
+      {
+        "reason": "enum",
+        "name": "IDBTransactionMode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IDBVersionChangeEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FakeXRDeviceInit"
+      },
+      {
+        "reason": "callback",
+        "name": "IntersectionObserverCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IntersectionObserverInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IntersectionObserverEntryInit"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "MathMLAnchorElement includes HyperlinkElementUtils"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "MathMLElement includes GlobalEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "MathMLElement includes HTMLOrSVGOrMathMLElement"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "MathMLElement includes ElementCSSInlineStyle"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaDecodingConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaEncodingConfiguration"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaDecodingType"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaEncodingType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "VideoConfiguration"
+      },
+      {
+        "reason": "enum",
+        "name": "HdrMetadataType"
+      },
+      {
+        "reason": "enum",
+        "name": "ColorGamut"
+      },
+      {
+        "reason": "enum",
+        "name": "TransferFunction"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaCapabilitiesKeySystemConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "KeySystemTrackConfiguration"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaCapabilitiesInfo"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaCapabilitiesDecodingInfo"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaCapabilitiesEncodingInfo"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaDeviceKind"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstrainDOMStringParameters"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DoubleRange"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstrainDoubleRange"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ULongRange"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstrainULongRange"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstrainBooleanParameters"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstrainBooleanOrDOMStringParameters"
+      },
+      {
+        "reason": "typedef",
+        "name": "ConstrainULong"
+      },
+      {
+        "reason": "typedef",
+        "name": "ConstrainDouble"
+      },
+      {
+        "reason": "typedef",
+        "name": "ConstrainBoolean"
+      },
+      {
+        "reason": "typedef",
+        "name": "ConstrainDOMString"
+      },
+      {
+        "reason": "typedef",
+        "name": "ConstrainBooleanOrDOMString"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaTrackConstraintSet"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaTrackConstraints"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaStreamConstraints"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaTrackSupportedConstraints"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaTrackCapabilities"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaTrackSettings"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaStreamTrackState"
+      },
+      {
+        "reason": "enum",
+        "name": "MediaStreamTrackKind"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaStreamTrackEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "BufferedChangeEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "ReadyState"
+      },
+      {
+        "reason": "enum",
+        "name": "EndOfStreamError"
+      },
+      {
+        "reason": "enum",
+        "name": "AppendMode"
+      },
+      {
+        "reason": "enum",
+        "name": "NavigationTimingType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NotificationOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "NotificationPermission"
+      },
+      {
+        "reason": "enum",
+        "name": "NotificationDirection"
+      },
+      {
+        "reason": "dictionary",
+        "name": "NotificationAction"
+      },
+      {
+        "reason": "callback",
+        "name": "NotificationPermissionCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PerformanceObserverCallbackOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "PerformanceObserverCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PerformanceObserverInit"
+      },
+      {
+        "reason": "enum",
+        "name": "PermissionState"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PermissionDescriptor"
+      },
+      {
+        "reason": "dictionary",
+        "name": "IdleRequestOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "IdleRequestCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "ResizeObserverBoxOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ResizeObserverOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "ResizeObserverCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "RenderBlockingStatusType"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGAElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGElement includes GlobalEventHandlers"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGElement includes HTMLOrSVGOrMathMLElement"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGElement includes ElementCSSInlineStyle"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEBlendElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEColorMatrixElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEComponentTransferElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFECompositeElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEDisplacementMapElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEDropShadowElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEFloodElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEGaussianBlurElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEImageElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEImageElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEMergeElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEMorphologyElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFEOffsetElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFETurbulenceElement includes SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGFilterElement includes SVGURIReference"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "SVGFilterPrimitiveStandardAttributes"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "SVGFitToViewBox"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGGradientElement includes SVGURIReference"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SVGBoundingBoxOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGImageElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGPatternElement includes SVGFitToViewBox"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGPatternElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGSVGElement includes SVGFitToViewBox"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGScriptElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGStyleElement includes LinkStyle"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGSymbolElement includes SVGFitToViewBox"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGTextPathElement includes SVGURIReference"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGUseElement includes SVGURIReference"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "SVGViewElement includes SVGFitToViewBox"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialPortFilter"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialPortRequestOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialOutputSignals"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialInputSignals"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SerialPortInfo"
+      },
+      {
+        "reason": "enum",
+        "name": "ParityType"
+      },
+      {
+        "reason": "enum",
+        "name": "FlowControlType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CacheQueryOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MultiCacheQueryOptions"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "ServiceWorker includes AbstractWorker"
+      },
+      {
+        "reason": "enum",
+        "name": "ServiceWorkerState"
+      },
+      {
+        "reason": "dictionary",
+        "name": "RegistrationOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "ServiceWorkerUpdateViaCache"
+      },
+      {
+        "reason": "dictionary",
+        "name": "SpeechRecognitionEventInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorStorage"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StorageEstimate"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GenericTransformStream"
+      },
+      {
+        "reason": "callback",
+        "name": "QueuingStrategySize"
+      },
+      {
+        "reason": "dictionary",
+        "name": "QueuingStrategy"
+      },
+      {
+        "reason": "dictionary",
+        "name": "QueuingStrategyInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ReadableWritablePair"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StreamPipeOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "ReadableStreamReaderMode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ReadableStreamGetReaderOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ReadableStreamIteratorOptions"
+      },
+      {
+        "reason": "typedef",
+        "name": "ReadableStreamReader"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "ReadableStreamBYOBReader includes ReadableStreamGenericReader"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ReadableStreamBYOBReaderReadOptions"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "ReadableStreamDefaultReader includes ReadableStreamGenericReader"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ReadableStreamReadResult"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "ReadableStreamGenericReader"
+      },
+      {
+        "reason": "dictionary",
+        "name": "Transformer"
+      },
+      {
+        "reason": "callback",
+        "name": "TransformerStartCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "TransformerFlushCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "TransformerTransformCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "TransformerCancelCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "UnderlyingSink"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSinkStartCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSinkWriteCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSinkCloseCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSinkAbortCallback"
+      },
+      {
+        "reason": "dictionary",
+        "name": "UnderlyingSource"
+      },
+      {
+        "reason": "typedef",
+        "name": "ReadableStreamController"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSourceStartCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSourcePullCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "UnderlyingSourceCancelCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "ReadableStreamType"
+      },
+      {
+        "reason": "typedef",
+        "name": "TrustedType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TrustedTypePolicyOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "CreateHTMLCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "CreateScriptCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "CreateScriptURLCallback"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WindowOrWorkerGlobalScope"
+      },
+      {
+        "reason": "dictionary",
+        "name": "CompositionEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "EventModifierInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "FocusEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "InputEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "KeyboardEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MouseEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PointerEventInit"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "GlobalEventHandlers"
+      },
+      {
+        "reason": "dictionary",
+        "name": "UIEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WheelEventInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "URLPatternInput"
+      },
+      {
+        "reason": "dictionary",
+        "name": "URLPatternInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "URLPatternOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "URLPatternResult"
+      },
+      {
+        "reason": "dictionary",
+        "name": "URLPatternComponentResult"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PerformanceMarkOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PerformanceMeasureOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "ViewTransitionUpdateCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "ValueType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GlobalDescriptor"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MemoryDescriptor"
+      },
+      {
+        "reason": "enum",
+        "name": "ImportExportKind"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ModuleExportDescriptor"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ModuleImportDescriptor"
+      },
+      {
+        "reason": "enum",
+        "name": "AddressType"
+      },
+      {
+        "reason": "typedef",
+        "name": "AddressValue"
+      },
+      {
+        "reason": "enum",
+        "name": "TableKind"
+      },
+      {
+        "reason": "dictionary",
+        "name": "TableDescriptor"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WebAssemblyInstantiatedSource"
+      },
+      {
+        "reason": "namespace",
+        "name": "WebAssembly"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AnalyserOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioBufferOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioBufferSourceOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "AudioContextLatencyCategory"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioContextOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioTimestamp"
+      },
+      {
+        "reason": "enum",
+        "name": "ChannelCountMode"
+      },
+      {
+        "reason": "enum",
+        "name": "ChannelInterpretation"
+      },
+      {
+        "reason": "dictionary",
+        "name": "AudioNodeOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "AutomationRate"
+      },
+      {
+        "reason": "enum",
+        "name": "AudioContextState"
+      },
+      {
+        "reason": "callback",
+        "name": "DecodeErrorCallback"
+      },
+      {
+        "reason": "callback",
+        "name": "DecodeSuccessCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "BiquadFilterType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "BiquadFilterOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ChannelMergerOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ChannelSplitterOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ConstantSourceOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DelayOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "DynamicsCompressorOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "GainOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "MediaElementAudioSourceOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "OfflineAudioCompletionEventInit"
+      },
+      {
+        "reason": "dictionary",
+        "name": "OfflineAudioContextOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "OscillatorType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "OscillatorOptions"
+      },
+      {
+        "reason": "enum",
+        "name": "PanningModelType"
+      },
+      {
+        "reason": "enum",
+        "name": "DistanceModelType"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PannerOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PeriodicWaveConstraints"
+      },
+      {
+        "reason": "dictionary",
+        "name": "PeriodicWaveOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "StereoPannerOptions"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLenum"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLboolean"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLbitfield"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLint"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLsizei"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLintptr"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLuint"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLsizeiptr"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLfloat"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLclampf"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLint64"
+      },
+      {
+        "reason": "typedef",
+        "name": "GLuint64"
+      },
+      {
+        "reason": "typedef",
+        "name": "Float32List"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WebGL2RenderingContext includes WebGLRenderingContextBase"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WebGL2RenderingContext includes WebGL2RenderingContextBase"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WebGL2RenderingContext includes WebGL2RenderingContextOverloads"
+      },
+      {
+        "reason": "typedef",
+        "name": "Uint32List"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WebGL2RenderingContextBase"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WebGL2RenderingContextOverloads"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WebGLContextEventInit"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WebGLRenderingContext includes WebGLRenderingContextBase"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "WebGLRenderingContext includes WebGLRenderingContextOverloads"
+      },
+      {
+        "reason": "enum",
+        "name": "WebGLPowerPreference"
+      },
+      {
+        "reason": "dictionary",
+        "name": "WebGLContextAttributes"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WebGLRenderingContextBase"
+      },
+      {
+        "reason": "typedef",
+        "name": "TexImageSource"
+      },
+      {
+        "reason": "typedef",
+        "name": "Int32List"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "WebGLRenderingContextOverloads"
+      },
+      {
+        "reason": "typedef",
+        "name": "ArrayBufferView"
+      },
+      {
+        "reason": "typedef",
+        "name": "BufferSource"
+      },
+      {
+        "reason": "callback",
+        "name": "Function"
+      },
+      {
+        "reason": "dictionary",
+        "name": "QuotaExceededErrorOptions"
+      },
+      {
+        "reason": "callback",
+        "name": "LockGrantedCallback"
+      },
+      {
+        "reason": "enum",
+        "name": "LockMode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "LockOptions"
+      },
+      {
+        "reason": "dictionary",
+        "name": "LockManagerSnapshot"
+      },
+      {
+        "reason": "dictionary",
+        "name": "LockInfo"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "NavigatorLocks"
+      },
+      {
+        "reason": "enum",
+        "name": "BinaryType"
+      },
+      {
+        "reason": "enum",
+        "name": "AutoKeyword"
+      },
+      {
+        "reason": "typedef",
+        "name": "LineAndPositionSetting"
+      },
+      {
+        "reason": "enum",
+        "name": "DirectionSetting"
+      },
+      {
+        "reason": "enum",
+        "name": "LineAlignSetting"
+      },
+      {
+        "reason": "enum",
+        "name": "PositionAlignSetting"
+      },
+      {
+        "reason": "enum",
+        "name": "AlignSetting"
+      },
+      {
+        "reason": "enum",
+        "name": "ScrollSetting"
+      },
+      {
+        "reason": "dictionary",
+        "name": "XRRenderStateInit"
+      },
+      {
+        "reason": "enum",
+        "name": "XRVisibilityState"
+      },
+      {
+        "reason": "dictionary",
+        "name": "XRSessionEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "XRSessionMode"
+      },
+      {
+        "reason": "dictionary",
+        "name": "XRSessionInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "XRWebGLRenderingContext"
+      },
+      {
+        "reason": "dictionary",
+        "name": "XRWebGLLayerInit"
+      },
+      {
+        "reason": "typedef",
+        "name": "FormDataEntryValue"
+      },
+      {
+        "reason": "dictionary",
+        "name": "ProgressEventInit"
+      },
+      {
+        "reason": "enum",
+        "name": "XMLHttpRequestResponseType"
+      },
+      {
+        "reason": "interface-mixin",
+        "name": "XPathEvaluatorBase"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "Document includes XPathEvaluatorBase"
+      },
+      {
+        "reason": "includes-statement",
+        "name": "XPathEvaluator includes XPathEvaluatorBase"
+      },
+      {
+        "reason": "callback-interface",
+        "name": "XPathNSResolver"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "AnimationPlaybackEvent"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CDATASection"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSFontFeatureValuesMap"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSImageValue"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSLayerStatementRule"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSPerspective"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSScale"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CSSStyleValue"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Cache"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CacheStorage"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "ChannelMergerNode"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "ChannelSplitterNode"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Clipboard"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Comment"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CompressionStream"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CookieChangeEvent"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CredentialsContainer"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "CustomStateSet"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "DOMParser"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "DOMStringMap"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "DecompressionStream"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "DocumentFragment"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "DocumentTimeline"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "EXTBlendMinMax"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "EXTColorBufferFloat"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "EXTRenderSnorm"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "EXTTextureFilterAnisotropic"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "EXTTextureNorm16"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "FakeXRDevice"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "FontFaceSetLoadEvent"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "GamepadHapticActuator"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Global"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLAudioElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLDocument"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLFormControlsCollection"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLHeadElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLPictureElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLQuoteElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLSelectedContentElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLSpanElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "HTMLUnknownElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Instance"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "LockManager"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "MathMLElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "MediaCapabilities"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "MediaSourceHandle"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Module"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "OESElementIndexUint"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "OESStandardDerivatives"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "PeriodicWave"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Permissions"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGDefsElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGDescElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEFloodElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEFuncAElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEFuncBElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEFuncGElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEFuncRElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGFEMergeElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGGElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGMetadataElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGPathElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGPolygonElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGPolylineElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGSwitchElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGSymbolElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGTSpanElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGTextElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGTitleElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGUnitTypes"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SVGViewElement"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "StaticRange"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "StorageManager"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "SubtleCrypto"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "Table"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "TextDecoder"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "TextDecoderStream"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "TextEncoderStream"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "TrackEvent"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGL2RenderingContext"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLBuffer"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLCompressedTextureS3tc"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLCompressedTextureS3tcSrgb"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLDebugRendererInfo"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLFramebuffer"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLProgram"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLQuery"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLRenderbuffer"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLRenderingContext"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLSampler"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLShader"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLSync"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLTexture"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLTransformFeedback"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLUniformLocation"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLVertexArrayObject"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WebGLVertexArrayObjectOES"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "WorkletGlobalScope"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "XMLDocument"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "XMLHttpRequestUpload"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "XPathEvaluator"
+      },
+      {
+        "reason": "interface-without-expressible-members",
+        "name": "XRLayer"
+      }
+    ]
+  },
+  "members": {
+    "converted": 2594,
+    "additionsConverted": 472,
+    "dropped": 378,
+    "skipped": {
+      "constructor": 244,
+      "inexpressible-type": 156,
+      "extended-attribute": 245,
+      "extended-attribute (partial)": 34,
+      "maplike": 1,
+      "special-operation:getter": 43,
+      "iterable": 10,
+      "static-member": 44,
+      "constant": 266,
+      "special-operation:setter": 9,
+      "setlike": 2,
+      "static-member (partial)": 2,
+      "special-operation:getter (partial)": 1,
+      "inexpressible-type (partial)": 10,
+      "special-operation:deleter": 2
+    }
+  },
+  "topAdditions": [
+    {
+      "interface": "Document",
+      "addedMembers": 68
+    },
+    {
+      "interface": "Element",
+      "addedMembers": 31
+    },
+    {
+      "interface": "Window",
+      "addedMembers": 27
+    },
+    {
+      "interface": "HTMLElement",
+      "addedMembers": 22
+    },
+    {
+      "interface": "HTMLObjectElement",
+      "addedMembers": 19
+    },
+    {
+      "interface": "HTMLTableElement",
+      "addedMembers": 19
+    },
+    {
+      "interface": "Range",
+      "addedMembers": 16
+    },
+    {
+      "interface": "HTMLSelectElement",
+      "addedMembers": 15
+    },
+    {
+      "interface": "Selection",
+      "addedMembers": 15
+    },
+    {
+      "interface": "HTMLButtonElement",
+      "addedMembers": 12
+    },
+    {
+      "interface": "HTMLImageElement",
+      "addedMembers": 12
+    },
+    {
+      "interface": "Event",
+      "addedMembers": 11
+    },
+    {
+      "interface": "Navigator",
+      "addedMembers": 11
+    },
+    {
+      "interface": "Performance",
+      "addedMembers": 11
+    },
+    {
+      "interface": "HTMLLinkElement",
+      "addedMembers": 10
+    },
+    {
+      "interface": "HTMLAnchorElement",
+      "addedMembers": 9
+    },
+    {
+      "interface": "HTMLOutputElement",
+      "addedMembers": 9
+    },
+    {
+      "interface": "HTMLTableCellElement",
+      "addedMembers": 9
+    },
+    {
+      "interface": "PointerEvent",
+      "addedMembers": 9
+    },
+    {
+      "interface": "HTMLIFrameElement",
+      "addedMembers": 8
+    }
+  ],
+  "typedefsResolved": {
+    "DOMHighResTimeStamp": "double",
+    "EpochTimeStamp": "unsigned long long",
+    "EventHandler": "EventHandlerNonNull",
+    "GLboolean": "boolean",
+    "GLenum": "unsigned long",
+    "GLint": "long",
+    "GLintptr": "long long",
+    "GLsizei": "long",
+    "GLuint": "unsigned long",
+    "ImageDataArray": "Uint8ClampedArray",
+    "OnErrorEventHandler": "OnErrorEventHandlerNonNull",
+    "PerformanceEntryList": "sequence<PerformanceEntry>"
+  }
+}

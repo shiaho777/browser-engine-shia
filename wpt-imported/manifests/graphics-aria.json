@@ -1,0 +1,9 @@
+{
+  "name": "imported-graphics-aria",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "graphics-aria/graphics-roles.html"
+  ],
+  "baselinePassCount": 0
+}

@@ -1,0 +1,10 @@
+{
+  "name": "imported-input-events",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "input-events/idlharness.window.html",
+    "input-events/idlharness.window.js"
+  ],
+  "baselinePassCount": 0
+}

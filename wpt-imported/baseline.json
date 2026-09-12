@@ -1,0 +1,577 @@
+{
+  "generated": "2026-09-10T16:17:02.401Z",
+  "source": "Ladybird vendored WPT (ladybird-master/Tests/LibWeb/Text/input/wpt-import)",
+  "license": "BSD-2-Clause (Ladybird); WPT itself is BSD (see wpt-imported/wpt/LICENSE.md)",
+  "note": "Baseline measurement of the from-scratch engine against the imported WPT corpus. Not a CI gate: most tests fail/error because the engine is partial. Failed tests are recorded, never deleted.",
+  "escapedRejections": 135,
+  "escapedExceptions": 4,
+  "totals": {
+    "files": 3918,
+    "subtests": 82004,
+    "passed": 14681,
+    "failed": 20580,
+    "errored": 46743
+  },
+  "manifests": {
+    "imported-FileAPI": {
+      "owner": "guest",
+      "files": 8,
+      "subtests": 78,
+      "passed": 0,
+      "failed": 0,
+      "errored": 78
+    },
+    "imported-IndexedDB": {
+      "owner": "guest",
+      "files": 97,
+      "subtests": 754,
+      "passed": 5,
+      "failed": 31,
+      "errored": 718
+    },
+    "imported-WebCryptoAPI": {
+      "owner": "guest",
+      "files": 150,
+      "subtests": 139,
+      "passed": 2,
+      "failed": 0,
+      "errored": 137
+    },
+    "imported-accname": {
+      "owner": "guest",
+      "files": 13,
+      "subtests": 447,
+      "passed": 0,
+      "failed": 0,
+      "errored": 447
+    },
+    "imported-battery-status": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 1,
+      "passed": 0,
+      "failed": 0,
+      "errored": 1
+    },
+    "imported-clipboard-apis": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 17,
+      "passed": 0,
+      "failed": 0,
+      "errored": 17
+    },
+    "imported-compat": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 52,
+      "passed": 1,
+      "failed": 51,
+      "errored": 0
+    },
+    "imported-compression": {
+      "owner": "guest",
+      "files": 36,
+      "subtests": 306,
+      "passed": 4,
+      "failed": 10,
+      "errored": 292
+    },
+    "imported-content-security-policy": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-cookies": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 1,
+      "passed": 0,
+      "failed": 0,
+      "errored": 1
+    },
+    "imported-cors": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-credential-management": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 23,
+      "passed": 0,
+      "failed": 0,
+      "errored": 23
+    },
+    "imported-css": {
+      "owner": "cascade",
+      "files": 2038,
+      "subtests": 58224,
+      "passed": 8164,
+      "failed": 16093,
+      "errored": 33967
+    },
+    "imported-custom-elements": {
+      "owner": "guest",
+      "files": 71,
+      "subtests": 2490,
+      "passed": 3,
+      "failed": 21,
+      "errored": 2466
+    },
+    "imported-dom": {
+      "owner": "guest",
+      "files": 143,
+      "subtests": 1377,
+      "passed": 548,
+      "failed": 485,
+      "errored": 344
+    },
+    "imported-domparsing": {
+      "owner": "guest",
+      "files": 8,
+      "subtests": 69,
+      "passed": 3,
+      "failed": 5,
+      "errored": 61
+    },
+    "imported-domxpath": {
+      "owner": "guest",
+      "files": 29,
+      "subtests": 77,
+      "passed": 4,
+      "failed": 0,
+      "errored": 73
+    },
+    "imported-ecmascript": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 17,
+      "passed": 17,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-editing": {
+      "owner": "guest",
+      "files": 7,
+      "subtests": 49,
+      "passed": 0,
+      "failed": 0,
+      "errored": 49
+    },
+    "imported-encoding-detection": {
+      "owner": "guest",
+      "files": 44,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-encoding": {
+      "owner": "guest",
+      "files": 41,
+      "subtests": 1253,
+      "passed": 3,
+      "failed": 171,
+      "errored": 1079
+    },
+    "imported-fetch": {
+      "owner": "guest",
+      "files": 30,
+      "subtests": 188,
+      "passed": 2,
+      "failed": 34,
+      "errored": 152
+    },
+    "imported-fullscreen": {
+      "owner": "guest",
+      "files": 67,
+      "subtests": 146,
+      "passed": 85,
+      "failed": 6,
+      "errored": 55
+    },
+    "imported-gamepad": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-geolocation": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-graphics-aria": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 3,
+      "passed": 0,
+      "failed": 0,
+      "errored": 3
+    },
+    "imported-hr-time": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 2,
+      "passed": 0,
+      "failed": 2,
+      "errored": 0
+    },
+    "imported-html-aam": {
+      "owner": "guest",
+      "files": 11,
+      "subtests": 266,
+      "passed": 0,
+      "failed": 0,
+      "errored": 266
+    },
+    "imported-html": {
+      "owner": "guest",
+      "files": 579,
+      "subtests": 4092,
+      "passed": 141,
+      "failed": 2163,
+      "errored": 1788
+    },
+    "imported-inert": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 1,
+      "passed": 0,
+      "failed": 0,
+      "errored": 1
+    },
+    "imported-infrastructure": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 3,
+      "passed": 0,
+      "failed": 0,
+      "errored": 3
+    },
+    "imported-input-events": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-intersection-observer": {
+      "owner": "guest",
+      "files": 4,
+      "subtests": 10,
+      "passed": 6,
+      "failed": 3,
+      "errored": 1
+    },
+    "imported-media-capabilities": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 66,
+      "passed": 0,
+      "failed": 0,
+      "errored": 66
+    },
+    "imported-media-source": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 55,
+      "passed": 0,
+      "failed": 0,
+      "errored": 55
+    },
+    "imported-mediacapture-streams": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-navigation-api": {
+      "owner": "guest",
+      "files": 16,
+      "subtests": 18,
+      "passed": 0,
+      "failed": 4,
+      "errored": 14
+    },
+    "imported-notifications": {
+      "owner": "guest",
+      "files": 4,
+      "subtests": 5,
+      "passed": 0,
+      "failed": 1,
+      "errored": 4
+    },
+    "imported-page-visibility": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-permissions": {
+      "owner": "guest",
+      "files": 6,
+      "subtests": 21,
+      "passed": 0,
+      "failed": 0,
+      "errored": 21
+    },
+    "imported-png": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-pointerevents": {
+      "owner": "guest",
+      "files": 6,
+      "subtests": 35,
+      "passed": 5,
+      "failed": 24,
+      "errored": 6
+    },
+    "imported-quirks": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-resize-observer": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 1,
+      "passed": 0,
+      "failed": 1,
+      "errored": 0
+    },
+    "imported-scroll-animations": {
+      "owner": "guest",
+      "files": 48,
+      "subtests": 788,
+      "passed": 126,
+      "failed": 185,
+      "errored": 477
+    },
+    "imported-selection": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 7,
+      "passed": 0,
+      "failed": 0,
+      "errored": 7
+    },
+    "imported-serial": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-service-workers": {
+      "owner": "guest",
+      "files": 18,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-shadow-dom": {
+      "owner": "guest",
+      "files": 14,
+      "subtests": 765,
+      "passed": 3,
+      "failed": 54,
+      "errored": 708
+    },
+    "imported-speech-api": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 0,
+      "passed": 0,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-storage": {
+      "owner": "guest",
+      "files": 4,
+      "subtests": 6,
+      "passed": 0,
+      "failed": 0,
+      "errored": 6
+    },
+    "imported-streams": {
+      "owner": "guest",
+      "files": 52,
+      "subtests": 1131,
+      "passed": 410,
+      "failed": 142,
+      "errored": 579
+    },
+    "imported-svg-aam": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 31,
+      "passed": 0,
+      "failed": 0,
+      "errored": 31
+    },
+    "imported-svg": {
+      "owner": "guest",
+      "files": 27,
+      "subtests": 305,
+      "passed": 58,
+      "failed": 15,
+      "errored": 232
+    },
+    "imported-trusted-types": {
+      "owner": "guest",
+      "files": 57,
+      "subtests": 135,
+      "passed": 10,
+      "failed": 10,
+      "errored": 115
+    },
+    "imported-uievents": {
+      "owner": "guest",
+      "files": 1,
+      "subtests": 4,
+      "passed": 4,
+      "failed": 0,
+      "errored": 0
+    },
+    "imported-url": {
+      "owner": "guest",
+      "files": 36,
+      "subtests": 5130,
+      "passed": 4144,
+      "failed": 816,
+      "errored": 170
+    },
+    "imported-urlpattern": {
+      "owner": "guest",
+      "files": 2,
+      "subtests": 740,
+      "passed": 2,
+      "failed": 88,
+      "errored": 650
+    },
+    "imported-user-timing": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 4,
+      "passed": 0,
+      "failed": 0,
+      "errored": 4
+    },
+    "imported-wai-aria": {
+      "owner": "guest",
+      "files": 27,
+      "subtests": 253,
+      "passed": 0,
+      "failed": 0,
+      "errored": 253
+    },
+    "imported-wasm": {
+      "owner": "guest",
+      "files": 32,
+      "subtests": 1346,
+      "passed": 896,
+      "failed": 6,
+      "errored": 444
+    },
+    "imported-web-animations": {
+      "owner": "guest",
+      "files": 11,
+      "subtests": 464,
+      "passed": 9,
+      "failed": 112,
+      "errored": 343
+    },
+    "imported-web-locks": {
+      "owner": "guest",
+      "files": 24,
+      "subtests": 140,
+      "passed": 0,
+      "failed": 0,
+      "errored": 140
+    },
+    "imported-webaudio": {
+      "owner": "guest",
+      "files": 34,
+      "subtests": 28,
+      "passed": 1,
+      "failed": 0,
+      "errored": 27
+    },
+    "imported-webidl": {
+      "owner": "guest",
+      "files": 22,
+      "subtests": 115,
+      "passed": 23,
+      "failed": 35,
+      "errored": 57
+    },
+    "imported-webmessaging": {
+      "owner": "guest",
+      "files": 7,
+      "subtests": 42,
+      "passed": 0,
+      "failed": 4,
+      "errored": 38
+    },
+    "imported-webstorage": {
+      "owner": "guest",
+      "files": 20,
+      "subtests": 94,
+      "passed": 0,
+      "failed": 6,
+      "errored": 88
+    },
+    "imported-webxr": {
+      "owner": "guest",
+      "files": 3,
+      "subtests": 6,
+      "passed": 0,
+      "failed": 0,
+      "errored": 6
+    },
+    "imported-workers": {
+      "owner": "guest",
+      "files": 11,
+      "subtests": 31,
+      "passed": 1,
+      "failed": 0,
+      "errored": 30
+    },
+    "imported-xhr": {
+      "owner": "guest",
+      "files": 10,
+      "subtests": 153,
+      "passed": 1,
+      "failed": 2,
+      "errored": 150
+    }
+  }
+}

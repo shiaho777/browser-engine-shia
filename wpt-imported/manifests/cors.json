@@ -1,0 +1,9 @@
+{
+  "name": "imported-cors",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "cors/image-tainting-in-cross-origin-iframe.sub.html"
+  ],
+  "baselinePassCount": 0
+}
