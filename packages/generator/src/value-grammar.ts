@@ -67,6 +67,26 @@ export interface EdgesGrammar {
   readonly of: "length";
 }
 
+/** Parse `value` as an `<integer>` OR one of `keywords` (e.g. `column-count: auto`). */
+export interface IntegerOrKeywordGrammar {
+  readonly kind: "integer-or-keyword";
+  readonly keywords: readonly string[];
+  /** Optional inclusive lower bound the parsed integer is clamped to. */
+  readonly min?: number;
+  /** Optional inclusive upper bound the parsed integer is clamped to. */
+  readonly max?: number;
+}
+
+/** Parse `value` as an `<integer>` OR one of `keywords` (e.g. `column-count: auto`). */
+export interface IntegerOrKeywordGrammar {
+  readonly kind: "integer-or-keyword";
+  readonly keywords: readonly string[];
+  /** Optional inclusive lower bound the parsed integer is clamped to. */
+  readonly min?: number;
+  /** Optional inclusive upper bound the parsed integer is clamped to. */
+  readonly max?: number;
+}
+
 /** Parse `value` as an `<integer>` (e.g. `z-index`, a grid track count). */
 export interface IntegerGrammar {
   readonly kind: "integer";
@@ -108,6 +128,7 @@ export type ValueGrammar =
   | LengthOrKeywordGrammar
   | EdgesGrammar
   | IntegerGrammar
+  | IntegerOrKeywordGrammar
   | NumberGrammar
   | TransformGrammar
   | StringGrammar;
@@ -144,6 +165,14 @@ export function integer(bounds: { readonly min?: number; readonly max?: number }
   return { kind: "integer", ...bounds };
 }
 
+/** `integerOrKeyword(["auto"], { min })` — an `<integer>` or one of the given keywords. */
+export function integerOrKeyword(
+  keywords: readonly string[],
+  bounds: { readonly min?: number; readonly max?: number } = {},
+): IntegerOrKeywordGrammar {
+  return { kind: "integer-or-keyword", keywords, ...bounds };
+}
+
 /** `number({ min, max })` — a `<number>` grammar, optionally clamped. */
 export function number(bounds: { readonly min?: number; readonly max?: number } = {}): NumberGrammar {
   return { kind: "number", ...bounds };
@@ -158,3 +187,8 @@ export function transform(): TransformGrammar {
 export function string(): StringGrammar {
   return { kind: "string" };
 }
+
+// The unresolved-length specified forms are part of the value vocabulary a
+// `tsType` may name (e.g. imported rows whose initial keeps a percentage), so
+// the computed-style-fields emitter can import them through this module.
+export type { SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";

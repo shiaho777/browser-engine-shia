@@ -55,7 +55,13 @@ const IR_TYPE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Base type names exported by the generator's own value-grammar module. */
-const GRAMMAR_TYPE_NAMES: ReadonlySet<string> = new Set(["LengthOrAuto", "LengthSizing", "TransformValue"]);
+const GRAMMAR_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "LengthOrAuto",
+  "LengthSizing",
+  "TransformValue",
+  "SpecifiedLength",
+  "SpecifiedCalc",
+]);
 
 /** Extract the distinct identifier tokens that appear in a `tsType` string. */
 function typeIdentifiers(tsType: string): readonly string[] {
@@ -168,6 +174,11 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
       return {
         expr: `parseInteger(value, ${boundsLiteral(grammar.min, grammar.max)})`,
         primitive: "parseInteger",
+      };
+    case "integer-or-keyword":
+      return {
+        expr: `parseIntegerOrKeyword(value, ${stringArrayLiteral(grammar.keywords)}, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseIntegerOrKeyword",
       };
     case "number":
       return {

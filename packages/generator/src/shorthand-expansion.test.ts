@@ -171,3 +171,166 @@ void test("expandDeclarations mixes shorthand and non-shorthand", () => {
   assert.equal(result[3]?.property, "flex-basis");
   assert.equal(result[4]?.property, "display");
 });
+
+void test("background shorthand expands a lone color to background-color", () => {
+  assert.deepEqual(expandShorthand("background", "#2b221c"), [
+    { property: "background-color", value: "#2b221c" },
+  ]);
+  assert.deepEqual(expandShorthand("background", "rgba(180, 126, 87, 0.2)"), [
+    { property: "background-color", value: "rgba(180, 126, 87, 0.2)" },
+  ]);
+  assert.deepEqual(expandShorthand("background", "red"), [
+    { property: "background-color", value: "red" },
+  ]);
+});
+
+void test("background none resets color and image", () => {
+  assert.deepEqual(expandShorthand("background", "none"), [
+    { property: "background-color", value: "transparent" },
+    { property: "background-image", value: "none" },
+  ]);
+  assert.deepEqual(expandShorthand("background", "NONE"), [
+    { property: "background-color", value: "transparent" },
+    { property: "background-image", value: "none" },
+  ]);
+});
+
+void test("background shorthand expands a lone url to background-image", () => {
+  assert.deepEqual(expandShorthand("background", "url(bg.png)"), [
+    { property: "background-image", value: "url(bg.png)" },
+  ]);
+});
+
+void test("background shorthand declines gradients, layers, and combos", () => {
+  assert.equal(
+    expandShorthand("background", "linear-gradient(90deg, red 0%, blue 100%)"),
+    null,
+  );
+  assert.equal(expandShorthand("background", "red, blue"), null);
+  assert.equal(expandShorthand("background", "#fff url(bg.png) no-repeat"), null);
+  assert.equal(expandShorthand("background", ""), null);
+});
+
+void test("background shorthand passes a lone var() through to background-color", () => {
+  assert.deepEqual(expandShorthand("background", "var(--accent)"), [
+    { property: "background-color", value: "var(--accent)" },
+  ]);
+  assert.deepEqual(expandShorthand("background", "var(--missing, red)"), [
+    { property: "background-color", value: "var(--missing, red)" },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// A5 import wave: inset / overflow / place-* / text-decoration / font.
+// ---------------------------------------------------------------------------
+
+void test("inset expands 1-to-4 values per the CSS quad rules", () => {
+  assert.deepEqual(expandShorthand("inset", "0"), [
+    { property: "top", value: "0" },
+    { property: "right", value: "0" },
+    { property: "bottom", value: "0" },
+    { property: "left", value: "0" },
+  ]);
+  assert.deepEqual(expandShorthand("inset", "10px 20px"), [
+    { property: "top", value: "10px" },
+    { property: "right", value: "20px" },
+    { property: "bottom", value: "10px" },
+    { property: "left", value: "20px" },
+  ]);
+  assert.deepEqual(expandShorthand("inset", "1px 2px 3px 4px"), [
+    { property: "top", value: "1px" },
+    { property: "right", value: "2px" },
+    { property: "bottom", value: "3px" },
+    { property: "left", value: "4px" },
+  ]);
+  assert.equal(expandShorthand("inset", "1px 2px 3px 4px 5px"), null);
+});
+
+void test("inset-block / inset-inline expand start+end", () => {
+  assert.deepEqual(expandShorthand("inset-block", "5px 10px"), [
+    { property: "inset-block-start", value: "5px" },
+    { property: "inset-block-end", value: "10px" },
+  ]);
+  assert.deepEqual(expandShorthand("inset-inline", "auto"), [
+    { property: "inset-inline-start", value: "auto" },
+    { property: "inset-inline-end", value: "auto" },
+  ]);
+});
+
+void test("overflow expands to x/y, one value doubles; overlay normalizes to auto", () => {
+  assert.deepEqual(expandShorthand("overflow", "hidden"), [
+    { property: "overflow-x", value: "hidden" },
+    { property: "overflow-y", value: "hidden" },
+  ]);
+  assert.deepEqual(expandShorthand("overflow", "hidden auto"), [
+    { property: "overflow-x", value: "hidden" },
+    { property: "overflow-y", value: "auto" },
+  ]);
+  assert.deepEqual(expandShorthand("overflow", "overlay"), [
+    { property: "overflow-x", value: "auto" },
+    { property: "overflow-y", value: "auto" },
+  ]);
+  assert.equal(expandShorthand("overflow", "sideways"), null);
+});
+
+void test("place-items/content/self expand align + justify, one value doubles", () => {
+  assert.deepEqual(expandShorthand("place-items", "center"), [
+    { property: "align-items", value: "center" },
+    { property: "justify-items", value: "center" },
+  ]);
+  assert.deepEqual(expandShorthand("place-content", "space-between center"), [
+    { property: "align-content", value: "space-between" },
+    { property: "justify-content", value: "center" },
+  ]);
+  assert.deepEqual(expandShorthand("place-self", "center start"), [
+    { property: "align-self", value: "center" },
+    { property: "justify-self", value: "start" },
+  ]);
+});
+
+void test("text-decoration expands line/style/color in any order", () => {
+  assert.deepEqual(expandShorthand("text-decoration", "underline"), [
+    { property: "text-decoration-line", value: "underline" },
+  ]);
+  assert.deepEqual(expandShorthand("text-decoration", "underline dotted red"), [
+    { property: "text-decoration-line", value: "underline" },
+    { property: "text-decoration-style", value: "dotted" },
+    { property: "text-decoration-color", value: "red" },
+  ]);
+  assert.deepEqual(expandShorthand("text-decoration", "red line-through"), [
+    { property: "text-decoration-line", value: "line-through" },
+    { property: "text-decoration-color", value: "red" },
+  ]);
+  assert.equal(expandShorthand("text-decoration", "underline red dotted wavy"), null);
+});
+
+void test("font expands the dominant forms with size[/line-height] + family", () => {
+  assert.deepEqual(expandShorthand("font", "16px sans-serif"), [
+    { property: "font-size", value: "16px" },
+    { property: "font-family", value: "sans-serif" },
+  ]);
+  assert.deepEqual(expandShorthand("font", "italic bold 14px/1.5 \"Helvetica Neue\", Arial"), [
+    { property: "font-style", value: "italic" },
+    { property: "font-weight", value: "bold" },
+    { property: "font-size", value: "14px" },
+    { property: "line-height", value: "1.5" },
+    { property: "font-family", value: "\"Helvetica Neue\", Arial" },
+  ]);
+  assert.deepEqual(expandShorthand("font", "700 12px monospace"), [
+    { property: "font-weight", value: "700" },
+    { property: "font-size", value: "12px" },
+    { property: "font-family", value: "monospace" },
+  ]);
+  assert.deepEqual(expandShorthand("font", "oblique 2em serif"), [
+    { property: "font-style", value: "oblique" },
+    { property: "font-size", value: "2em" },
+    { property: "font-family", value: "serif" },
+  ]);
+  // System font keywords pass through as the family (honest single longhand).
+  assert.deepEqual(expandShorthand("font", "system-ui"), [
+    { property: "font-family", value: "system-ui" },
+  ]);
+  // Missing family = invalid per spec.
+  assert.equal(expandShorthand("font", "bold 14px"), null);
+  assert.equal(expandShorthand("font", ""), null);
+});

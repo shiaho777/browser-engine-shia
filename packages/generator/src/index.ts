@@ -54,11 +54,12 @@ export type {
 } from "./dom-interfaces.idl.js";
 
 // ---- declarative value grammars + runtime parsing primitives --------------
-export { color, edges, integer, keyword, length, lengthOr, number, string, transform } from "./value-grammar.js";
+export { color, edges, integer, integerOrKeyword, keyword, length, lengthOr, number, string, transform } from "./value-grammar.js";
 export type {
   ColorGrammar,
   EdgesGrammar,
   IntegerGrammar,
+  IntegerOrKeywordGrammar,
   KeywordGrammar,
   LengthGrammar,
   LengthOrAuto,

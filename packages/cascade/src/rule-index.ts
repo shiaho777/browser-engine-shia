@@ -62,7 +62,25 @@
 import type { DomNode, DomTree, NodeId, StyleRule, StyleSheet } from "@browser-engine/ir";
 
 /** The structural / state pseudo-classes decidable purely from the `DomTree`. */
+/**
+ * The dynamic interaction state (D4): which nodes are currently hovered /
+ * active / focused. Threaded through the selector matcher so `:hover`,
+ * `:active`, and `:focus(-within)` match against live UI state; `undefined`
+ * means "no interaction state" (every one of these pseudos fails to match —
+ * never silently passes).
+ */
+export interface InteractionState {
+  readonly hovered: ReadonlySet<NodeId>;
+  readonly active: ReadonlySet<NodeId>;
+  readonly focused: ReadonlySet<NodeId>;
+}
+
 export type SupportedPseudoClass =
+  | "hover"
+  | "active"
+  | "focus"
+  | "focus-visible"
+  | "focus-within"
   | "root"
   | "first-child"
   | "last-child"
@@ -100,6 +118,11 @@ const SUPPORTED_PSEUDO_CLASSES: ReadonlySet<string> = new Set<SupportedPseudoCla
   "read-write",
   "link",
   "any-link",
+  "hover",
+  "active",
+  "focus",
+  "focus-visible",
+  "focus-within",
 ]);
 
 /** An attribute-selector operator (`[a]`, `[a=v]`, `[a~=v]`, …). */
@@ -218,7 +241,7 @@ export function buildRuleIndex(
 function fileRule(index: MutableIndex, indexed: IndexedRule): void {
   const seenBuckets = new Set<string>(); // bucket tags this rule already joined.
   for (const selector of indexed.rule.selector) {
-    const complex = parseComplexSelector(selector.text);
+    const complex = parseComplexSelectorCached(selector.text);
     const subject = complex?.compounds[complex.compounds.length - 1];
     const key = subject === undefined ? UNIVERSAL_KEY : bucketKeyOf(subject);
 
@@ -306,19 +329,19 @@ export function candidateRulesFor(index: RuleIndex, dom: DomTree, node: NodeId):
  * @param node the node whose matching rules are requested.
  * @returns the matching rules, in global document order.
  */
-export function matchRulesFor(index: RuleIndex, dom: DomTree, node: NodeId): StyleRule[] {
-  return matchRulesForIndexed(index, dom, node).map((m) => m.rule);
+export function matchRulesFor(index: RuleIndex, dom: DomTree, node: NodeId, interaction?: InteractionState): StyleRule[] {
+  return matchRulesForIndexed(index, dom, node, interaction).map((m) => m.rule);
 }
 
 /**
  * Like {@link matchRulesFor} but returns the full {@link IndexedRule} (with
  * origin) so the cascade can apply origin-aware sorting (CSS Cascade 4 §6.3).
  */
-export function matchRulesForIndexed(index: RuleIndex, dom: DomTree, node: NodeId): readonly IndexedRule[] {
+export function matchRulesForIndexed(index: RuleIndex, dom: DomTree, node: NodeId, interaction?: InteractionState): readonly IndexedRule[] {
   const candidates = collectCandidates(index, dom, node);
   const matched: IndexedRule[] = [];
   for (const candidate of candidates) {
-    if (ruleMatches(candidate.rule, dom, node)) {
+    if (ruleMatches(candidate.rule, dom, node, interaction)) {
       matched.push(candidate);
     }
   }
@@ -340,11 +363,12 @@ export function matchRulesByScan(
   sheets: readonly StyleSheet[],
   dom: DomTree,
   node: NodeId,
+  interaction?: InteractionState,
 ): StyleRule[] {
   const matched: StyleRule[] = [];
   for (const sheet of sheets) {
     for (const rule of sheet.rules) {
-      if (ruleMatches(rule, dom, node)) {
+      if (ruleMatches(rule, dom, node, interaction)) {
         matched.push(rule);
       }
     }
@@ -358,7 +382,7 @@ export function matchRulesByScan(
  * `universal` is always included; id/class/tag buckets are consulted only for
  * an element node.
  */
-function collectCandidates(index: RuleIndex, dom: DomTree, node: NodeId): IndexedRule[] {
+export function collectCandidates(index: RuleIndex, dom: DomTree, node: NodeId): IndexedRule[] {
   const byOrder = new Map<number, IndexedRule>();
   const addBucket = (bucket: readonly IndexedRule[] | undefined): void => {
     if (bucket === undefined) {
@@ -393,9 +417,9 @@ function collectCandidates(index: RuleIndex, dom: DomTree, node: NodeId): Indexe
 // ---------------------------------------------------------------------------
 
 /** Does any selector in `rule`'s selector list match `node`? */
-export function ruleMatches(rule: StyleRule, dom: DomTree, node: NodeId): boolean {
+export function ruleMatches(rule: StyleRule, dom: DomTree, node: NodeId, interaction?: InteractionState): boolean {
   for (const selector of rule.selector) {
-    if (selectorMatches(selector.text, dom, node)) {
+    if (selectorMatches(selector.text, dom, node, interaction)) {
       return true;
     }
   }
@@ -427,12 +451,12 @@ interface ComplexSelector {
 type Combinator = "descendant" | "child" | "next-sibling" | "subsequent-sibling";
 
 /** Match a selector's text against `node` for the supported subset. */
-function selectorMatches(text: string, dom: DomTree, node: NodeId): boolean {
-  const complex = parseComplexSelector(text);
+function selectorMatches(text: string, dom: DomTree, node: NodeId, interaction: InteractionState | undefined): boolean {
+  const complex = parseComplexSelectorCached(text);
   if (complex === null) {
     return false; // empty or out-of-subset selector → no match (safe).
   }
-  return matchFrom(complex, complex.compounds.length - 1, dom, node);
+  return matchFrom(complex, complex.compounds.length - 1, dom, node, interaction);
 }
 
 /**
@@ -445,13 +469,14 @@ function matchFrom(
   index: number,
   dom: DomTree,
   node: NodeId,
+  interaction: InteractionState | undefined,
 ): boolean {
   const domNode = dom.nodes.get(node);
   const compound = complex.compounds[index];
   if (
     domNode === undefined ||
     compound === undefined ||
-    !matchesCompound(compound, domNode, dom)
+    !matchesCompound(compound, domNode, dom, interaction)
   ) {
     return false;
   }
@@ -466,7 +491,7 @@ function matchFrom(
   }
 
   if (combinator === "child") {
-    return matchFrom(complex, index - 1, dom, parentId);
+    return matchFrom(complex, index - 1, dom, parentId, interaction);
   }
 
   if (combinator === "next-sibling" || combinator === "subsequent-sibling") {
@@ -475,10 +500,10 @@ function matchFrom(
     const prevs = precedingElementSiblings(domNode, dom);
     if (combinator === "next-sibling") {
       const immediate = prevs[prevs.length - 1];
-      return immediate !== undefined && matchFrom(complex, index - 1, dom, immediate);
+      return immediate !== undefined && matchFrom(complex, index - 1, dom, immediate, interaction);
     }
     for (const sib of prevs) {
-      if (matchFrom(complex, index - 1, dom, sib)) {
+      if (matchFrom(complex, index - 1, dom, sib, interaction)) {
         return true;
       }
     }
@@ -488,7 +513,7 @@ function matchFrom(
   // Descendant: try every ancestor until one satisfies the remaining prefix.
   let ancestorId: NodeId | null = parentId;
   while (ancestorId !== null) {
-    if (matchFrom(complex, index - 1, dom, ancestorId)) {
+    if (matchFrom(complex, index - 1, dom, ancestorId, interaction)) {
       return true;
     }
     ancestorId = dom.nodes.get(ancestorId)?.parent ?? null;
@@ -515,13 +540,13 @@ function precedingElementSiblings(domNode: DomNode, dom: DomTree): NodeId[] {
  * (or sibling, for `+`/`~` combinators) that matches the relative selector.
  * The relative selector's leftmost compound is matched against descendants.
  */
-function matchesHas(relative: ComplexSelector, host: DomNode, dom: DomTree): boolean {
+function matchesHas(relative: ComplexSelector, host: DomNode, dom: DomTree, interaction: InteractionState | undefined): boolean {
   // For a simple descendant relative selector, check all descendants.
   // For `>` (child), check only direct children.
   // For `+`/`~`, check siblings.
   const firstCombinator = relative.combinators[0] ?? "descendant";
   if (firstCombinator === "child" || firstCombinator === "descendant") {
-    return matchesHasDescendant(relative, host, dom, firstCombinator === "child");
+    return matchesHasDescendant(relative, host, dom, firstCombinator === "child", interaction);
   }
   // For sibling combinators, check siblings of the host.
   // This is a simplified implementation: check if any sibling matches.
@@ -534,7 +559,7 @@ function matchesHas(relative: ComplexSelector, host: DomNode, dom: DomTree): boo
     if (!foundHost) continue;
     const sib = dom.nodes.get(sibId);
     if (sib === undefined || sib.kind !== "element") continue;
-    if (matchFrom(relative, relative.compounds.length - 1, dom, sibId)) {
+    if (matchFrom(relative, relative.compounds.length - 1, dom, sibId, interaction)) {
       return true;
     }
     if (firstCombinator === "next-sibling") break; // only the immediately following sibling
@@ -543,18 +568,18 @@ function matchesHas(relative: ComplexSelector, host: DomNode, dom: DomTree): boo
 }
 
 /** Check descendants for `:has(descendant-selector)` or `:has(> child-selector)`. */
-function matchesHasDescendant(relative: ComplexSelector, host: DomNode, dom: DomTree, directChildOnly: boolean): boolean {
+function matchesHasDescendant(relative: ComplexSelector, host: DomNode, dom: DomTree, directChildOnly: boolean, interaction: InteractionState | undefined): boolean {
   for (const childId of host.children) {
     const child = dom.nodes.get(childId);
     if (child === undefined) continue;
     if (child.kind === "element") {
-      if (matchFrom(relative, relative.compounds.length - 1, dom, childId)) {
+      if (matchFrom(relative, relative.compounds.length - 1, dom, childId, interaction)) {
         return true;
       }
     }
     if (!directChildOnly) {
       // Recurse into descendants.
-      if (child !== undefined && matchesHasDescendant(relative, child, dom, false)) {
+      if (child !== undefined && matchesHasDescendant(relative, child, dom, false, interaction)) {
         return true;
       }
     } else {
@@ -574,7 +599,7 @@ function matchesHasDescendant(relative: ComplexSelector, host: DomNode, dom: Dom
 }
 
 /** Does a single compound selector match this DOM node? */
-function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomTree): boolean {
+function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomTree, interaction: InteractionState | undefined): boolean {
   if (domNode.kind !== "element") {
     return false;
   }
@@ -598,7 +623,7 @@ function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomT
     }
   }
   for (const pseudo of compound.pseudoClasses) {
-    if (!matchesPseudoClass(pseudo, domNode, dom)) {
+    if (!matchesPseudoClass(pseudo, domNode, dom, interaction)) {
       return false;
     }
   }
@@ -608,13 +633,13 @@ function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomT
     }
   }
   for (const inner of compound.not) {
-    if (matchesCompound(inner, domNode, dom)) {
+    if (matchesCompound(inner, domNode, dom, interaction)) {
       return false; // :not(X) fails when the inner compound matches.
     }
   }
   for (const hasSelector of compound.has) {
     // :has(X) matches if ANY descendant matches the relative selector.
-    if (!matchesHas(hasSelector, domNode, dom)) {
+    if (!matchesHas(hasSelector, domNode, dom, interaction)) {
       return false;
     }
   }
@@ -658,6 +683,7 @@ function matchesPseudoClass(
   pseudo: SupportedPseudoClass,
   domNode: DomNode,
   dom: DomTree,
+  interaction: InteractionState | undefined,
 ): boolean {
   switch (pseudo) {
     case "root":
@@ -693,6 +719,27 @@ function matchesPseudoClass(
     case "link":
     case "any-link":
       return isLinkElement(domNode);
+    case "hover":
+      return interaction?.hovered.has(domNode.id) === true;
+    case "active":
+      return interaction?.active.has(domNode.id) === true;
+    case "focus":
+    case "focus-visible":
+      return interaction?.focused.has(domNode.id) === true;
+    case "focus-within": {
+      // CSS Selectors 4: matches when the element itself OR any DESCENDANT is
+      // focused. Check: is any focused node this element or inside it?
+      if (interaction === undefined) return false;
+      if (interaction.focused.has(domNode.id)) return true;
+      for (const focusedId of interaction.focused) {
+        let cur = dom.nodes.get(focusedId)?.parent ?? null;
+        while (cur !== null) {
+          if (cur === domNode.id) return true;
+          cur = dom.nodes.get(cur)?.parent ?? null;
+        }
+      }
+      return false;
+    }
   }
 }
 
@@ -820,7 +867,7 @@ function getAttr(domNode: DomNode, name: string): string | null {
 }
 
 /** The element's class list as a set (whitespace-separated `class` attribute). */
-function classListOf(domNode: DomNode): ReadonlySet<string> {
+export function classListOf(domNode: DomNode): ReadonlySet<string> {
   const raw = getAttr(domNode, "class");
   if (raw === null) {
     return EMPTY_CLASS_SET;
@@ -842,6 +889,31 @@ const EMPTY_CLASS_SET: ReadonlySet<string> = new Set<string>();
  * descendant/child/`+`/`~` combinators with a bracket- and paren-aware
  * tokenizer (so `[a~="x y"]` and `:nth-child(2n+1)` are not split on spaces).
  */
+// Selector-parse cache: `selectorMatches` re-parses the selector TEXT on
+// every rule×node check; profiling a real navigation showed 50%+ of total
+// CPU in tokenize/parse. Selector strings are immutable and the parsed
+// structure is read-only, so one global memo is safe and unbounded growth
+// is bounded by the site's distinct selector count (capped, LRU-ish reset).
+const PARSE_CACHE_MAX = 8192;
+const parseCache = new Map<string, ComplexSelector | null>();
+
+function parseComplexSelectorCached(text: string): ComplexSelector | null {
+  const hit = parseCache.get(text);
+  if (hit !== undefined) {
+    // Refresh LRU position.
+    parseCache.delete(text);
+    parseCache.set(text, hit);
+    return hit;
+  }
+  const parsed = parseComplexSelector(text);
+  if (parseCache.size >= PARSE_CACHE_MAX) {
+    const oldest = parseCache.keys().next().value;
+    if (oldest !== undefined) parseCache.delete(oldest);
+  }
+  parseCache.set(text, parsed);
+  return parsed;
+}
+
 function parseComplexSelector(text: string): ComplexSelector | null {
   const items = tokenizeComplex(text);
   if (items === null) {
@@ -1069,9 +1141,9 @@ function parseHasArgument(arg: string): ComplexSelector | null {
   // Handle leading combinator (>, +, ~) — treat as the first combinator.
   if (trimmed.startsWith(">") || trimmed.startsWith("+") || trimmed.startsWith("~")) {
     // Prepend `*` as the scope element.
-    return parseComplexSelector("* " + trimmed);
+    return parseComplexSelectorCached("* " + trimmed);
   }
-  return parseComplexSelector(trimmed);
+  return parseComplexSelectorCached(trimmed);
 }
 
 /** The `:nth-*` functional pseudo-classes mapped to the index axis they test. */

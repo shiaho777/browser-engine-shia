@@ -323,10 +323,328 @@ function expandGridColumnGap(value: string): readonly ExpandedDeclaration[] | nu
 }
 
 // ---------------------------------------------------------------------------
+// `inset` + logical inset shorthands (CSS Logical Properties §5): 1-to-4
+// values expanded per the CSS quad rules.
+// ---------------------------------------------------------------------------
+
+/** Expand a 1-to-4 physical-position quad: a → a a a a, a b → b b (Y X), … */
+function expandQuad(
+  value: string,
+  props: readonly [string, string, string, string],
+): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length < 1 || toks.length > 4) return null;
+  const [a, b = a, c = a, d = b] = toks as [string, string?, string?, string?];
+  const [top, right, bottom, left] = props;
+  return [
+    { property: top, value: a }, // top / block-start
+    { property: right, value: b }, // right / inline-end
+    { property: bottom, value: c }, // bottom / block-end
+    { property: left, value: d }, // left / inline-start
+  ];
+}
+
+function expandInset(value: string): readonly ExpandedDeclaration[] | null {
+  return expandQuad(value, ["top", "right", "bottom", "left"]);
+}
+
+function expandInsetBlock(value: string): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length < 1 || toks.length > 2) return null;
+  const start = toks[0]!;
+  const end = toks[1] ?? start;
+  return [
+    { property: "inset-block-start", value: start },
+    { property: "inset-block-end", value: end },
+  ];
+}
+
+function expandInsetInline(value: string): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length < 1 || toks.length > 2) return null;
+  const start = toks[0]!;
+  const end = toks[1] ?? start;
+  return [
+    { property: "inset-inline-start", value: start },
+    { property: "inset-inline-end", value: end },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// `overflow` (CSS Overflow §3): 1 or 2 keywords → overflow-x / overflow-y.
+// ---------------------------------------------------------------------------
+
+const OVERFLOW_KEYWORDS = new Set(["visible", "hidden", "clip", "scroll", "auto", "overlay"]);
+
+function expandOverflow(value: string): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length < 1 || toks.length > 2) return null;
+  for (const tok of toks) {
+    if (!OVERFLOW_KEYWORDS.has(tok.toLowerCase())) return null;
+  }
+  const x = toks[0]!.toLowerCase();
+  const y = (toks[1] ?? x).toLowerCase();
+  // `overlay` is the deprecated synonym of `auto` (Chrome shipped it for
+  // years before it merged into `auto`): normalize it away.
+  return [
+    { property: "overflow-x", value: x === "overlay" ? "auto" : x },
+    { property: "overflow-y", value: y === "overlay" ? "auto" : y },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// `place-items` / `place-content` / `place-self` (Box Alignment §5): the first
+// value is align-* (block axis), the second justify-* (inline axis); one value
+// sets both. `place-content` additionally allows the two-value `<align>
+// <justify>` form where a lone value is doubled.
+// ---------------------------------------------------------------------------
+
+function makePlaceExpander(alignProp: string, justifyProp: string): ShorthandExpander {
+  return (value: string): readonly ExpandedDeclaration[] | null => {
+    const toks = tokens(value);
+    if (toks.length < 1 || toks.length > 2) return null;
+    const align = toks[0]!;
+    const justify = toks[1] ?? align;
+    return [
+      { property: alignProp, value: align },
+      { property: justifyProp, value: justify },
+    ];
+  };
+}
+
+// ---------------------------------------------------------------------------
+// `text-decoration` (CSS Text Decoration §2): 1-to-3 tokens in any order —
+// line keywords (underline/overline/line-through/none, space-combinable),
+// a style keyword, and a color.
+// ---------------------------------------------------------------------------
+
+const TEXT_DECORATION_LINE_KEYWORDS = new Set([
+  "underline",
+  "overline",
+  "line-through",
+  "blink",
+  "none",
+]);
+const TEXT_DECORATION_STYLE_KEYWORDS = new Set(["solid", "double", "dotted", "dashed", "wavy"]);
+
+function expandTextDecoration(value: string): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length < 1 || toks.length > 4) return null;
+  const line: string[] = [];
+  let style: string | null = null;
+  let color: string | null = null;
+  for (const tok of toks) {
+    const lower = tok.toLowerCase();
+    if (TEXT_DECORATION_LINE_KEYWORDS.has(lower)) {
+      line.push(lower);
+      continue;
+    }
+    if (TEXT_DECORATION_STYLE_KEYWORDS.has(lower)) {
+      if (style !== null) return null; // duplicate style
+      style = lower;
+      continue;
+    }
+    if (classifyBorderToken(tok)?.kind === "color") {
+      if (color !== null) return null; // duplicate color
+      color = tok;
+      continue;
+    }
+    return null; // unrecognized token
+  }
+  const out: ExpandedDeclaration[] = [];
+  if (line.length > 0) out.push({ property: "text-decoration-line", value: line.join(" ") });
+  if (style !== null) out.push({ property: "text-decoration-style", value: style });
+  if (color !== null) out.push({ property: "text-decoration-color", value: color });
+  return out.length > 0 ? out : null;
+}
+
+// ---------------------------------------------------------------------------
+// `font` (CSS Fonts §4), the DOMINANT real-world forms only:
+//   - system / caption / icon | menu | message-box | small-caption | status-bar
+//     (system fonts: not expandable, returned as font-family — browsers expose
+//     them on the shorthand; our layout only consumes the listed longhands)
+//   - `[ <style> || <weight> ]? <size>[/<line-height>]? <family>`
+//     with style/weight optional, line-height optional, family REQUIRED and
+//     = everything after the size token (families contain spaces).
+// ---------------------------------------------------------------------------
+
+const FONT_STYLE_KEYWORDS = new Set(["normal", "italic", "oblique"]);
+const FONT_WEIGHT_KEYWORDS = new Set(["normal", "bold", "bolder", "lighter"]);
+
+function expandFont(value: string): readonly ExpandedDeclaration[] | null {
+  const v = value.trim();
+  if (v.length === 0) return null;
+
+  // Split into top-level tokens, but the FINAL segment (the font family list)
+  // is everything after the size(/line-height) token — keep it verbatim so
+  // multi-word families and quoted names survive.
+  const toks = tokens(v);
+  if (toks.length === 0) return null;
+
+  let style: string | null = null;
+  let weight: string | null = null;
+  let i = 0;
+
+  // Leading style/weight keywords (either order, both optional).
+  while (i < toks.length) {
+    const tok = toks[i]!;
+    const lower = tok.toLowerCase();
+    if (style === null && FONT_STYLE_KEYWORDS.has(lower) && lower !== "normal") {
+      style = lower;
+      i += 1;
+      continue;
+    }
+    if (weight === null && FONT_WEIGHT_KEYWORDS.has(lower) && lower !== "normal" && (style !== null || !FONT_STYLE_KEYWORDS.has(lower))) {
+      weight = lower;
+      i += 1;
+      continue;
+    }
+    if (lower === "normal" && (style === null || weight === null)) {
+      // `normal` can stand for either; if unset, record and continue.
+      if (style === null) style = "normal";
+      else if (weight === null) weight = "normal";
+      i += 1;
+      continue;
+    }
+    if (/^[+-]?\d+$/.test(tok) || /^[+-]?\d+\.\d+$/.test(tok)) {
+      // A bare number before the size is the weight (e.g. `font: 700 16px …`).
+      weight = tok;
+      i += 1;
+      continue;
+    }
+    break; // the size token must come next.
+  }
+
+  // The size token (optionally followed by /line-height). The size must NOT
+  // itself contain `/` — otherwise `14px/1.5` would swallow the line-height.
+  const rest = toks.slice(i).join(" ");
+  const sizeMatch = /^([^\s/]+)(?:\s*\/\s*(\S+))?\s+(.+)$/.exec(rest);
+  if (sizeMatch === null) {
+    // System font keywords: keep as font-family (honest pass-through).
+    if (toks.length === 1 && /^(system-ui|caption|icon|menu|message-box|small-caption|status-bar)$/i.test(toks[0]!)) {
+      return [{ property: "font-family", value: toks[0]! }];
+    }
+    return null;
+  }
+  const size = sizeMatch[1]!;
+  const lineHeight = sizeMatch[2] ?? null;
+  const family = sizeMatch[3]!.trim();
+  if (family.length === 0) return null;
+
+  const out: ExpandedDeclaration[] = [];
+  if (style !== null && style !== "normal") out.push({ property: "font-style", value: style });
+  if (weight !== null && weight !== "normal") out.push({ property: "font-weight", value: weight });
+  out.push({ property: "font-size", value: size });
+  if (lineHeight !== null) out.push({ property: "line-height", value: lineHeight });
+  out.push({ property: "font-family", value: family });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// `background` shorthand (CSS Backgrounds §3.2), scoped honestly.
+//
+// The full grammar (multi-layer lists, position/size with `/`, repeat,
+// attachment, clip/origin boxes) is a parser project of its own. This
+// expander covers the single-layer value forms that dominate real
+// stylesheets — a lone color, `none`, or a lone `url()` — and returns `null`
+// for everything else (gradients, multi-layer lists, position/size combos),
+// which the caller drops exactly like the previous behavior of keeping an
+// unread `background` string the paint stage never consumed.
+// ---------------------------------------------------------------------------
+
+/** CSS named colors recognized inside `background` (mirrors the border list). */
+const BACKGROUND_NAMED_COLORS = new Set([
+  "black", "white", "red", "green", "blue", "transparent", "yellow", "orange",
+  "purple", "pink", "gray", "grey", "cyan", "magenta", "silver", "maroon",
+  "olive", "navy", "teal", "aqua", "fuchsia", "lime", "currentcolor",
+]);
+
+/** Split a `background` value into top-level COMMA-separated layers. */
+function backgroundLayers(value: string): string[] {
+  const layers: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of value.trim()) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      layers.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim() !== "") layers.push(current.trim());
+  return layers;
+}
+
+/** Split one layer into top-level whitespace-separated tokens (paren-aware). */
+function backgroundTokens(layer: string): string[] {
+  const toks: string[] = [];
+  let depth = 0;
+  let current = "";
+  const flush = (): void => {
+    if (current !== "") {
+      toks.push(current);
+      current = "";
+    }
+  };
+  for (const ch of layer.trim()) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth = Math.max(0, depth - 1);
+    if ((ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f") && depth === 0) {
+      flush();
+    } else {
+      current += ch;
+    }
+  }
+  flush();
+  return toks;
+}
+
+/** Is `token` a CSS color (hex, rgb()/hsl() function, named, transparent)? */
+function isBackgroundColorToken(token: string): boolean {
+  if (/^#[0-9a-fA-F]{3,8}$/.test(token)) return true;
+  if (/^(rgba?|hsla?)\(.*\)$/i.test(token)) return true;
+  return BACKGROUND_NAMED_COLORS.has(token.toLowerCase());
+}
+
+/**
+ * Expand `background: <color> | none | url(...)` into `background-color`
+ * (+ `background-image: none` for the `none` reset). Anything richer
+ * returns `null` (caller drops it — same effective rendering as today).
+ */
+function expandBackground(value: string): readonly ExpandedDeclaration[] | null {
+  const v = value.trim();
+  if (v === "") return null;
+  if (v.toLowerCase() === "none") {
+    return [
+      { property: "background-color", value: "transparent" },
+      { property: "background-image", value: "none" },
+    ];
+  }
+  if (backgroundLayers(v).length !== 1) return null; // multi-layer: out of scope.
+  const toks = backgroundTokens(v);
+  if (toks.length === 1) {
+    const tok = toks[0] as string;
+    if (isBackgroundColorToken(tok)) return [{ property: "background-color", value: tok }];
+    if (/^url\(.*\)$/i.test(tok)) return [{ property: "background-image", value: tok }];
+    // A lone var() reference cannot be classified here (custom properties
+    // resolve later, per-winner, in the cascade): pass it through as the
+    // color longhand so substitution still happens. If it resolves to a
+    // color the background paints; anything else fails longhand parsing
+    // and falls back exactly as an unrecognized value would.
+    if (/^var\(.*\)$/i.test(tok)) return [{ property: "background-color", value: tok }];
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // The shorthand→expander table.
 // ---------------------------------------------------------------------------
 
 const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
+  background: expandBackground,
   border: expandBorder,
   "border-top": expandBorderEdge("top"),
   "border-right": expandBorderEdge("right"),
@@ -340,6 +658,18 @@ const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
   "grid-gap": expandGap,
   "grid-row-gap": expandGridRowGap,
   "grid-column-gap": expandGridColumnGap,
+  // Import wave (A5): high-frequency positional/2-value shorthands.
+  inset: expandInset,
+  "inset-block": expandInsetBlock,
+  "inset-inline": expandInsetInline,
+  overflow: expandOverflow,
+  "overflow-block": (value) => [{ property: "overflow-y", value: value.trim().toLowerCase() }],
+  "overflow-inline": (value) => [{ property: "overflow-x", value: value.trim().toLowerCase() }],
+  "place-items": makePlaceExpander("align-items", "justify-items"),
+  "place-content": makePlaceExpander("align-content", "justify-content"),
+  "place-self": makePlaceExpander("align-self", "justify-self"),
+  "text-decoration": expandTextDecoration,
+  font: expandFont,
   "-webkit-line-clamp": (value: string) => [{ property: "line-clamp", value: value.trim().toLowerCase() === "none" ? "0" : value }],
 };
 

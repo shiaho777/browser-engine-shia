@@ -20,6 +20,7 @@
 import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { FlexDirection, FloatValue, PositionValue } from "@browser-engine/ir";
 import { defineProperty, type CssPropertyDef } from "./css-property-def.js";
+import { LADYBIRD_PROPERTIES } from "./generated/ladybird-properties.data.js";
 import { color, edges, integer, keyword, length, lengthOr, number, string as stringValue, transform } from "./value-grammar.js";
 import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar.js";
 
@@ -51,6 +52,12 @@ const DISPLAY_KEYWORDS: readonly string[] = [
   "inline-grid",
   "inline-table",
   "list-item",
+  // Table-internal structural values (css-tables-3). They parse and cascade;
+  // the layout tree builder (not the layout dispatcher) consumes them to wrap
+  // misplaced content into anonymous tables/rows/cells.
+  "table-row",
+  "table-row-group",
+  "table-cell",
   // Legacy / vendor-prefixed flexbox values: every modern browser maps these to
   // standard flex, so we accept them at parse time and normalize to "flex".
   "-webkit-box",
@@ -1938,4 +1945,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   BORDER_IMAGE, FONT_SHORTHAND, LIST_STYLE, TEXT_DECORATION, FLEX, FLEX_FLOW, TRANSITION, ANIMATION,
   GRID, GRID_TEMPLATE, GRID_TEMPLATE_AREAS, OUTLINE, COLUMNS, COLUMN_RULE, OVERFLOW_BLOCK, OVERFLOW_INLINE,
   INSET_SHORTHAND,
+  // Import wave 1 (Ladybird Properties.json): 278 rows, ours-win on conflicts.
+  // See tools/ladybird-import/import-properties.mjs and the file banner.
+  ...LADYBIRD_PROPERTIES,
 ] as readonly CssPropertyDef[];

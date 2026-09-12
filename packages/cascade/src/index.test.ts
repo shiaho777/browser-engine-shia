@@ -789,3 +789,38 @@ void test("color: inherit on a beats UA link blue via parent", () => {
   assert.equal(style.color.g, 0x66);
   assert.equal(style.color.b, 0x6d);
 });
+
+// ---------------------------------------------------------------------------
+// CSS Fonts §4: percentage font-sizes resolve against the PARENT font size.
+// (Found by the B4 baseline work: `font-size: 100%` stayed an unresolved
+// specified-length object in computed style and poisoned line metrics.)
+// ---------------------------------------------------------------------------
+
+void test("font-size: 100% resolves to the parent's font size (not an object)", () => {
+  const parent = cascade(DOM, [buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "20px" }] },
+    { selector: "span", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "100%" }] },
+  ])], nodeId(1));
+  const child = cascade(DOM, [buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "20px" }] },
+    { selector: "span", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "100%" }] },
+  ])], nodeId(2));
+  assert.equal(parent.fontSize, px(20));
+  assert.equal(child.fontSize, px(20), "100% = the parent's 20px");
+});
+
+void test("font-size: 80% scales the parent font size", () => {
+  const child = cascade(DOM, [buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "20px" }] },
+    { selector: "span", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "80%" }] },
+  ])], nodeId(2));
+  assert.equal(child.fontSize, px(16), "80% of 20px");
+});
+
+void test("the computed fontSize is always a number (never a specified-length object)", () => {
+  const style = cascade(DOM, [buildSheet([
+    { selector: "span", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "150%" }] },
+  ])], nodeId(2));
+  assert.equal(typeof style.fontSize, "number", `got ${typeof style.fontSize}`);
+  assert.equal(style.fontSize, px(24), "150% of the inherited 16px");
+});

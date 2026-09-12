@@ -166,3 +166,146 @@ void test("parseCss includes minified media-query rules for bilibili-style break
   const sheetNarrow = parseCss(new TextEncoder().encode(css), narrow);
   assert.equal(sheetNarrow.rules.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// CSS Media Queries Level 4 — range syntax (ROADMAP Phase 2, A2).
+// ---------------------------------------------------------------------------
+
+const DESKTOP: MediaEnvironment = {
+  type: "screen",
+  widthPx: 1280,
+  heightPx: 800,
+  hover: true,
+  pointerFine: true,
+  colorScheme: "light",
+  reducedMotion: false,
+  reducedData: false,
+  displayMode: "browser",
+};
+
+void test("range syntax: (width >= value)", () => {
+  assert.ok(mediaQueryMatches("(width >= 100px)", DESKTOP));
+  assert.ok(mediaQueryMatches("(width >= 1280px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width >= 1281px)", DESKTOP));
+});
+
+void test("range syntax: (width < value)", () => {
+  assert.ok(mediaQueryMatches("(width < 1281px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width < 1280px)", DESKTOP));
+});
+
+void test("range syntax: (value <= width)", () => {
+  assert.ok(mediaQueryMatches("(1000px <= width)", DESKTOP));
+  assert.ok(mediaQueryMatches("(1280px <= width)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(1281px <= width)", DESKTOP));
+});
+
+void test("range syntax: double comparison (100px <= width < 500px)", () => {
+  const env: MediaEnvironment = { type: "screen", widthPx: 300, heightPx: 600 };
+  assert.ok(mediaQueryMatches("(100px <= width < 500px)", env));
+  assert.ok(!mediaQueryMatches("(100px <= width < 299px)", env));
+  assert.ok(!mediaQueryMatches("(301px <= width < 500px)", env));
+});
+
+void test("range syntax: height feature", () => {
+  assert.ok(mediaQueryMatches("(height > 700px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(height > 800px)", DESKTOP));
+  assert.ok(mediaQueryMatches("(700px < height <= 800px)", DESKTOP));
+});
+
+void test("range syntax: = operator", () => {
+  assert.ok(mediaQueryMatches("(width = 1280px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width = 1281px)", DESKTOP));
+});
+
+void test("range syntax: mixed with prefix syntax and media type", () => {
+  assert.ok(mediaQueryMatches("screen and (width >= 500px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("print and (width >= 500px)", DESKTOP));
+  assert.ok(mediaQueryMatches("screen and (min-width: 100px) and (width < 2000px)", DESKTOP));
+});
+
+void test("or conjunction: either side matches", () => {
+  assert.ok(mediaQueryMatches("(width >= 500px) or (orientation: portrait)", DESKTOP));
+  assert.ok(mediaQueryMatches("(width < 500px) or (orientation: landscape)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width < 500px) or (orientation: portrait)", DESKTOP));
+});
+
+void test("or conjunction in a comma list (either query matches)", () => {
+  assert.ok(mediaQueryListMatches("(width < 500px), (width >= 500px)", DESKTOP));
+  assert.ok(!mediaQueryListMatches("(width < 500px), (height < 100px)", DESKTOP));
+});
+
+void test("not applied to a parenthesized condition", () => {
+  assert.ok(mediaQueryMatches("not (width < 500px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("not (width >= 500px)", DESKTOP));
+});
+
+void test("nested not in a feature group", () => {
+  assert.ok(mediaQueryMatches("(not (width < 500px))", DESKTOP));
+  assert.ok(!mediaQueryMatches("(not (width >= 500px))", DESKTOP));
+});
+
+void test("modern features: hover and pointer", () => {
+  assert.ok(mediaQueryMatches("(hover: hover)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(hover: none)", DESKTOP));
+  assert.ok(mediaQueryMatches("(pointer: fine)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(pointer: coarse)", DESKTOP));
+  // Legacy environments without the new fields: hover defaults to not-hover.
+  assert.ok(!mediaQueryMatches("(hover: hover)", SCREEN));
+  assert.ok(mediaQueryMatches("(hover: none)", SCREEN));
+});
+
+void test("modern features: prefers-color-scheme", () => {
+  assert.ok(mediaQueryMatches("(prefers-color-scheme: light)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(prefers-color-scheme: dark)", DESKTOP));
+  const dark: MediaEnvironment = { ...DESKTOP, colorScheme: "dark" };
+  assert.ok(mediaQueryMatches("(prefers-color-scheme: dark)", dark));
+  assert.ok(!mediaQueryMatches("(prefers-color-scheme: light)", dark));
+});
+
+void test("modern features: prefers-reduced-motion and data", () => {
+  assert.ok(mediaQueryMatches("(prefers-reduced-motion: no-preference)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(prefers-reduced-motion: reduce)", DESKTOP));
+  assert.ok(mediaQueryMatches("(prefers-reduced-data: no-preference)", DESKTOP));
+  const reduced: MediaEnvironment = { ...DESKTOP, reducedMotion: true, reducedData: true };
+  assert.ok(mediaQueryMatches("(prefers-reduced-motion: reduce)", reduced));
+  assert.ok(mediaQueryMatches("(prefers-reduced-data: reduce)", reduced));
+});
+
+void test("modern features: display-mode and update", () => {
+  assert.ok(mediaQueryMatches("(display-mode: browser)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(display-mode: standalone)", DESKTOP));
+  assert.ok(mediaQueryMatches("(update: fast)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(update: slow)", DESKTOP));
+});
+
+void test("unknown range features never match (no silent pass)", () => {
+  assert.ok(!mediaQueryMatches("(scripting >= 1)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(inverted-colors: none)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(dynamic-range: standard)", DESKTOP));
+});
+
+void test("invalid range syntax is rejected, not silently true", () => {
+  assert.ok(!mediaQueryMatches("(width >> 100px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(100px <= <= 500px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width >=)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(>= 100px)", DESKTOP));
+  assert.ok(!mediaQueryMatches("(width >= 100)", DESKTOP)); // missing unit
+});
+
+void test("case-insensitive feature names and values", () => {
+  assert.ok(mediaQueryMatches("(WIDTH >= 100px)", DESKTOP));
+  assert.ok(mediaQueryMatches("(min-width: 100PX)", DESKTOP));
+  assert.ok(mediaQueryMatches("(Orientation: Landscape)", DESKTOP));
+});
+
+void test("parseCss includes rules for a matching range-syntax query", () => {
+  const css = "@media (width >= 500px) { div { color: red } }";
+  const sheet = parseCss(new TextEncoder().encode(css), DESKTOP);
+  assert.equal(sheet.rules.length, 1);
+  assert.equal(sheet.rules[0]!.declarations[0]!.property, "color");
+
+  const narrow: MediaEnvironment = { type: "screen", widthPx: 400, heightPx: 600 };
+  const sheetNarrow = parseCss(new TextEncoder().encode(css), narrow);
+  assert.equal(sheetNarrow.rules.length, 0);
+});

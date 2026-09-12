@@ -62,8 +62,9 @@ import type {
 import { CSS_PROPERTIES, PROPERTY_PARSERS, isSpecifiedLength, isSpecifiedCalc, expandDeclarations } from "@browser-engine/generator";
 import type { ComputeCtx, SpecifiedLength, SpecifiedCalc, CalcNode } from "@browser-engine/generator";
 
-import { buildRuleIndex, matchRulesForIndexed } from "./rule-index.js";
-import type { RuleIndex, CascadeOrigin } from "./rule-index.js";
+import { buildRuleIndex, collectCandidates, classListOf, ruleMatches, type InteractionState } from "./rule-index.js";
+import type { RuleIndex, CascadeOrigin, IndexedRule } from "./rule-index.js";
+import type { StyleRule } from "@browser-engine/ir";
 import { collectCustomProperties, substituteVars } from "./var-substitution.js";
 import type { CustomPropertyMap } from "./var-substitution.js";
 
@@ -89,7 +90,7 @@ export {
   candidateRulesFor,
   ruleMatches,
 } from "./rule-index.js";
-export type { RuleIndex, IndexedRule, SupportedPseudoClass, CascadeOrigin } from "./rule-index.js";
+export type { RuleIndex, IndexedRule, SupportedPseudoClass, CascadeOrigin, InteractionState } from "./rule-index.js";
 
 // The CSS Transitions / Web Animations value-interpolation core (timing
 // functions + data-driven per-property interpolation), consuming the same
@@ -144,6 +145,11 @@ const DEFAULT_VIEWPORT: Viewport = { width: 800, height: 600 };
  *   rules always override UA rules regardless of specificity.
  * @returns the node's frozen, geometry-free ComputedStyle (Requirements 3.3, 11.1).
  */
+/** Index cache: the same sheets array reuses the built RuleIndex (and the
+ * sharing cache it keys), so repeated cascade() calls with one stylesheet
+ * both save the index build and actually HIT the sharing cache. */
+const indexCache = new WeakMap<readonly StyleSheet[], RuleIndex>();
+
 export function cascade(
   dom: DomTree,
   sheets: readonly StyleSheet[],
@@ -151,9 +157,14 @@ export function cascade(
   viewport: Viewport = DEFAULT_VIEWPORT,
   origins?: readonly CascadeOrigin[],
   layerOrder?: readonly (readonly string[])[],
+  interaction?: InteractionState,
 ): ComputedStyle {
-  const index = buildRuleIndex(sheets, origins, layerOrder);
-  return cascadeWithIndex(dom, index, node, viewport, layerOrder);
+  let index = indexCache.get(sheets);
+  if (index === undefined) {
+    index = buildRuleIndex(sheets, origins, layerOrder);
+    indexCache.set(sheets, index);
+  }
+  return cascadeWithIndex(dom, index, node, viewport, layerOrder, undefined, interaction);
 }
 
 export function createComputedStyleResolver(
@@ -162,10 +173,31 @@ export function createComputedStyleResolver(
   viewport: Viewport = DEFAULT_VIEWPORT,
   origins?: readonly CascadeOrigin[],
   layerOrder?: readonly (readonly string[])[],
+  interaction?: InteractionState,
 ): (node: NodeId) => ComputedStyle {
+  return createComputedStyleResolverWithCache(dom, sheets, viewport, origins, layerOrder, undefined, interaction).styleOf;
+}
+
+/**
+ * Resolver + its per-node cache exposed. Callers that re-cascade the SAME
+ * unchanged DOM across renders (pure repaints, settle frames) can pass the
+ * previous cache back in and skip the cascade for every node entirely.
+ * Only reuse a cache when the DOM and sheets are verbatim unchanged —
+ * there is no per-node invalidation here.
+ */
+export function createComputedStyleResolverWithCache(
+  dom: DomTree,
+  sheets: readonly StyleSheet[],
+  viewport: Viewport = DEFAULT_VIEWPORT,
+  origins?: readonly CascadeOrigin[],
+  layerOrder?: readonly (readonly string[])[],
+  previousCache?: Map<NodeId, ComputedStyle>,
+  interaction?: InteractionState,
+): { readonly styleOf: (node: NodeId) => ComputedStyle; readonly cache: Map<NodeId, ComputedStyle> } {
   const index = buildRuleIndex(sheets, origins, layerOrder);
-  const cache = new Map<NodeId, ComputedStyle>();
-  return (node: NodeId): ComputedStyle => cascadeWithIndex(dom, index, node, viewport, layerOrder, cache);
+  const cache = previousCache ?? new Map<NodeId, ComputedStyle>();
+  const styleOf = (node: NodeId): ComputedStyle => cascadeWithIndex(dom, index, node, viewport, layerOrder, cache, interaction);
+  return { styleOf, cache };
 }
 
 export function cascadeWithRuleIndex(
@@ -175,8 +207,9 @@ export function cascadeWithRuleIndex(
   viewport: Viewport = DEFAULT_VIEWPORT,
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
+  interaction?: InteractionState,
 ): ComputedStyle {
-  return cascadeWithIndex(dom, index, node, viewport, layerOrder, cache);
+  return cascadeWithIndex(dom, index, node, viewport, layerOrder, cache, interaction);
 }
 
 function cascadeWithIndex(
@@ -186,18 +219,50 @@ function cascadeWithIndex(
   viewport: Viewport,
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
+  interaction?: InteractionState,
 ): ComputedStyle {
   if (cache !== undefined) {
     const hit = cache.get(node);
     if (hit !== undefined) return hit;
   }
   const domNode = dom.nodes.get(node);
-  const parentStyle = resolveParentStyle(dom, index, domNode, viewport, layerOrder, cache);
+  const parentStyle = resolveParentStyle(dom, index, domNode, viewport, layerOrder, cache, interaction);
 
   // 1) Collect the declarations of every rule matching this node, in document
   //    order (a stable per-declaration sequence drives the source-order
   //    tie-break across all sheets — design.md §8.1).
-  const winners = selectWinners(dom, index, node, domNode, layerOrder);
+  const winners = selectWinners(dom, index, node, domNode, layerOrder, interaction);
+
+  // ---- F2: STYLE SHARING lookup --------------------------------------------
+  // Two elements with the same tag + classes + matched-rule sequence + the
+  // same inheritable parent fields compute IDENTICAL styles. The first miss
+  // computes and stores; every subsequent element with the same signature
+  // REUSES the frozen style object (a Tailwind-class O(1) path).
+  const element = domNode?.kind === "element" ? domNode : undefined;
+  const canShare = element !== undefined && winners.size > 0;
+  let shareKey = "";
+  if (canShare) {
+    const classes = [...classListOf(element)].sort();
+    // The matched rule ORDER sequence uniquely determines the cascade result —
+    // NOT the winners' per-call `seq` counters (those differ per node).
+    const matched = matchRulesMemoized(index, dom, node, element, interaction);
+    const ruleSeq = matched.map((m) => m.order).join(",");
+    // The INLINE style is part of the cascade input: two elements matching the
+    // same rules with different inline styles compute different results, so it
+    // MUST be in the share key (the class-only key would wrongly share them).
+    const inlineStyle = element.attrs?.get("style") ?? "";
+    shareKey = `${element.tag ?? ""}|${classes.join(" ")}|${ruleSeq}|${inlineStyle}|${interaction !== undefined ? "i" : "n"}`;
+    const shareMap = styleShareCache.get(index);
+    if (shareMap !== undefined) {
+      const shared = shareMap.get(shareKey);
+      if (shared !== undefined && shared.parentKey === parentShareKey(parentStyle)) {
+        styleShareHits += 1;
+        if (cache !== undefined) cache.set(node, shared.style);
+        return shared.style;
+      }
+    }
+    styleShareMisses += 1;
+  }
 
   // Collect custom properties (--foo) for var() substitution. Custom properties
   // inherit, so merge the parent's resolved custom properties with this node's
@@ -224,7 +289,24 @@ function cascadeWithIndex(
     const fsSpec = fsValue !== null ? parseSpecified("font-size", fsValue) : { ok: false } as const;
     if (fsSpec.ok) {
       const resolved = resolveLengths(fsSpec.value, parentFontSizePx, remBasis, viewport);
-      if (typeof resolved === "number") fontSizePx = resolved;
+      if (typeof resolved === "number") {
+        fontSizePx = resolved;
+      } else if (
+        typeof resolved === "object" &&
+        resolved !== null &&
+        "kind" in resolved &&
+        (resolved as { kind?: unknown }).kind === "specified-length" &&
+        (resolved as { unit?: unknown }).unit === "%"
+      ) {
+        // CSS Fonts §4: a percentage font-size is relative to the PARENT's
+        // font size (`font-size: 100%` = inherit, `80%` = 0.8 × parent) — NOT
+        // the containing-block width that `resolveOne`'s generic % path defers
+        // to. Resolve it here so the computed fontSize is always a px number.
+        const pct = (resolved as { value?: unknown }).value;
+        if (typeof pct === "number" && Number.isFinite(pct)) {
+          fontSizePx = (parentFontSizePx * pct) / 100;
+        }
+      }
     }
   }
 
@@ -259,6 +341,13 @@ function cascadeWithIndex(
       }
       const specified = parseSpecified(prop.name, valueWithVars);
       if (specified.ok) {
+        // `font-size` stores the ALREADY-RESOLVED px value computed above (its
+        // em basis is the PARENT's font size, and its % form resolves against
+        // the parent too — CSS Fonts §4), never a raw specified-length object.
+        if (prop.name === "font-size") {
+          result[prop.field] = fontSizePx;
+          continue;
+        }
         const emBasis = prop.name === "font-size" ? parentFontSizePx : fontSizePx;
         const resolved = resolveLengths(specified.value, emBasis, remBasis, viewport);
         result[prop.field] = prop.computeValue(resolved, parentStyle, ctx);
@@ -272,6 +361,17 @@ function cascadeWithIndex(
 
   const frozen = deepFreeze(result as unknown as ComputedStyle);
   if (cache !== undefined) cache.set(node, frozen);
+
+  // F2: store into the sharing cache (the NEXT element with this signature
+  // reuses this frozen style object).
+  if (canShare && shareKey !== "") {
+    let shareMap = styleShareCache.get(index);
+    if (shareMap === undefined) {
+      shareMap = new Map();
+      styleShareCache.set(index, shareMap);
+    }
+    shareMap.set(shareKey, { parentKey: parentShareKey(parentStyle), style: frozen });
+  }
   return frozen;
 }
 
@@ -405,11 +505,12 @@ function resolveParentStyle(
   viewport: Viewport,
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
+  interaction?: InteractionState,
 ): ComputedStyle {
   if (domNode === undefined || domNode.parent === null) {
     return INITIAL_STYLE;
   }
-  return cascadeWithIndex(dom, index, domNode.parent, viewport, layerOrder, cache);
+  return cascadeWithIndex(dom, index, domNode.parent, viewport, layerOrder, cache, interaction);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,12 +536,152 @@ interface Candidate {
  * order). Phase 1 has a single origin (author), so importance (`!important`)
  * is the first discriminator (Req 11.2).
  */
+// Structural-pattern detector for the match memo: rules whose selectors
+// depend on tree position (:nth-*, :first-/:last-/:only-*, sibling
+// combinators) can match differently for two nodes with identical tag +
+// class list, so they must bypass the memo. WeakMap keeps it O(1) per rule
+// across renders.
+// Only plain tag/class/descendant selectors are memo-safe. Anything else —
+// pseudo-classes (:hover, :nth…), attribute ([data-x]), ID (#x — binds the
+// rule to ONE node), or sibling combinators (+, ~) — can differ between two
+// nodes sharing tag + class list, so those rules bypass the memo.
+const STRUCTURAL_PATTERN = /[:[#]|\s[+~]\s|[+~](?=[\s.[:a-zA-Z])/;
+const structurallySafe = new WeakMap<StyleRule, boolean>();
+
+function ruleIsStructurallySafe(rule: StyleRule): boolean {
+  const hit = structurallySafe.get(rule);
+  if (hit !== undefined) return hit;
+  let safe = true;
+  for (const selector of rule.selector) {
+    if (STRUCTURAL_PATTERN.test(selector.text)) {
+      safe = false;
+      break;
+    }
+  }
+  structurallySafe.set(rule, safe);
+  return safe;
+}
+
+// Match memo: sites like video grids render hundreds of cards with the SAME
+// tag + class list; each one re-ran full selector verification over its
+// candidate bucket. Keying by tag + sorted classes collapses them to one
+// match. Cached per RuleIndex (WeakMap) so a rebuilt index never sees stale
+// entries.
+interface MemoEntry {
+  readonly safe: readonly IndexedRule[];
+  readonly unsafe: readonly IndexedRule[];
+}
+const matchMemo = new WeakMap<RuleIndex, Map<string, MemoEntry>>();
+
+// ---------------------------------------------------------------------------
+// F2 — STYLE SHARING cache (Ladybird `StyleComputer` `m_style_sharing_cache`).
+//
+// When two elements have the SAME cascade inputs (same tag, same sorted class
+// list, same matching rule ORDER sequence, same interaction pseudoclass state,
+// and the SAME parent computed style), their computed styles are IDENTICAL —
+// so the second (and every subsequent) element can REUSE the first's frozen
+// ComputedStyle object. Tailwind-class utility pages put thousands of
+// elements through one class set: this turns O(N × properties) into O(1) per
+// shared element after the first computes.
+//
+// The cache keys on the FULL cascade signature (a stable string of tag +
+// classes + the matched rules' order sequence); the parent style identity is
+// checked by deep equality on a cheap projection (the fields the cascade
+// inherits FROM — a mismatch parent invalidates the share). Cached per
+// RuleIndex (WeakMap) so a rebuilt index never sees stale entries.
+// ---------------------------------------------------------------------------
+
+/** A cheap inheritable-fields projection of a parent style for sharing keys. */
+function parentShareKey(style: ComputedStyle): string {
+  // The fields children inherit: font, color, text, writing direction, and
+  // the interaction pseudo-classes. A stable JSON of just these is enough to
+  // differentiate parents for sharing purposes.
+  return JSON.stringify([
+    style["color"],
+    style["fontSize"],
+    style["fontStyle"],
+    style["fontWeight"],
+    style["lineHeight"],
+    style["textAlign"],
+    style["textTransform"],
+    style["letterSpacing"],
+    style["wordSpacing"],
+    style["whiteSpace"],
+    style["direction"],
+    style["visibility"],
+  ]);
+}
+
+/** The style-sharing cache entry: signature → computed style. */
+interface StyleShareEntry {
+  readonly parentKey: string;
+  readonly style: ComputedStyle;
+}
+
+/** The per-RuleIndex style-sharing cache (WeakMap so rebuilds are fresh). */
+const styleShareCache = new WeakMap<RuleIndex, Map<string, StyleShareEntry>>();
+
+/** Statistics: how many times a style was REUSED (a share hit). */
+let styleShareHits = 0;
+/** Statistics: how many times a style was COMPUTED (a share miss). */
+let styleShareMisses = 0;
+
+/** The current style-sharing statistics (for evidence reporting). */
+export function styleSharingStats(): { hits: number; misses: number } {
+  return { hits: styleShareHits, misses: styleShareMisses };
+}
+
+function matchRulesMemoized(
+  index: RuleIndex,
+  dom: DomTree,
+  node: NodeId,
+  domNode: DomNode,
+  interaction: InteractionState | undefined,
+): readonly IndexedRule[] {
+  let memo = matchMemo.get(index);
+  if (memo === undefined) {
+    memo = new Map();
+    matchMemo.set(index, memo);
+  }
+  const classes = [...classListOf(domNode)].sort();
+  const key = `${domNode.tag ?? ""}|${classes.join(" ")}`;
+  const hit = memo.get(key);
+  const candidates = collectCandidates(index, dom, node);
+  const safe: IndexedRule[] = [];
+  const unsafe: IndexedRule[] = [];
+  const fromMemo = new Set<number>();
+  if (hit !== undefined) {
+    for (const indexed of hit.safe) {
+      safe.push(indexed);
+      fromMemo.add(indexed.order);
+    }
+  }
+  const matched: IndexedRule[] = [];
+  for (const candidate of candidates) {
+    if (hit !== undefined && fromMemo.has(candidate.order)) {
+      matched.push(candidate); // reuse memo verdict (order-sorted below)
+      continue;
+    }
+    if (ruleMatches(candidate.rule, dom, node, interaction)) {
+      matched.push(candidate);
+      if (ruleIsStructurallySafe(candidate.rule)) safe.push(candidate);
+      else unsafe.push(candidate);
+    }
+  }
+  if (hit === undefined) {
+    memo.set(key, { safe, unsafe });
+  }
+  matched.sort((a, b) => a.order - b.order);
+  return matched;
+}
+
 function selectWinners(
   dom: DomTree,
   index: RuleIndex,
   node: NodeId,
   domNode: DomNode | undefined,
   layerOrder?: readonly (readonly string[])[],
+  interaction?: InteractionState,
 ): ReadonlyMap<string, Candidate> {
   const winners = new Map<string, Candidate>();
   if (domNode === undefined || domNode.kind !== "element") {
@@ -453,7 +694,7 @@ function selectWinners(
   // its origin (ua/user/author) via the IndexedRule wrapper. The cascade rank
   // (see beats) ensures author rules always override UA rules regardless of
   // specificity (CSS Cascade 4 §6.3).
-  for (const indexed of matchRulesForIndexed(index, dom, node)) {
+  for (const indexed of matchRulesMemoized(index, dom, node, domNode, interaction)) {
     const rule = indexed.rule;
     for (const decl of expandDeclarations(rule.declarations)) {
       const candidate: Candidate = {

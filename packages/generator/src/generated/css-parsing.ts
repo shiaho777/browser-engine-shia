@@ -5,7 +5,7 @@
  *
  * Regenerate with `npm run generate --workspace @browser-engine/generator`.
  */
-import { parseColor, parseEdgesLength, parseInteger, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTransform } from "../value-runtime.js";
+import { parseColor, parseEdgesLength, parseInteger, parseIntegerOrKeyword, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTransform } from "../value-runtime.js";
 import type { ParseResult } from "../value-runtime.js";
 import { notImplemented } from "@browser-engine/ir";
 
@@ -19,7 +19,7 @@ export function parseColorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `display` value. */
 export function parseDisplayValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex"]);
+  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "table-row", "table-row-group", "table-cell", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex"]);
 }
 
 /** Parse a `width` value. */
@@ -1712,6 +1712,541 @@ export function parseOffsetValue(value: string): ParseResult<unknown> {
   return parseString(value);
 }
 
+/** Parse a `anchor-name` value. */
+export function parseAnchorNameValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `anchor-scope` value. */
+export function parseAnchorScopeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `animation-composition` value. */
+export function parseAnimationCompositionValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `animation-timeline` value. */
+export function parseAnimationTimelineValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `background-position-x` value. */
+export function parseBackgroundPositionXValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["center", "left", "right"]);
+}
+
+/** Parse a `background-position-y` value. */
+export function parseBackgroundPositionYValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["center", "bottom", "top"]);
+}
+
+/** Parse a `block-ellipsis` value. */
+export function parseBlockEllipsisValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-block-color` value. */
+export function parseBorderBlockColorValue(value: string): ParseResult<unknown> {
+  return parseColor(value);
+}
+
+/** Parse a `border-block-end` value. */
+export function parseBorderBlockEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-block-start` value. */
+export function parseBorderBlockStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-block-style` value. */
+export function parseBorderBlockStyleValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-block-width` value. */
+export function parseBorderBlockWidthValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-image-outset` value. */
+export function parseBorderImageOutsetValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-image-repeat` value. */
+export function parseBorderImageRepeatValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-image-slice` value. */
+export function parseBorderImageSliceValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-image-source` value. */
+export function parseBorderImageSourceValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-image-width` value. */
+export function parseBorderImageWidthValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-inline-color` value. */
+export function parseBorderInlineColorValue(value: string): ParseResult<unknown> {
+  return parseColor(value);
+}
+
+/** Parse a `border-inline-end` value. */
+export function parseBorderInlineEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-inline-start` value. */
+export function parseBorderInlineStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-inline-style` value. */
+export function parseBorderInlineStyleValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `border-inline-width` value. */
+export function parseBorderInlineWidthValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `clip` value. */
+export function parseClipValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `color-interpolation-filters` value. */
+export function parseColorInterpolationFiltersValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `column-height` value. */
+export function parseColumnHeightValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto"]);
+}
+
+/** Parse a `contain-intrinsic-height` value. */
+export function parseContainIntrinsicHeightValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `contain-intrinsic-width` value. */
+export function parseContainIntrinsicWidthValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `container` value. */
+export function parseContainerValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `container-name` value. */
+export function parseContainerNameValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `container-type` value. */
+export function parseContainerTypeValue(value: string): ParseResult<unknown> {
+  return parseKeyword(value, ["normal", "size", "inline-size", "scroll-state"]);
+}
+
+/** Parse a `continue` value. */
+export function parseContinueValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-block-end-shape` value. */
+export function parseCornerBlockEndShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-block-start-shape` value. */
+export function parseCornerBlockStartShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-bottom-left-shape` value. */
+export function parseCornerBottomLeftShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-bottom-right-shape` value. */
+export function parseCornerBottomRightShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-bottom-shape` value. */
+export function parseCornerBottomShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-inline-end-shape` value. */
+export function parseCornerInlineEndShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-inline-start-shape` value. */
+export function parseCornerInlineStartShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-left-shape` value. */
+export function parseCornerLeftShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-right-shape` value. */
+export function parseCornerRightShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-shape` value. */
+export function parseCornerShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-top-left-shape` value. */
+export function parseCornerTopLeftShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-top-right-shape` value. */
+export function parseCornerTopRightShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `corner-top-shape` value. */
+export function parseCornerTopShapeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `cx` value. */
+export function parseCxValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `cy` value. */
+export function parseCyValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `d` value. */
+export function parseDValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-language-override` value. */
+export function parseFontLanguageOverrideValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-alternates` value. */
+export function parseFontVariantAlternatesValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-caps` value. */
+export function parseFontVariantCapsValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-east-asian` value. */
+export function parseFontVariantEastAsianValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-emoji` value. */
+export function parseFontVariantEmojiValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-ligatures` value. */
+export function parseFontVariantLigaturesValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-position` value. */
+export function parseFontVariantPositionValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-width` value. */
+export function parseFontWidthValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-column-end` value. */
+export function parseGridColumnEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-column-start` value. */
+export function parseGridColumnStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-row-end` value. */
+export function parseGridRowEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-row-start` value. */
+export function parseGridRowStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-clip` value. */
+export function parseMaskClipValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-composite` value. */
+export function parseMaskCompositeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-image` value. */
+export function parseMaskImageValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-mode` value. */
+export function parseMaskModeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-origin` value. */
+export function parseMaskOriginValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-position` value. */
+export function parseMaskPositionValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-repeat` value. */
+export function parseMaskRepeatValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `mask-size` value. */
+export function parseMaskSizeValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto", "cover", "contain"]);
+}
+
+/** Parse a `math-depth` value. */
+export function parseMathDepthValue(value: string): ParseResult<unknown> {
+  return parseIntegerOrKeyword(value, ["auto-add"], {});
+}
+
+/** Parse a `math-shift` value. */
+export function parseMathShiftValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `math-style` value. */
+export function parseMathStyleValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `max-lines` value. */
+export function parseMaxLinesValue(value: string): ParseResult<unknown> {
+  return parseIntegerOrKeyword(value, ["none"], { min: 1 });
+}
+
+/** Parse a `overflow-clip-margin` value. */
+export function parseOverflowClipMarginValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-block` value. */
+export function parseOverflowClipMarginBlockValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-bottom` value. */
+export function parseOverflowClipMarginBottomValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-inline` value. */
+export function parseOverflowClipMarginInlineValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-left` value. */
+export function parseOverflowClipMarginLeftValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-right` value. */
+export function parseOverflowClipMarginRightValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `overflow-clip-margin-top` value. */
+export function parseOverflowClipMarginTopValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `position-anchor` value. */
+export function parsePositionAnchorValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `position-area` value. */
+export function parsePositionAreaValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `position-try-fallbacks` value. */
+export function parsePositionTryFallbacksValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `position-try-order` value. */
+export function parsePositionTryOrderValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `position-visibility` value. */
+export function parsePositionVisibilityValue(value: string): ParseResult<unknown> {
+  return parseKeyword(value, ["always", "anchors-valid", "anchors-visible", "no-overflow"]);
+}
+
+/** Parse a `r` value. */
+export function parseRValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `rx` value. */
+export function parseRxValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto"]);
+}
+
+/** Parse a `ry` value. */
+export function parseRyValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto"]);
+}
+
+/** Parse a `scroll-margin` value. */
+export function parseScrollMarginValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `scroll-margin-inline` value. */
+export function parseScrollMarginInlineValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, []);
+}
+
+/** Parse a `scroll-padding` value. */
+export function parseScrollPaddingValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto"]);
+}
+
+/** Parse a `scroll-padding-inline` value. */
+export function parseScrollPaddingInlineValue(value: string): ParseResult<unknown> {
+  return parseLengthOrKeyword(value, ["auto"]);
+}
+
+/** Parse a `scroll-timeline` value. */
+export function parseScrollTimelineValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `scroll-timeline-axis` value. */
+export function parseScrollTimelineAxisValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `scroll-timeline-name` value. */
+export function parseScrollTimelineNameValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `text-decoration-skip-ink` value. */
+export function parseTextDecorationSkipInkValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `text-underline-position` value. */
+export function parseTextUnderlinePositionValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `text-wrap` value. */
+export function parseTextWrapValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `text-wrap-mode` value. */
+export function parseTextWrapModeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `text-wrap-style` value. */
+export function parseTextWrapStyleValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `timeline-scope` value. */
+export function parseTimelineScopeValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `transition-behavior` value. */
+export function parseTransitionBehaviorValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `view-timeline` value. */
+export function parseViewTimelineValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `view-timeline-axis` value. */
+export function parseViewTimelineAxisValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `view-timeline-inset` value. */
+export function parseViewTimelineInsetValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `view-timeline-name` value. */
+export function parseViewTimelineNameValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `view-transition-name` value. */
+export function parseViewTransitionNameValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `white-space-collapse` value. */
+export function parseWhiteSpaceCollapseValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `white-space-trim` value. */
+export function parseWhiteSpaceTrimValue(value: string): ParseResult<unknown> {
+  return parseKeyword(value, ["none", "discard-before", "discard-after", "discard-inner"]);
+}
+
 /** Every property's value parser, keyed by its CSS property name. */
 export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "color": parseColorValue,
@@ -2054,6 +2589,113 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "overflow-block": parseOverflowBlockValue,
   "overflow-inline": parseOverflowInlineValue,
   "offset": parseOffsetValue,
+  "anchor-name": parseAnchorNameValue,
+  "anchor-scope": parseAnchorScopeValue,
+  "animation-composition": parseAnimationCompositionValue,
+  "animation-timeline": parseAnimationTimelineValue,
+  "background-position-x": parseBackgroundPositionXValue,
+  "background-position-y": parseBackgroundPositionYValue,
+  "block-ellipsis": parseBlockEllipsisValue,
+  "border-block-color": parseBorderBlockColorValue,
+  "border-block-end": parseBorderBlockEndValue,
+  "border-block-start": parseBorderBlockStartValue,
+  "border-block-style": parseBorderBlockStyleValue,
+  "border-block-width": parseBorderBlockWidthValue,
+  "border-image-outset": parseBorderImageOutsetValue,
+  "border-image-repeat": parseBorderImageRepeatValue,
+  "border-image-slice": parseBorderImageSliceValue,
+  "border-image-source": parseBorderImageSourceValue,
+  "border-image-width": parseBorderImageWidthValue,
+  "border-inline-color": parseBorderInlineColorValue,
+  "border-inline-end": parseBorderInlineEndValue,
+  "border-inline-start": parseBorderInlineStartValue,
+  "border-inline-style": parseBorderInlineStyleValue,
+  "border-inline-width": parseBorderInlineWidthValue,
+  "clip": parseClipValue,
+  "color-interpolation-filters": parseColorInterpolationFiltersValue,
+  "column-height": parseColumnHeightValue,
+  "contain-intrinsic-height": parseContainIntrinsicHeightValue,
+  "contain-intrinsic-width": parseContainIntrinsicWidthValue,
+  "container": parseContainerValue,
+  "container-name": parseContainerNameValue,
+  "container-type": parseContainerTypeValue,
+  "continue": parseContinueValue,
+  "corner-block-end-shape": parseCornerBlockEndShapeValue,
+  "corner-block-start-shape": parseCornerBlockStartShapeValue,
+  "corner-bottom-left-shape": parseCornerBottomLeftShapeValue,
+  "corner-bottom-right-shape": parseCornerBottomRightShapeValue,
+  "corner-bottom-shape": parseCornerBottomShapeValue,
+  "corner-inline-end-shape": parseCornerInlineEndShapeValue,
+  "corner-inline-start-shape": parseCornerInlineStartShapeValue,
+  "corner-left-shape": parseCornerLeftShapeValue,
+  "corner-right-shape": parseCornerRightShapeValue,
+  "corner-shape": parseCornerShapeValue,
+  "corner-top-left-shape": parseCornerTopLeftShapeValue,
+  "corner-top-right-shape": parseCornerTopRightShapeValue,
+  "corner-top-shape": parseCornerTopShapeValue,
+  "cx": parseCxValue,
+  "cy": parseCyValue,
+  "d": parseDValue,
+  "font-language-override": parseFontLanguageOverrideValue,
+  "font-variant-alternates": parseFontVariantAlternatesValue,
+  "font-variant-caps": parseFontVariantCapsValue,
+  "font-variant-east-asian": parseFontVariantEastAsianValue,
+  "font-variant-emoji": parseFontVariantEmojiValue,
+  "font-variant-ligatures": parseFontVariantLigaturesValue,
+  "font-variant-position": parseFontVariantPositionValue,
+  "font-width": parseFontWidthValue,
+  "grid-column-end": parseGridColumnEndValue,
+  "grid-column-start": parseGridColumnStartValue,
+  "grid-row-end": parseGridRowEndValue,
+  "grid-row-start": parseGridRowStartValue,
+  "mask-clip": parseMaskClipValue,
+  "mask-composite": parseMaskCompositeValue,
+  "mask-image": parseMaskImageValue,
+  "mask-mode": parseMaskModeValue,
+  "mask-origin": parseMaskOriginValue,
+  "mask-position": parseMaskPositionValue,
+  "mask-repeat": parseMaskRepeatValue,
+  "mask-size": parseMaskSizeValue,
+  "math-depth": parseMathDepthValue,
+  "math-shift": parseMathShiftValue,
+  "math-style": parseMathStyleValue,
+  "max-lines": parseMaxLinesValue,
+  "overflow-clip-margin": parseOverflowClipMarginValue,
+  "overflow-clip-margin-block": parseOverflowClipMarginBlockValue,
+  "overflow-clip-margin-bottom": parseOverflowClipMarginBottomValue,
+  "overflow-clip-margin-inline": parseOverflowClipMarginInlineValue,
+  "overflow-clip-margin-left": parseOverflowClipMarginLeftValue,
+  "overflow-clip-margin-right": parseOverflowClipMarginRightValue,
+  "overflow-clip-margin-top": parseOverflowClipMarginTopValue,
+  "position-anchor": parsePositionAnchorValue,
+  "position-area": parsePositionAreaValue,
+  "position-try-fallbacks": parsePositionTryFallbacksValue,
+  "position-try-order": parsePositionTryOrderValue,
+  "position-visibility": parsePositionVisibilityValue,
+  "r": parseRValue,
+  "rx": parseRxValue,
+  "ry": parseRyValue,
+  "scroll-margin": parseScrollMarginValue,
+  "scroll-margin-inline": parseScrollMarginInlineValue,
+  "scroll-padding": parseScrollPaddingValue,
+  "scroll-padding-inline": parseScrollPaddingInlineValue,
+  "scroll-timeline": parseScrollTimelineValue,
+  "scroll-timeline-axis": parseScrollTimelineAxisValue,
+  "scroll-timeline-name": parseScrollTimelineNameValue,
+  "text-decoration-skip-ink": parseTextDecorationSkipInkValue,
+  "text-underline-position": parseTextUnderlinePositionValue,
+  "text-wrap": parseTextWrapValue,
+  "text-wrap-mode": parseTextWrapModeValue,
+  "text-wrap-style": parseTextWrapStyleValue,
+  "timeline-scope": parseTimelineScopeValue,
+  "transition-behavior": parseTransitionBehaviorValue,
+  "view-timeline": parseViewTimelineValue,
+  "view-timeline-axis": parseViewTimelineAxisValue,
+  "view-timeline-inset": parseViewTimelineInsetValue,
+  "view-timeline-name": parseViewTimelineNameValue,
+  "view-transition-name": parseViewTransitionNameValue,
+  "white-space-collapse": parseWhiteSpaceCollapseValue,
+  "white-space-trim": parseWhiteSpaceTrimValue,
 };
 
 /**

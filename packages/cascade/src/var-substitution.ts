@@ -45,6 +45,21 @@ export function collectCustomProperties(
   winners: ReadonlyMap<string, { readonly value: string }>,
   parentCustom: CustomPropertyMap,
 ): CustomPropertyMap {
+  // Fast path: most nodes declare no custom properties themselves. Copying
+  // the (potentially large) inherited map per node dominated profiles on
+  // real pages — return the parent's map by reference when there is nothing
+  // to override. Callers treat the map as immutable (they only read), and a
+  // node that DOES declare writes into a fresh copy below.
+  let hasOwn = false;
+  for (const name of winners.keys()) {
+    if (isCustomProperty(name)) {
+      hasOwn = true;
+      break;
+    }
+  }
+  if (!hasOwn) {
+    return parentCustom;
+  }
   const map = new Map<string, string>(parentCustom);
   for (const [name, candidate] of winners) {
     if (isCustomProperty(name)) {

@@ -525,6 +525,26 @@ export function parseNumber(
   return ok(clampToBounds(n, bounds.min, bounds.max));
 }
 
+/**
+ * Parse `input` as an `<integer>` or one of `keywords` (e.g. `column-count:
+ * auto`). Keywords are returned verbatim (lowercased); integers are clamped to
+ * the optional inclusive `[min, max]` bounds. A single reusable primitive, so
+ * adding such a property needs no new parsing code.
+ */
+export function parseIntegerOrKeyword(
+  input: string,
+  keywords: readonly string[],
+  bounds: { readonly min?: number; readonly max?: number } = {},
+): ParseResult<number | string> {
+  const token = normalize(input).toLowerCase();
+  if (keywords.includes(token)) {
+    return ok(token);
+  }
+  const parsed = parseInteger(input, bounds);
+  return parsed.ok ? parsed : err(`expected <integer> or ${keywords.join(" | ")}, got "${input.trim()}"`);
+}
+
+
 // ---- transform -------------------------------------------------------------
 
 /**
