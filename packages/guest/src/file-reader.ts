@@ -100,7 +100,7 @@ export class FileReader extends EventTarget {
   }
 
   #read(blob: BlobLike, finish: (bytes: Uint8Array, blob: BlobLike) => string | ArrayBuffer): void {
-    this.#beginRead(blob);
+    void this.#beginRead(blob);
     void (async () => {
       this.#fire("loadstart");
       let bytes: Uint8Array;
@@ -133,6 +133,7 @@ export class FileReader extends EventTarget {
   }
 
   readAsText(blob: unknown, encoding?: unknown): void {
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string -- DOMString coercion
     const label = encoding === undefined ? "utf-8" : String(encoding);
     this.#read(blob as BlobLike, (bytes) => new TextDecoder(label).decode(bytes));
   }

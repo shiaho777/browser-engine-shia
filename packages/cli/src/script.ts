@@ -23,7 +23,7 @@ import vm from "node:vm";
 import { URL as HostURL } from "node:url";
 
 import type { DomNode, DomTree, NodeId, StyleRule } from "@browser-engine/ir";
-import { CSS_PROPERTIES, parsePropertyValue, expandShorthand } from "@browser-engine/generator";
+import { CSS_PROPERTIES, LENGTH_BARE_ZERO_PX, parsePropertyValue, expandShorthand, isShorthandName } from "@browser-engine/generator";
 import type { CssPropertyDef } from "@browser-engine/generator";
 import { getBoundingClientRect as boundingRect } from "@browser-engine/layout";
 import { ruleMatches, parseEasing, sampleEasing, interpolateValue, customPropertiesOf } from "@browser-engine/cascade";
@@ -37,6 +37,8 @@ import {
 
 import { parseHtml } from "@browser-engine/html-parser";
 import { FineSession } from "./fine.js";
+import { resolveUrl } from "./loader.js";
+import { isActiveStylesheetLink } from "./link-rel.js";
 import {
   isDeclarationValueValid,
   makeStylePropertyMap,
@@ -201,7 +203,7 @@ function serializeComputed(tsType: string, value: unknown): string {
   if (value === undefined || value === null) return "";
   // Keyword-valued colors (currentcolor, system colors) compute to the keyword.
   if (tsType === "Color" && typeof value === "string") return value;
-  if (tsType === "Color" && typeof value === "object") {
+  if ((tsType === "Color" || tsType === "Color | string") && typeof value === "object" && value !== null) {
     const c = value as { r: number; g: number; b: number; a: number };
     return c.a >= 1 ? `rgb(${c.r}, ${c.g}, ${c.b})` : `rgba(${c.r}, ${c.g}, ${c.b}, ${c.a})`;
   }
@@ -617,15 +619,6 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     if (idIndexEpoch !== mutations) rebuildIdIndex();
     return idIndex.get(want) ?? null;
   };
-  const isUnderScope = (id: NodeId, scopeRoot: NodeId | null): boolean => {
-    if (scopeRoot === null) return true;
-    let cur: NodeId | null | undefined = id;
-    while (cur !== null && cur !== undefined) {
-      if (cur === scopeRoot) return true;
-      cur = session.dom.nodes.get(cur)?.parent;
-    }
-    return false;
-  };
   const collectByTag = (scopeRoot: NodeId | null, want: string): NodeId[] => {
     const out: NodeId[] = [];
     const visit = (id: NodeId, includeSelf: boolean): void => {
@@ -664,9 +657,22 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     const trimmed = selector.trim();
     if (trimmed === "") return [];
     if (trimmed.charCodeAt(0) === 35 /* # */ && /^#[\w:-]+$/.test(trimmed)) {
-      const found = findByIdIndexed(trimmed.slice(1));
+      const want = trimmed.slice(1);
+      if (scopeRoot !== null) {
+        // Scoped `#id` queries must see detached subtrees too — the global id
+        // index only covers the connected document.
+        let found: NodeId | null = null;
+        const visit = (id: NodeId): void => {
+          const node = session.dom.nodes.get(id);
+          if (node === undefined || found !== null) return;
+          if (node.kind === "element" && node.attrs?.get("id") === want) found = id;
+          for (const child of node.children) visit(child);
+        };
+        visit(scopeRoot);
+        return found !== null && found !== scopeRoot ? [found] : [];
+      }
+      const found = findByIdIndexed(want);
       if (found === null) return [];
-      if (scopeRoot !== null && (found === scopeRoot || !isUnderScope(found, scopeRoot))) return [];
       return [found];
     }
     if (/^[a-zA-Z][\w-]*$/.test(trimmed)) {
@@ -1099,11 +1105,26 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
    * no-op when no hook was injected (standalone callers).
    */
   const notifyDynamicScripts = (ids: readonly (NodeId | null | undefined)[]): void => {
-    if (options.onDynamicScript === undefined) return;
     for (const id of ids) {
       if (id === null || id === undefined) continue;
       const node = session.dom.nodes.get(id);
-      if (node?.kind === "element" && node.tag === "script") options.onDynamicScript(id);
+      if (node?.kind !== "element") continue;
+      if (node.tag === "script" && options.onDynamicScript !== undefined) options.onDynamicScript(id);
+      // A <link> that becomes a connected, active stylesheet link finishes
+      // loading its sheet during insertion — `load` fires at the element.
+      if (
+        node.tag === "link" &&
+        isConnectedToDocument(session.dom, id, shadowHostResolver) &&
+        isActiveStylesheetLink(node, session.isLinkEnabled(id))
+      ) {
+        dispatch(id, makeEvent("load"));
+      }
+      // A connected <iframe> loads its (empty/srcdoc) nested document and
+      // fires `load` at the element.
+      if (node.tag === "iframe" && isConnectedToDocument(session.dom, id, shadowHostResolver)) {
+        ensureIframeDoc(id);
+        dispatch(id, makeEvent("load"));
+      }
     }
   };
 
@@ -1540,14 +1561,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       setAttribute(name: unknown, value: unknown): void {
         const attr = htmlAttributeName(name);
-        session.setAttribute(nodeId, attr, String(value));
+        session.setAttribute(
+          nodeId,
+          attr,
+          attr === "style" ? rewriteStyleAttrUrls(String(value)) : String(value),
+        );
         mutations += 1;
         // HTML script-element semantics: setting `src` on a CONNECTED script
         // element triggers the fetch-and-run steps (the classic SPA loader
         // pattern: append first, then set src).
         if (attr === "src" && options.onDynamicScript !== undefined) {
           const node = session.dom.nodes.get(nodeId);
-          if (node?.kind === "element" && node.tag === "script" && isConnectedToDocument(session.dom, nodeId)) {
+          if (node?.kind === "element" && node.tag === "script" && isConnectedToDocument(session.dom, nodeId, shadowHostResolver)) {
             options.onDynamicScript(nodeId);
           }
         }
@@ -1596,7 +1621,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       // qualified name verbatim ("xlink:title"), so NS reads resolve by
       // matching the localName suffix of a qualified name.
       setAttributeNS(_ns: unknown, qualifiedName: unknown, value: unknown): void {
-        session.setAttribute(nodeId, String(qualifiedName), String(value));
+        const qn = String(qualifiedName);
+        session.setAttribute(
+          nodeId,
+          qn,
+          qn.toLowerCase() === "style" ? rewriteStyleAttrUrls(String(value)) : String(value),
+        );
         mutations += 1;
       },
       getAttributeNS(_ns: unknown, localName: unknown): string | null {
@@ -1864,7 +1894,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return p !== null && session.dom.nodes.get(p)?.kind === "element" ? makeElementCached(p) : null;
       },
       get isConnected(): boolean {
-        return isConnectedToDocument(session.dom, nodeId);
+        return isConnectedToDocument(session.dom, nodeId, shadowHostResolver);
       },
       contains(other: unknown): boolean {
         const otherId = idFromWrapper(other);
@@ -1944,6 +1974,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         const shadowRootId = session.createElement("#shadow-root");
         session.setAttribute(shadowRootId, "data-shadow-mode", mode);
         shadowRootIds.set(nodeId, { rootId: shadowRootId, mode });
+        session.registerShadowHost(nodeId, shadowRootId);
         // Record the host → shadow-children composition. The shadow root's
         // children are what the host renders.
         compositionMutator?.registerHost(nodeId, shadowRootId);
@@ -2374,11 +2405,6 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return wrapper;
   };
 
-  type StylePriority = "" | "important";
-  interface StyleDeclarationEntry {
-    readonly value: string;
-    readonly priority: StylePriority;
-  }
   interface StyleDeclarationObject {
     readonly length: number;
     item(index: unknown): string;
@@ -2388,6 +2414,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     removeProperty(prop: unknown): string;
     cssText: string;
     _rawDeclValue(prop: unknown): string | undefined;
+    [Symbol.iterator](): IterableIterator<string>;
   }
 
   const makeStyleDeclarationCached = (nodeId: NodeId): object => {
@@ -2404,12 +2431,77 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
    * `{ … }` body (CSSStyleRule.style / .styleMap).
    */
   const makeDeclarationBacked = (getText: () => string, setText: (text: string) => void): object => {
-    const parse = (): Map<string, StyleDeclarationEntry> => {
+    // Escape-aware declaration split: `;` and `:` inside strings, parens, or
+    // `\` escapes do not delimit (e.g. `--a\;b` / `content: "a;b"`).
+    const splitDeclarations = (text: string): string[] => {
+      const out: string[] = [];
+      let start = 0;
+      let depth = 0;
+      let quote = "";
+      for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i] as string;
+        if (quote !== "") {
+          if (ch === "\\") i += 1;
+          else if (ch === quote) quote = "";
+          continue;
+        }
+        if (ch === "\\") {
+          i += 1;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+        else if (ch === ";" && depth === 0) {
+          out.push(text.slice(start, i));
+          start = i + 1;
+        }
+      }
+      out.push(text.slice(start));
+      return out;
+    };
+    const declColon = (decl: string): number => {
+      let depth = 0;
+      let quote = "";
+      for (let i = 0; i < decl.length; i += 1) {
+        const ch = decl[i] as string;
+        if (quote !== "") {
+          if (ch === "\\") i += 1;
+          else if (ch === quote) quote = "";
+          continue;
+        }
+        if (ch === "\\") {
+          i += 1;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+        else if (ch === ":" && depth === 0) return i;
+      }
+      return -1;
+    };
+    // `\xx` escape decode for identifiers (custom property names).
+    const unescapeIdent = (name: string): string =>
+      name.replace(/\\([0-9a-fA-F]{1,6})\s?|\\(.)/g, (_m, hex: string | undefined, ch: string | undefined) =>
+        hex !== undefined ? String.fromCodePoint(parseInt(hex, 16)) : (ch ?? ""));
+    /** Relative `url()` inner → absolute, resolved against the CURRENT
+     *  document base URL (frozen into the stored declaration text). */
+    const declUrl = (inner: string): string | null => resolveUrl(inner, session.baseUrl);
+    const parseText = (source: string): Map<string, StyleDeclarationEntry> => {
+      rawOverrides.clear();
       const map = new Map<string, StyleDeclarationEntry>();
-      for (const decl of getText().split(";")) {
-        const idx = decl.indexOf(":");
+      for (const decl of splitDeclarations(source)) {
+        const idx = declColon(decl);
         if (idx <= 0) continue;
-        const name = decl.slice(0, idx).trim();
+        let name = decl.slice(0, idx).trim();
+        if (name.startsWith("--") && name.includes("\\")) name = unescapeIdent(name);
         let value = decl.slice(idx + 1).trim();
         let priority: StylePriority = "";
         const important = /!\s*important\s*$/i.exec(value);
@@ -2418,20 +2510,79 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           value = value.slice(0, important.index).trim();
         }
         if (name === "" || value === "") continue;
+        // `all` is the universal shorthand: a CSS-wide keyword applies to every
+        // longhand (except direction/unicode-bidi/custom properties, per spec).
+        if (name === "all") {
+          const wide = value.toLowerCase();
+          if (!CSS_WIDE_VALUE_SET.has(wide)) continue;
+          for (const p of allLonghandNames()) applyDecl(map, p, wide, priority);
+          continue;
+        }
         // Invalid declarations drop out (CSS error recovery): a later invalid
         // declaration leaves the earlier valid one standing, so SKIP rather
         // than clear. Custom properties and var()-bearing values accept any
         // token stream.
+        const passthrough = name.startsWith("--") || /\b(?:var|env)\(/.test(value);
         if (
-          !name.startsWith("--") &&
-          !/\b(?:var|env)\(/.test(value) &&
+          !passthrough &&
           !expandShorthand(name, value) &&
           !isDeclarationValueValid(name, value)
         ) {
           continue;
         }
-        map.set(name, { value, priority });
+        // Valid declarations store the CSSOM-canonical serialization
+        // (`5% .5%` → `5% 0.5%`); var()/custom-prop values stay verbatim.
+        // Shorthands expand to their longhands at this point: the stored
+        // declaration set is always longhand-shaped (CSSOM "declared
+        // declarations"), and shorthands are re-synthesized at serialization.
+        const wide = value.toLowerCase();
+        const covered = isShorthandName(name) ? coveredLonghands(name) : null;
+        if (covered !== null) {
+          // CSS-wide keywords AND var()/env()-carrying values on a shorthand
+          // set every covered longhand verbatim (pending-substitution
+          // semantics — the var reference resolves at computed-value time).
+          const spread = !passthrough && CSS_WIDE_VALUE_SET.has(wide)
+            ? wide
+            : /\b(?:var|env)\(/.test(value)
+              ? value
+              : null;
+          if (spread !== null) {
+            const pending = /\b(?:var|env)\(/.test(spread);
+            for (const p of covered) {
+              applyDecl(map, p, spread, priority, pending);
+              if (pending) rawOverrides.set(p, spread);
+              else rawOverrides.delete(p);
+            }
+            continue;
+          }
+        }
+        const expanded = passthrough ? null : expandShorthand(name, value);
+        if (expanded !== null) {
+          for (const e of expanded) {
+            // Expansion entries with an empty value remove the longhand
+            // (e.g. `font: menu` resets the font-variant longhands).
+            if (e.value === "") map.delete(e.property);
+            else {
+              const canon = canonicalDeclValue(e.property, e.value, declUrl);
+              applyDecl(map, e.property, canon, priority);
+              if (canon !== e.value && /url\(/i.test(e.value)) rawOverrides.set(e.property, e.value);
+            }
+          }
+        } else {
+          const canon = passthrough ? value : canonicalDeclValue(name, value, declUrl);
+          applyDecl(map, name, canon, priority);
+          // url() is frozen-absolute in the canonical value — keep the authored
+          // text for the Typed OM declared-value views (verbatim channel).
+          if (!passthrough && canon !== value && /url\(/i.test(value)) rawOverrides.set(name, value);
+        }
       }
+      return map;
+    };
+    const parse = (): Map<string, StyleDeclarationEntry> => {
+      const src = getText();
+      if (parsedCache !== null && parsedCache.src === src) return parsedCache.map;
+      const map = parseText(src);
+      parsedCache = { src, map };
       return map;
     };
     // Values containing var()/env() references are stored verbatim for the
@@ -2439,12 +2590,15 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     // the CSSOM getters still return the normalized form.
     const rawOverrides = new Map<string, string>();
     const serialize = (map: Map<string, StyleDeclarationEntry>): string =>
-      // CSSOM serializes each declaration with a trailing semicolon.
-      [...map]
-        .map(([k, decl]) => `${k}: ${decl.value}${decl.priority === "important" ? " !important" : ""};`)
-        .join(" ");
+      serializeDeclarations(map);
+    // The declaration list is a LIVE structure (Blink keeps the parsed
+    // declarations, not the source text): memoize by source text so mutation
+    // ordering survives commits that serialize shorthands folded.
+    let parsedCache: { src: string; map: Map<string, StyleDeclarationEntry> } | null = null;
     const commit = (map: Map<string, StyleDeclarationEntry>): void => {
-      setText(serialize(map));
+      const serialized = serialize(map);
+      setText(serialized);
+      parsedCache = { src: serialized, map };
     };
     const declaredAliases = (map: Map<string, StyleDeclarationEntry>): string[] => {
       const keys: string[] = [];
@@ -2474,92 +2628,119 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       getPropertyValue(prop: unknown): string {
         const map = parse();
         const name = String(prop);
-        const direct = map.get(name)?.value;
-        if (direct !== undefined) return direct;
-        // Longhands read through a declared shorthand (`margin` covers
-        // `margin-top`) — the shorthand's expansion decides the value.
-        for (const [entryName, entry] of map) {
-          if (entryName === name) continue;
-          const expanded = expandShorthand(entryName, entry.value);
-          if (expanded === null) continue;
-          const hit = expanded.find((d) => d.property === name);
-          if (hit !== undefined) return hit.value;
-        }
-        return "";
+        const direct = map.get(name);
+        if (direct !== undefined) return direct.pending === true ? "" : direct.value;
+        // Shorthand read: synthesize from its longhands when the whole group is
+        // declared with one priority and the value is shorthand-representable.
+        return synthesizeShorthand(map, name)?.value ?? "";
       },
       getPropertyPriority(prop: unknown): string {
-        return parse().get(String(prop))?.priority ?? "";
+        const map = parse();
+        const name = String(prop);
+        return map.get(name)?.priority ?? synthesizeShorthand(map, name)?.priority ?? "";
       },
       setProperty(prop: unknown, value?: unknown, priority?: unknown): void {
         const map = parse();
+        const before = serialize(map);
         const name = String(prop);
         const text = value === undefined ? "" : cssomString(value);
-        if (text === "") {
-          map.delete(name);
-          commit(map);
-          return;
-        }
         const priorityText = priority === undefined ? "" : cssomString(priority);
         if (priorityText !== "" && priorityText.toLowerCase() !== "important") return;
-        // CSSOM setProperty ignores invalid values — the previous valid
-        // declaration must stand (it is not replaced by the bad text).
-        if (
-          !name.startsWith("--") &&
-          !/\b(?:var|env)\(/.test(text) &&
-          !expandShorthand(name, text) &&
-          !isDeclarationValueValid(name, text)
-        ) {
-          return;
-        }
-        map.set(name, { value: text, priority: priorityText === "" ? "" : "important" });
-        if (/\b(?:var|env)\(/.test(text)) rawOverrides.set(name, text);
-        else rawOverrides.delete(name);
-        commit(map);
-      },
-      removeProperty(prop: unknown): string {
-        const map = parse();
-        const name = String(prop);
-        const oldValue = map.get(name)?.value
-          ?? (() => {
-            // A longhand may be declared through a covering shorthand — the
-            // removal result reads through the expansion.
-            for (const [entryName, entry] of map) {
-              const expanded = expandShorthand(entryName, entry.value);
-              const hit = expanded?.find((d) => d.property === name);
-              if (hit !== undefined) return hit.value;
+        const prio: StylePriority = priorityText === "" ? "" : "important";
+        if (text === "" || name === "all") {
+          if (text !== "") {
+            const wide = text.trim().toLowerCase();
+            if (CSS_WIDE_VALUE_SET.has(wide)) {
+              for (const p of allLonghandNames()) applyDecl(map, p, wide, prio);
             }
-            return "";
-          })();
-        map.delete(name);
-        rawOverrides.delete(name);
-        // Removing a longhand removes the shorthand declared over it and
-        // rewrites the remaining edges as their own longhand declarations.
-        for (const [entryName, entry] of map) {
-          const expanded = expandShorthand(entryName, entry.value);
-          if (expanded === null) continue;
-          if (expanded.some((d) => d.property === name)) {
-            map.delete(entryName);
-            rawOverrides.delete(entryName);
-            for (const d of expanded) {
-              if (d.property !== name && !map.has(d.property)) {
-                map.set(d.property, { value: d.value, priority: entry.priority });
+          } else if (name === "all") {
+            for (const p of allLonghandNames()) map.delete(p);
+          } else {
+            map.delete(name);
+            if (isShorthandName(name)) {
+              for (const rule of SHORTHAND_FOLD_RULES) {
+                if (rule.name === name) for (const l of rule.longhands) map.delete(l);
               }
             }
           }
+          if (serialize(map) !== before) commit(map);
+          return;
         }
-        commit(map);
+        const passthrough = name.startsWith("--") || /\b(?:var|env)\(/.test(text);
+        // CSSOM setProperty ignores invalid values — the previous valid
+        // declaration must stand (it is not replaced by the bad text).
+        const wide = text.trim().toLowerCase();
+        const covered = isShorthandName(name) ? coveredLonghands(name) : null;
+        const spread = covered !== null
+          ? (!passthrough && CSS_WIDE_VALUE_SET.has(wide) ? wide
+            : /\b(?:var|env)\(/.test(text) ? text : null)
+          : null;
+        const expanded = passthrough || spread !== null ? null : expandShorthand(name, text);
+        if (!passthrough && spread === null && expanded === null && !isDeclarationValueValid(name, text)) {
+          return;
+        }
+        if (spread !== null) {
+          const pending = /\b(?:var|env)\(/.test(spread);
+          for (const p of covered!) {
+            applyDecl(map, p, spread, prio, pending);
+            if (pending) rawOverrides.set(p, spread);
+            else rawOverrides.delete(p);
+          }
+        } else if (expanded !== null) {
+          for (const e of expanded) {
+            if (e.value === "") {
+              map.delete(e.property);
+              rawOverrides.delete(e.property);
+              continue;
+            }
+            const canon = canonicalDeclValue(e.property, e.value, declUrl);
+            applyDecl(map, e.property, canon, prio);
+            if (canon !== e.value && /url\(/i.test(e.value)) rawOverrides.set(e.property, e.value);
+            else rawOverrides.delete(e.property);
+          }
+        } else {
+          const canon = passthrough ? text : canonicalDeclValue(name, text, declUrl);
+          applyDecl(map, name, canon, prio);
+          if (passthrough || (canon !== text && /url\(/i.test(text))) rawOverrides.set(name, text);
+          else rawOverrides.delete(name);
+        }
+        // No-op writes must not rewrite the attribute (MutationObserver would
+        // record a spurious style mutation otherwise).
+        if (serialize(map) !== before) commit(map);
+      },
+      removeProperty(prop: unknown): string {
+        const map = parse();
+        const before = serialize(map);
+        const name = String(prop);
+        const oldValue = map.get(name)?.value ?? synthesizeShorthand(map, name)?.value ?? "";
+        if (name === "all") {
+          for (const p of allLonghandNames()) map.delete(p);
+        } else if (map.delete(name) === false && isShorthandName(name)) {
+          for (const rule of SHORTHAND_FOLD_RULES) {
+            if (rule.name === name) for (const l of rule.longhands) map.delete(l);
+          }
+        }
+        rawOverrides.delete(name);
+        if (serialize(map) !== before) commit(map);
         return oldValue;
       },
       /** Typed OM seam: the verbatim (untrimmed) value stored by set(). */
       _rawDeclValue(prop: unknown): string | undefined {
         return rawOverrides.get(String(prop));
       },
+      // CSSStyleDeclaration is iterable over its declared property names.
+      [Symbol.iterator](): IterableIterator<string> {
+        return [...parse().keys()][Symbol.iterator]();
+      },
       get cssText(): string {
-        return getText();
+        return serialize(parse());
       },
       set cssText(value: unknown) {
         rawOverrides.clear();
-        setText(String(value));
+        // cssText stores the CANONICAL serialization of the parsed input —
+        // invalid declarations drop out of the attribute (`"z: 1; bad"` →
+        // the attribute reads `"z-index: 1;"`-style canonical text).
+        commit(parseText(coerceGuestString(value)));
       },
     };
     const ownKeys = (target: StyleDeclarationObject): Array<string | symbol> => {
@@ -2605,6 +2786,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return Reflect.set(target, prop, value);
       },
       has(target, prop): boolean {
+        // Array indices present (so Array.prototype.indexOf/includes see
+        // them — `indexOf` does HasProperty before Get).
+        if (typeof prop === "string" && isCssomArrayIndex(prop)) {
+          return target.item(Number(prop)) !== "";
+        }
         return (typeof prop === "string" && CSSOM_PROPERTY_ALIAS_TO_NAME.has(prop)) || Reflect.has(target, prop);
       },
       ownKeys,
@@ -2727,6 +2913,816 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return { selector: prelude, body: cssText.slice(open + 1, close) };
   };
 
+  interface StyleRuleEntry {
+    cssText: string;
+    ruleObject?: object;
+  }
+  /**
+   * CSSOM rule list machinery shared by element-backed sheets and detached
+   * (constructed) CSSStyleSheets: a lazily-parsed top-level rule list, a LIVE
+   * cssRules proxy (evaluated per access — `sheet.cssRules[sheet.insertRule(x)]`
+   * reads the list BEFORE insertRule runs), and insertRule/deleteRule that
+   * write back through `setText` (element text rewrite, or the detached
+   * sheet's own text store).
+   */
+  // At-rule type numbers (CSSOM §5.1) for rules that get typed objects.
+  const AT_RULE_TYPES: Record<string, number> = {
+    charset: 2, media: 4, "font-face": 5, page: 6,
+    keyframes: 7, "-webkit-keyframes": 7, "-moz-keyframes": 7, "-o-keyframes": 7,
+    namespace: 10, "counter-style": 11, supports: 12,
+    "font-feature-values": 14, viewport: 15,
+  };
+
+  interface ImportPrelude {
+    href: string;
+    layerRaw: string | null;
+    layerName: string | null;
+    supports: string | null;
+    mediaText: string;
+  }
+  // Parse `@import <url|string> [layer|layer(name)] [supports(<cond>)] [<media>]`.
+  const parseImportRule = (cssText: string): ImportPrelude | undefined => {
+    let s = cssText.trim().replace(/^@import\b/i, "").trim();
+    if (/;$/.test(s)) s = s.slice(0, s.lastIndexOf(";")).trimEnd();
+    let href: string;
+    const urlM = /^url\(\s*/i.exec(s);
+    if (urlM !== null) {
+      s = s.slice(urlM[0].length);
+      if (s.startsWith('"') || s.startsWith("'")) {
+        const q = s[0] as string;
+        const end = s.indexOf(q, 1);
+        if (end < 0) return undefined;
+        href = s.slice(1, end);
+        s = s.slice(end + 1);
+        if (!/^\s*\)/.test(s)) return undefined;
+        s = s.replace(/^\s*\)/, "");
+      } else {
+        const end = s.indexOf(")");
+        if (end < 0) return undefined;
+        href = s.slice(0, end).trim();
+        s = s.slice(end + 1);
+      }
+    } else if (s.startsWith('"') || s.startsWith("'")) {
+      const q = s[0] as string;
+      const end = s.indexOf(q, 1);
+      if (end < 0) return undefined;
+      href = s.slice(1, end);
+      s = s.slice(end + 1);
+    } else {
+      return undefined;
+    }
+    s = s.trimStart();
+    let layerRaw: string | null = null;
+    let layerName: string | null = null;
+    const layerM = /^layer(\(\s*[^)]*?\s*\))?(?=[\s;]|$)/i.exec(s);
+    if (layerM !== null) {
+      layerRaw = layerM[0];
+      const inner = /^layer\(\s*([^)]*?)\s*\)$/i.exec(layerM[0]);
+      layerName = inner !== null ? (inner[1] ?? "") : "";
+      s = s.slice(layerM[0].length).trimStart();
+    }
+    let supports: string | null = null;
+    const supM = /^supports\(/i.exec(s);
+    if (supM !== null) {
+      let depth = 0;
+      let end = -1;
+      for (let i = supM[0].length - 1; i < s.length; i += 1) {
+        const ch = s[i];
+        if (ch === "(") depth += 1;
+        else if (ch === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            end = i;
+            break;
+          }
+        }
+      }
+      if (end < 0) return undefined;
+      supports = s.slice(supM[0].length, end).trim();
+      s = s.slice(end + 1).trimStart();
+    }
+    return { href, layerRaw, layerName, supports, mediaText: s.trim() };
+  };
+  const serializeImportRule = (p: ImportPrelude): string =>
+    `@import url("${p.href.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")` +
+    (p.layerRaw !== null ? ` ${p.layerRaw}` : "") +
+    (p.supports !== null ? ` supports(${p.supports})` : "") +
+    (p.mediaText !== "" ? ` ${p.mediaText}` : "") +
+    ";";
+
+  // `@namespace [prefix] <url|string>` → {prefix, uri}.
+  const parseNamespaceRule = (cssText: string): { prefix: string | null; uri: string } | undefined => {
+    let s = cssText.trim().replace(/^@namespace\b/i, "").trim();
+    if (/;$/.test(s)) s = s.slice(0, s.lastIndexOf(";")).trimEnd();
+    let prefix: string | null = null;
+    const preM = /^([a-zA-Z_][\w-]*)\s+/.exec(s);
+    if (preM !== null && !/^url\(/i.test(s)) {
+      prefix = preM[1] ?? null;
+      s = s.slice(preM[0].length);
+    }
+    const urlM = /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/i.exec(s);
+    if (urlM !== null) {
+      return { prefix, uri: urlM[1] ?? urlM[2] ?? (urlM[3] ?? "").trim() };
+    }
+    const strM = /^(?:"([^"]*)"|'([^']*)')/.exec(s);
+    if (strM !== null) {
+      return { prefix, uri: strM[1] ?? strM[2] ?? "" };
+    }
+    return undefined;
+  };
+
+  // Keyframe selectors serialize canonical: from→0%, to→100%.
+  const normalizeKeyText = (sel: string): string =>
+    sel.split(",").map((k) => {
+      const t = k.trim().toLowerCase();
+      if (t === "from") return "0%";
+      if (t === "to") return "100%";
+      return t;
+    }).join(", ");
+
+  // Media query serialization normalization (CSSOM §serialize-a-media-query):
+  // lowercase the type and feature names, collapse whitespace, and drop a
+  // leading `all and` (but not `not all`/`only all`).
+  const normalizeMediaQuery = (q: string): string => {
+    let s = q.trim().replace(/\s+/g, " ");
+    s = s.replace(/^all\s+and\s+/i, "");
+    const typeM = /^((?:not|only)\s+)?([a-zA-Z-]+)/i.exec(s);
+    if (typeM !== null) {
+      s = (typeM[1] ?? "") + (typeM[2] ?? "").toLowerCase() + s.slice(typeM[0].length);
+    }
+    return s.replace(/\(\s*([a-zA-Z-]+)/g, (_m, name: string) => `(${name.toLowerCase()}`);
+  };
+  const normalizeMediaQueryList = (text: string): string =>
+    text.split(",").map((q) => normalizeMediaQuery(q)).join(", ");
+
+  interface NsContext {
+    def: string | null;
+    map: Map<string, string>;
+  }
+  // Canonical An+B for :nth-*() (CSSOM serialize-an-an+b-value).
+  const NTH_PSEUDOS = new Set([
+    "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type",
+    "nth-col", "nth-last-col",
+  ]);
+  const serializeAnPlusB = (raw: string): string | undefined => {
+    const s = raw.trim().toLowerCase().replace(/\s+/g, " ");
+    if (s === "even") return "2n";
+    if (s === "odd") return "2n+1";
+    let m = /^([+-]?)(\d*)n(?:\s*([+-])\s*(\d+))?$/.exec(s);
+    if (m !== null) {
+      const sign = m[1] === "-" ? "-" : "";
+      const a = m[2] ?? "";
+      const aPart = a === "" || a === "1" ? `${sign}n` : `${sign}${a}n`;
+      const b = m[4];
+      if (b === undefined || b === "0") return aPart;
+      return `${aPart}${m[3]}${b}`;
+    }
+    m = /^([+-]?)(\d+)$/.exec(s);
+    if (m !== null) return `${m[1] === "-" ? "-" : ""}${m[2]}`;
+    return undefined;
+  };
+  // Serialize a selector per CSSOM: collapse whitespace, canonicalize
+  // functional-pseudo arguments, and elide namespace prefixes that resolve to
+  // the sheet's default @namespace (or `*|` when no default is declared).
+  const serializeSelectorText = (raw: string, ns: NsContext | undefined): string => {
+    const s = raw;
+    let out = "";
+    let i = 0;
+    let compoundStart = true;
+    const skipWs = (j: number): number => {
+      while (j < s.length && /\s/.test(s[j] as string)) j += 1;
+      return j;
+    };
+    while (i < s.length) {
+      const c = s[i] as string;
+      if (/\s/.test(c)) {
+        const j = skipWs(i);
+        const next = s[j] ?? "";
+        if (next === "") {
+          i = j;
+        } else if (next === ">" || next === "+" || next === "~") {
+          if (!out.endsWith(" ")) out += " ";
+          out += `${next} `;
+          i = j + 1;
+          compoundStart = true;
+        } else if (next === ",") {
+          if (out.endsWith(" ")) out = out.slice(0, -1);
+          out += ", ";
+          i = j + 1;
+          compoundStart = true;
+        } else {
+          if (!out.endsWith(" ")) out += " ";
+          i = j;
+          compoundStart = true;
+        }
+        continue;
+      }
+      if (c === ">" || c === "+" || c === "~") {
+        if (!out.endsWith(" ")) out += " ";
+        out += `${c} `;
+        i += 1;
+        compoundStart = true;
+        continue;
+      }
+      if (c === ",") {
+        if (out.endsWith(" ")) out = out.slice(0, -1);
+        out += ", ";
+        i += 1;
+        compoundStart = true;
+        continue;
+      }
+      if (c === "[") {
+        // Attribute selector: copy to `]`, collapsing whitespace but keeping
+        // the whitespace that terminates a \xx escape.
+        let j = i + 1;
+        let inner = "";
+        while (j < s.length && s[j] !== "]") {
+          if (s[j] === "\\") {
+            let k = j + 1;
+            let esc = "\\";
+            while (k < s.length && k < j + 7 && /[0-9a-fA-F]/.test(s[k] as string)) {
+              esc += s[k];
+              k += 1;
+            }
+            if (k === j + 1 && k < s.length) {
+              esc += s[k];
+              k += 1;
+            } else if (k < s.length && s[k] !== "]") {
+              // Hex escapes serialize with a trailing space terminator.
+              esc += " ";
+              if (/\s/.test(s[k] as string)) k = skipWs(k);
+            }
+            inner += esc;
+            j = k;
+            continue;
+          }
+          if (/\s/.test(s[j] as string)) {
+            const k = skipWs(j);
+            if (s[k] === "]") {
+              j = k;
+              break;
+            }
+            inner += " ";
+            j = k;
+            continue;
+          }
+          inner += s[j];
+          j += 1;
+        }
+        out += `[${inner}${s[j] === "]" ? "]" : ""}`;
+        i = j + 1;
+        compoundStart = false;
+        continue;
+      }
+      if (c === ":") {
+        const m = /^::?([a-zA-Z-]+)/.exec(s.slice(i));
+        if (m !== null) {
+          const marker = m[0] ?? "";
+          const name = (m[1] ?? "").toLowerCase();
+          const colonLen = marker.startsWith("::") ? 2 : 1;
+          const head = `${s.slice(i, i + colonLen)}${name}`;
+          const j = i + marker.length;
+          if (s[j] === "(") {
+            // Functional pseudo: balance-scan to the matching `)`.
+            let depth = 1;
+            let k = j + 1;
+            while (k < s.length && depth > 0) {
+              if (s[k] === "(") depth += 1;
+              else if (s[k] === ")") depth -= 1;
+              k += 1;
+            }
+            const arg = s.slice(j + 1, k - 1);
+            const canon = NTH_PSEUDOS.has(name) ? serializeAnPlusB(arg) : undefined;
+            out += `${head}(${canon ?? serializeSelectorText(arg.trim(), ns)})`;
+            i = k;
+          } else {
+            out += head;
+            i = j;
+          }
+          compoundStart = false;
+          continue;
+        }
+      }
+      // Namespace prefix at the start of a compound selector.
+      if (compoundStart) {
+        const m = /^([a-zA-Z_][\w-]*|\*)?\|(?![|=])([a-zA-Z_*]|\\)?/.exec(s.slice(i));
+        if (m !== null && (m[1] !== undefined || m[2] !== undefined)) {
+          const prefix = m[1];
+          let kept = "";
+          if (ns === undefined) {
+            kept = prefix !== undefined ? `${prefix}|` : "|";
+          } else if (prefix === undefined) {
+            kept = "|";
+          } else if (prefix === "*") {
+            kept = ns.def !== null ? "*|" : "";
+          } else if (ns.map.get(prefix) !== ns.def || ns.def === null) {
+            kept = `${prefix}|`;
+          }
+          out += kept;
+          i += (m[0] ?? "").length - (m[2] ?? "").length;
+          // A bare universal selector is omitted when it is not the only
+          // component and carried no (or an elided) namespace prefix.
+          if (kept === "" && s[i] === "*" && s[i + 1] !== undefined && ".#:[".includes(s[i + 1] as string)) {
+            i += 1;
+          }
+          compoundStart = false;
+          continue;
+        }
+        if (s[i] === "*" && s[i + 1] !== undefined && ".#:[".includes(s[i + 1] as string)) {
+          // `*.c` → `.c` (universal selector omitted, no namespace prefix).
+          i += 1;
+          compoundStart = false;
+          continue;
+        }
+      }
+      out += c;
+      i += 1;
+      if (c !== "(" && c !== ")") compoundStart = false;
+    }
+    return out.trim();
+  };
+
+  const makeRuleHost = (
+    getText: () => string,
+    setText: (text: string) => void,
+    getSheet: () => object,
+    options: { readonly disallowImport?: boolean; readonly keyframes?: boolean; readonly grouping?: boolean } = {},
+  ): { readonly cssRules: object; insertRule(cssText: unknown, index?: unknown): number; deleteRule(index: unknown): void } => {
+    const disallowImport = options.disallowImport === true;
+    let rules: StyleRuleEntry[] = [];
+    let rulesFromText = "";
+    const ensureRulesParsed = (): void => {
+      const text = getText();
+      if (text === rulesFromText) return;
+      rulesFromText = text;
+      rules = [];
+      // Top-level rule splitter: handles @media blocks by brace depth and
+      // braceless at-rules (@import/@namespace) by top-level semicolons.
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        if (ch === "{") depth += 1;
+        else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            rules.push({ cssText: text.slice(start, i + 1).trim() });
+            // skip trailing semicolon/whitespace to the next rule start
+            let j = i + 1;
+            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
+            if (text[j] === ";") j += 1;
+            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
+            start = j;
+            i = j - 1;
+          }
+        } else if (ch === ";" && depth === 0 && /^\s*@/.test(text.slice(start, i))) {
+          rules.push({ cssText: text.slice(start, i + 1).trim() });
+          start = i + 1;
+        }
+      }
+      const tail = text.slice(start).trim();
+      if (tail !== "") rules.push({ cssText: tail });
+      // Constructed sheets drop @import rules at parse time (CSSOM §6.4.1).
+      if (disallowImport) rules = rules.filter((r) => !/^@import\b/i.test(r.cssText));
+    };
+    const rebuildText = (): void => {
+      setText(rules.map((r) => r.cssText).join("\n"));
+      rulesFromText = rules.map((r) => r.cssText).join("\n");
+    };
+    const makeRuleObject = (entry: StyleRuleEntry): object => {
+      if (entry.ruleObject !== undefined) return entry.ruleObject;
+      const parts = splitRule(entry.cssText);
+      const atName = (/^@([a-zA-Z-]+)/.exec(entry.cssText.trimStart())?.[1] ?? "").toLowerCase();
+      const finish = (
+        type: number,
+        proto: object,
+        slots: Record<string, unknown> = {},
+      ): Record<string, unknown> => {
+        const rule: Record<string, unknown> = {
+          _entry: entry, _sheet: getSheet(), _type: type, ...slots,
+        };
+        Object.setPrototypeOf(rule, proto);
+        entry.ruleObject = rule;
+        return rule;
+      };
+
+      // Braceless at-rules.
+      if (atName === "import") {
+        const parsed = parseImportRule(entry.cssText);
+        if (parsed !== undefined) {
+          const slots: ImportPrelude & { media: Record<string, unknown>; sheet: object | null } = {
+            ...parsed,
+            media: {},
+            sheet: null,
+          };
+          const reserialize = (): void => {
+            entry.cssText = serializeImportRule(slots);
+            rebuildText();
+          };
+          slots.media = makeMediaList(slots.mediaText, () => {
+            slots.mediaText = slots.media["mediaText"] as string;
+            reserialize();
+          });
+          // The imported sheet: a detached CSSStyleSheet (we don't fetch the
+          // referenced resource — the cascade sees an empty sheet).
+          slots.sheet = makeDetachedSheet("");
+          entry.cssText = serializeImportRule(slots);
+          return finish(3, CSSImportRuleCtor.prototype as object, { _import: slots });
+        }
+        return finish(3, CSSRuleCtor.prototype as object);
+      }
+      if (atName === "namespace") {
+        const ns = parseNamespaceRule(entry.cssText);
+        return finish(10, CSSNamespaceRuleCtor.prototype as object, {
+          _namespace: ns ?? { prefix: null, uri: "" },
+        });
+      }
+      // splitRule rejects @-preludes; at-rules need a raw brace split with the
+      // `@name` stripped from the prelude.
+      const atRuleBody = (cssText: string): string => {
+        const open = cssText.indexOf("{");
+        const close = cssText.lastIndexOf("}");
+        return open >= 0 && close > open ? cssText.slice(open + 1, close) : "";
+      };
+      const atParts = (() => {
+        if (atName === "") return undefined;
+        const open = entry.cssText.indexOf("{");
+        const close = entry.cssText.lastIndexOf("}");
+        if (open < 0 || close < open) return undefined;
+        const raw = entry.cssText.slice(0, open).trim().replace(/^@[a-zA-Z-]+\s*/, "");
+        return { prelude: raw, body: entry.cssText.slice(open + 1, close) };
+      })();
+      if (atParts === undefined) {
+        if (parts === undefined || atName !== "") {
+          return finish(AT_RULE_TYPES[atName] ?? 0, CSSRuleCtor.prototype as object);
+        }
+      }
+
+      // Grouping rules: @media/@supports/@keyframes hold an inner rule list
+      // hosted on the braced body.
+      if ((atName === "media" || atName === "supports") && atParts !== undefined) {
+        const rule = finish(
+          atName === "media" ? 4 : 12,
+          (atName === "media" ? CSSMediaRuleCtor : CSSSupportsRuleCtor).prototype as object,
+        );
+        const indentInner = (inner: string): string => {
+          const t = inner.trim();
+          if (t === "") return "";
+          return `${t.split("\n").map((l) => `  ${l.trim()}`).join("\n")}\n`;
+        };
+        const serialize = (): void => {
+          const inner = atRuleBody(entry.cssText);
+          entry.cssText = `@${atName} ${slotText(rule["_prelude"])} {\n${indentInner(inner)}}`;
+          rebuildText();
+        };
+        rule["_reserialize"] = serialize;
+        rule["_prelude"] = atName === "media"
+          ? normalizeMediaQueryList(atParts.prelude.trim())
+          : atParts.prelude.trim();
+        if (atName === "media") {
+          rule["_media"] = makeMediaList(rule["_prelude"] as string, () => {
+            rule["_prelude"] = normalizeMediaQueryList(
+              (rule["_media"] as Record<string, unknown>)["mediaText"] as string,
+            );
+            serialize();
+          });
+        }
+        rule["_group"] = makeRuleHost(
+          () => atRuleBody(entry.cssText),
+          (inner) => {
+            entry.cssText = `@${atName} ${slotText(rule["_prelude"])} {\n${indentInner(inner)}}`;
+            rebuildText();
+          },
+          getSheet,
+          { grouping: true },
+        );
+        // Canonicalize in place: `@media speech {}` → `@media speech {\n}`.
+        entry.cssText = `@${atName} ${slotText(rule["_prelude"])} {\n${indentInner(atParts.body)}}`;
+        return rule;
+      }
+      if (AT_RULE_TYPES[atName] === 7 && atParts !== undefined) {
+        const rule = finish(7, CSSKeyframesRuleCtor.prototype as object);
+        rule["_prelude"] = atParts.prelude.trim().replace(/^"(.*)"$/, "$1");
+        // A name that is not a valid custom-ident (CSS-wide keywords, `none`,
+        // `default`) serializes as a quoted string per css-animations.
+        const nameOut = (): string => {
+          const n = slotText(rule["_prelude"]);
+          const low = n.toLowerCase();
+          return CSS_WIDE_VALUE_SET.has(low) || low === "none" || low === "default"
+            ? `"${n}"` : n;
+        };
+        rule["_reserialize"] = (): void => {
+          const inner = atRuleBody(entry.cssText);
+          entry.cssText = `@keyframes ${nameOut()} {\n${inner}}`;
+          rebuildText();
+        };
+        rule["_group"] = makeRuleHost(
+          () => atRuleBody(entry.cssText),
+          (inner) => {
+            entry.cssText = `@keyframes ${nameOut()} {\n${inner}}`;
+            rebuildText();
+          },
+          getSheet,
+          { keyframes: true },
+        );
+        entry.cssText = `@keyframes ${nameOut()} {\n${atParts.body}}`;
+        // Indexed getter: `keyframes[0]` → cssRules[0]; `keyframes.length`.
+        const proxied = new Proxy(rule, {
+          get(t, prop): unknown {
+            const list = (t["_group"] as ReturnType<typeof makeRuleHost>).cssRules as {
+              length: number; [i: number]: unknown;
+            };
+            if (prop === "length") return list.length;
+            if (typeof prop === "string" && /^\d+$/.test(prop)) {
+              return list[Number(prop)];
+            }
+            return Reflect.get(t, prop);
+          },
+        });
+        entry.ruleObject = proxied;
+        return proxied;
+      }
+
+      // Declaration-bearing at-rules: @page (page selector) / @font-face.
+      if ((atName === "page" || atName === "font-face") && atParts !== undefined) {
+        const rule = finish(
+          atName === "page" ? 6 : 5,
+          (atName === "page" ? CSSPageRuleCtor : CSSFontFaceRuleCtor).prototype as object,
+        );
+        const serialize = (): void => {
+          const body = atRuleBody(entry.cssText).trim();
+          if (atName === "page") {
+            const sel = slotText(rule["_pageSel"]);
+            entry.cssText =
+              `@page${sel !== "" ? ` ${sel}` : ""} {${body !== "" ? ` ${body} ` : " "}}`;
+          } else {
+            entry.cssText = `@font-face {${body !== "" ? ` ${body} ` : " "}}`;
+          }
+          rebuildText();
+        };
+        rule["_reserialize"] = serialize;
+        rule["_pageSel"] = atName === "page" ? atParts.prelude.trim() : "";
+        rule["_decl"] = makeDeclarationBacked(
+          () => atRuleBody(entry.cssText),
+          (text) => {
+            const sel = slotText(rule["_pageSel"]);
+            entry.cssText = atName === "page"
+              ? `@page${sel !== "" ? ` ${sel}` : ""} {${text !== "" ? ` ${text} ` : " "}}`
+              : `@font-face {${text !== "" ? ` ${text} ` : " "}}`;
+            rebuildText();
+          },
+        );
+        // Canonicalize `{...}` → `{ body }` spacing in place.
+        entry.cssText = atName === "page"
+          ? `@page${atParts.prelude.trim() !== "" ? ` ${atParts.prelude.trim()}` : ""} {${atParts.body.trim() !== "" ? ` ${atParts.body.trim()} ` : " "}}`
+          : `@font-face {${atParts.body.trim() !== "" ? ` ${atParts.body.trim()} ` : " "}}`;
+        return rule;
+      }
+      // @font-feature-values: prelude is the family name; the braced body holds
+      // nested @annotation/@styleset/… blocks of `ident: <number>+` entries.
+      if (atName === "font-feature-values" && atParts !== undefined) {
+        const ffv: FfvData = {
+          fontFamily: atParts.prelude.trim(),
+          maps: parseFfvBody(atParts.body),
+        };
+        const rule = finish(14, CSSFontFeatureValuesRuleCtor.prototype as object, {
+          _ffv: ffv,
+        });
+        ffv.reserialize = (): void => {
+          let inner = "";
+          for (const [attr, at] of FFV_ATTRS) {
+            const map = ffv.maps[attr];
+            if (map === undefined || map.size === 0) continue;
+            const decls = [...map].map(([k, vs]) => `${k}: ${vs.join(" ")};`).join(" ");
+            inner += ` @${at} { ${decls} }`;
+          }
+          entry.cssText = `@font-feature-values ${ffv.fontFamily} {${inner} }`;
+          rebuildText();
+        };
+        return rule;
+      }
+      if (atName !== "") {
+        return finish(AT_RULE_TYPES[atName] ?? 0, CSSRuleCtor.prototype as object);
+      }
+      if (parts === undefined) {
+        return finish(0, CSSRuleCtor.prototype as object);
+      }
+
+      // The declaration block is a live view: edits via style/styleMap rewrite
+      // the rule's cssText, which rewrites the element's text — the stylesheet
+      // pipeline re-parses and the cascade picks it up on the next render.
+      if (options.keyframes === true) {
+        const keyText = normalizeKeyText(parts.selector);
+        const decl = makeDeclarationBacked(
+          () => splitRule(entry.cssText)?.body ?? "",
+          (text) => {
+            entry.cssText = `${keyText} { ${text} }`;
+            rebuildText();
+          },
+        ) as StyleDeclarationObject;
+        entry.cssText = `${keyText} { ${parts.body.trim()} }`;
+        return finish(8, CSSKeyframeRuleCtor.prototype as object, {
+          _decl: decl,
+          _keyText: keyText,
+        });
+      }
+      const decl = makeDeclarationBacked(
+        () => splitRule(entry.cssText)?.body ?? "",
+        (text) => {
+          const cur = splitRule(entry.cssText);
+          entry.cssText = `${cur?.selector ?? parts.selector} { ${text} }`;
+          rebuildText();
+        },
+      ) as StyleDeclarationObject;
+      // Lazily collect the sheet's @namespace declarations for selectorText
+      // serialization (default-namespace prefix elision).
+      const nsctx = (): NsContext => {
+        ensureRulesParsed();
+        const map = new Map<string, string>();
+        let def: string | null = null;
+        for (const r of rules) {
+          if (/^@namespace\b/i.test(r.cssText)) {
+            const parsedNs = parseNamespaceRule(r.cssText);
+            if (parsedNs !== undefined) {
+              if (parsedNs.prefix !== null) map.set(parsedNs.prefix, parsedNs.uri);
+              else def = parsedNs.uri;
+            }
+          }
+        }
+        return { def, map };
+      };
+      // A materialized rule reports canonical cssText: `sel { decl; decl; }`.
+      const canonSel = serializeSelectorText(parts.selector, nsctx());
+      const canonBody = decl.cssText;
+      entry.cssText = `${canonSel} {${canonBody !== "" ? ` ${canonBody} ` : " "}}`;
+      // WebIDL attributes live on CSSStyleRule.prototype — the instance only
+      // carries internal slots (_entry/_decl/_sheet/_type).
+      const rule: Record<string, unknown> = {
+        _entry: entry,
+        _decl: decl,
+        _sheet: getSheet(),
+        _type: 1,
+        _nsctx: nsctx,
+      };
+      Object.setPrototypeOf(rule, CSSStyleRuleCtor.prototype as object);
+      entry.ruleObject = rule;
+      return rule;
+    };
+    const cssRules = new Proxy([] as object[], {
+      get(_target, prop): unknown {
+        ensureRulesParsed();
+        if (prop === "length") return rules.length;
+        if (typeof prop === "string" && /^\d+$/.test(prop)) {
+          const i = Number(prop);
+          return i < rules.length ? makeRuleObject(rules[i]!) : undefined;
+        }
+        if (prop === Symbol.iterator) {
+          return function* (): IterableIterator<object> {
+            for (let i = 0; i < rules.length; i += 1) yield makeRuleObject(rules[i]!);
+          };
+        }
+        // Array.prototype methods read length+indices through the proxy.
+        const v: unknown = Reflect.get(Array.prototype, prop);
+        return v;
+      },
+      has(_target, prop): boolean {
+        ensureRulesParsed();
+        return (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length)
+          || Reflect.has(Array.prototype, prop);
+      },
+      getOwnPropertyDescriptor(_target, prop): PropertyDescriptor | undefined {
+        ensureRulesParsed();
+        if (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length) {
+          return { value: makeRuleObject(rules[Number(prop)]!), writable: false, enumerable: true, configurable: true };
+        }
+        if (prop === "length") {
+          return { value: rules.length, writable: true, enumerable: false, configurable: false };
+        }
+        return undefined;
+      },
+    });
+    return {
+      cssRules,
+      insertRule(cssText: unknown, index?: unknown): number {
+        ensureRulesParsed();
+        const rule = coerceGuestString(cssText).trim();
+        // CSSOM §insert-a-css-rule order: index bounds, then parse, then
+        // hierarchy constraints.
+        const i = index === undefined ? 0 : Math.trunc(Number(index));
+        if (i < 0 || i > rules.length) {
+          throw new DOMException(`insertRule: index ${i} out of range`, "IndexSizeError");
+        }
+        if (rule === "") {
+          throw new DOMException("insertRule: empty rule text", "SyntaxError");
+        }
+        const atM = /^@([a-zA-Z-]+)/i.exec(rule);
+        const insertAt = atM?.[1]?.toLowerCase() ?? "";
+        if (insertAt === "") {
+          const parts = splitRule(rule);
+          if (parts === undefined || parts.selector === "") {
+            throw new DOMException("insertRule: could not parse rule", "SyntaxError");
+          }
+        } else if (!(insertAt in AT_RULE_TYPES) && insertAt !== "import") {
+          // Unknown at-rules parse as generic rules; require a braced body or
+          // a trailing semicolon shape.
+          if (!/^@[a-zA-Z-]+[^;{]*(;|\{.*\}\s*;?)$/s.test(rule)) {
+            throw new DOMException("insertRule: could not parse rule", "SyntaxError");
+          }
+        }
+        // Constructed sheets reject @import; grouping rules reject @import and
+        // @namespace; top-level @import must precede non-@charset/@import rules
+        // and @namespace must precede everything else.
+        if (insertAt === "import") {
+          if (disallowImport === true || options.grouping === true) {
+            throw new DOMException(
+              "insertRule cannot insert @import rules",
+              disallowImport === true ? "SyntaxError" : "HierarchyRequestError",
+            );
+          }
+          if (rules.some((r) => !/^@(charset|import)\b/i.test(r.cssText))) {
+            throw new DOMException(
+              "insertRule: @import must precede all other rules",
+              "HierarchyRequestError",
+            );
+          }
+        }
+        if (insertAt === "namespace") {
+          if (options.grouping === true) {
+            throw new DOMException(
+              "insertRule cannot insert @namespace rules in a grouping rule",
+              "HierarchyRequestError",
+            );
+          }
+          if (rules.some((r) => !/^@(charset|import|namespace)\b/i.test(r.cssText))) {
+            throw new DOMException(
+              "insertRule: @namespace must precede all other rules",
+              "InvalidStateError",
+            );
+          }
+        }
+        // Selectors may not reference undeclared namespace prefixes.
+        if (insertAt === "") {
+          const sel = splitRule(rule)?.selector ?? "";
+          if (/[a-zA-Z_][\w-]*\|(?![|=])/.test(sel)) {
+            const declared = new Set<string>();
+            for (const r of rules) {
+              if (/^@namespace\b/i.test(r.cssText)) {
+                const p = parseNamespaceRule(r.cssText)?.prefix;
+                if (p !== null && p !== undefined) declared.add(p.toLowerCase());
+              }
+            }
+            for (const m of sel.matchAll(/([a-zA-Z_][\w-]*)\|(?![|=])/g)) {
+              const prefix = (m[1] ?? "").toLowerCase();
+              if (!declared.has(prefix)) {
+                throw new DOMException(
+                  `insertRule: undeclared namespace prefix "${prefix}"`,
+                  "SyntaxError",
+                );
+              }
+            }
+          }
+        }
+        rules.splice(i, 0, { cssText: rule });
+        rebuildText();
+        return i;
+      },
+      deleteRule(index: unknown): void {
+        ensureRulesParsed();
+        const i = Math.trunc(Number(index));
+        if (i < 0 || i >= rules.length) {
+          throw new DOMException(`deleteRule: index ${i} out of range`, "IndexSizeError");
+        }
+        // Deleting an @namespace rule while other (non @charset/@import/
+        // @namespace) rules exist would leave an invalid sheet.
+        const target = rules[i];
+        if (target !== undefined && /^@namespace\b/i.test(target.cssText)
+          && rules.some((r, j) => j !== i && !/^@(charset|import|namespace)\b/i.test(r.cssText))) {
+          throw new DOMException(
+            "deleteRule: cannot delete @namespace while other rules exist",
+            "InvalidStateError",
+          );
+        }
+        const removed = rules.splice(i, 1)[0];
+        // Detach the old rule object: parentStyleSheet reads null, mutations
+        // no longer reach the sheet (the entry is out of the list).
+        if (removed?.ruleObject !== undefined) {
+          const ro = removed.ruleObject as Record<string, unknown>;
+          ro["_sheet"] = null;
+          ro["_reserialize"] = (): void => {};
+        }
+        rebuildText();
+      },
+    };
+  };
+
+  // Detached CSSStyleSheet for CSSImportRule.styleSheet — the referenced
+  // resource is not fetched, so the imported sheet is empty.
+  const makeDetachedSheet = (text: string): object => {
+    const sheet = (CSSStyleSheetCtor as unknown as (o: object) => Record<string, unknown>).call(undefined, {});
+    sheet["_text"] = text;
+    return sheet;
+  };
+
   const makeStyleSheetObject = (nodeId: NodeId): object => {
     const cached = styleSheetCache.get(nodeId);
     if (cached !== undefined) return cached;
@@ -2765,161 +3761,65 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (text !== "") session.appendChild(nodeId, session.createTextNode(text));
       mutations += 1;
     };
-    interface StyleRuleEntry {
-      cssText: string;
-      ruleObject?: object;
-    }
-    let rules: StyleRuleEntry[] = [];
-    let rulesFromText = "";
-    const ensureRulesParsed = (): void => {
-      const text = styleText();
-      if (text === rulesFromText) return;
-      rulesFromText = text;
-      rules = [];
-      // Top-level rule splitter: handles @media blocks by brace depth.
-      let depth = 0;
-      let start = 0;
-      for (let i = 0; i < text.length; i += 1) {
-        const ch = text[i];
-        if (ch === "{") depth += 1;
-        else if (ch === "}") {
-          depth -= 1;
-          if (depth === 0) {
-            rules.push({ cssText: text.slice(start, i + 1).trim() });
-            // skip trailing semicolon/whitespace to the next rule start
-            let j = i + 1;
-            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
-            if (text[j] === ";") j += 1;
-            while (j < text.length && /\s/.test(text[j] as string)) j += 1;
-            start = j;
-            i = j - 1;
-          }
-        }
-      }
-      const tail = text.slice(start).trim();
-      if (tail !== "") rules.push({ cssText: tail });
-    };
-    const rebuildText = (): void => {
-      rewriteStyleText(rules.map((r) => r.cssText).join("\n"));
-      rulesFromText = rules.map((r) => r.cssText).join("\n");
-    };
-    const makeRuleObject = (entry: StyleRuleEntry): object => {
-      if (entry.ruleObject !== undefined) return entry.ruleObject;
-      const parts = splitRule(entry.cssText);
-      if (parts === undefined) {
-        const rule: Record<string, unknown> = { _entry: entry, _type: 0 };
-        Object.setPrototypeOf(rule, CSSRuleCtor.prototype as object);
-        entry.ruleObject = rule;
-        return rule;
-      }
-      // The declaration block is a live view: edits via style/styleMap rewrite
-      // the rule's cssText, which rewrites the element's text — the stylesheet
-      // pipeline re-parses and the cascade picks it up on the next render.
-      const decl = makeDeclarationBacked(
-        () => splitRule(entry.cssText)?.body ?? "",
-        (text) => {
-          const cur = splitRule(entry.cssText);
-          entry.cssText = `${cur?.selector ?? parts.selector} { ${text} }`;
-          rebuildText();
-        },
-      ) as StyleDeclarationObject;
-      // WebIDL attributes live on CSSStyleRule.prototype — the instance only
-      // carries internal slots (_entry/_decl/_sheet/_type).
-      const rule: Record<string, unknown> = {
-        _entry: entry,
-        _decl: decl,
-        _sheet: sheet,
-        _type: 1,
-      };
-      Object.setPrototypeOf(rule, CSSStyleRuleCtor.prototype as object);
-      entry.ruleObject = rule;
-      return rule;
-    };
+    const host = makeRuleHost(styleText, rewriteStyleText, () => sheet);
+    // Element-backed sheets are CSSStyleSheet instances: shared members
+    // (cssRules/insertRule/deleteRule/ownerRule/type/href/…) come from the
+    // prototype via the `_host`/`_cssText` slots; element-linked attributes
+    // (ownerNode/title/media/cssText) stay as own accessors.
     const sheet: Record<string, unknown> = {
+      _host: host,
+      _cssText: styleText,
       get ownerNode(): object {
         return makeElementCached(nodeId);
-      },
-      // CSSOM: cssRules is a LIVE CSSRuleList — `sheet.cssRules[sheet.insertRule(x)]`
-      // evaluates the list BEFORE insertRule runs, so indexing must read lazily.
-      get cssRules(): object {
-        const list = new Proxy([] as object[], {
-          get(_target, prop): unknown {
-            ensureRulesParsed();
-            if (prop === "length") return rules.length;
-            if (typeof prop === "string" && /^\d+$/.test(prop)) {
-              const i = Number(prop);
-              return i < rules.length ? makeRuleObject(rules[i]!) : undefined;
-            }
-            if (prop === Symbol.iterator) {
-              return function* (): IterableIterator<object> {
-                for (let i = 0; i < rules.length; i += 1) yield makeRuleObject(rules[i]!);
-              };
-            }
-            // Array.prototype methods read length+indices through the proxy.
-            const v = Reflect.get(Array.prototype, prop);
-            return typeof v === "function" ? v : v;
-          },
-          has(_target, prop): boolean {
-            ensureRulesParsed();
-            return (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length)
-              || Reflect.has(Array.prototype, prop);
-          },
-          getOwnPropertyDescriptor(_target, prop): PropertyDescriptor | undefined {
-            ensureRulesParsed();
-            if (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length) {
-              return { value: makeRuleObject(rules[Number(prop)]!), writable: false, enumerable: true, configurable: true };
-            }
-            if (prop === "length") {
-              return { value: rules.length, writable: true, enumerable: false, configurable: false };
-            }
-            return undefined;
-          },
-        });
-        return list;
-      },
-      get rules(): object[] {
-        return sheet["cssRules"] as object[];
-      },
-      insertRule(cssText: unknown, index?: unknown): number {
-        ensureRulesParsed();
-        const rule = coerceGuestString(cssText).trim();
-        if (rule === "") throw new SyntaxError("insertRule: empty rule text");
-        const i =
-          index === undefined
-            ? rules.length
-            : Math.max(0, Math.min(rules.length, Math.trunc(Number(index))));
-        rules.splice(i, 0, { cssText: rule });
-        rebuildText();
-        return i;
-      },
-      deleteRule(index: unknown): void {
-        ensureRulesParsed();
-        const i = Math.trunc(Number(index));
-        if (i < 0 || i >= rules.length) {
-          throw new Error(`deleteRule: index ${i} out of range`);
-        }
-        rules.splice(i, 1);
-        rebuildText();
       },
       get cssText(): string {
         return styleText();
       },
       get disabled(): boolean {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag === "link") {
+          if (node.attrs?.has("disabled") === true) return true;
+          const tokens = (node.attrs?.get("rel") ?? "").toLowerCase().split(/\s+/);
+          return (
+            tokens.includes("stylesheet") &&
+            tokens.includes("alternate") &&
+            !session.isLinkEnabled(nodeId)
+          );
+        }
         return false;
       },
-      set disabled(_value: unknown) {},
-      get media(): { mediaText: string } {
+      set disabled(value: unknown) {
         const node = session.dom.nodes.get(nodeId);
-        return { mediaText: node?.attrs?.get("media") ?? "" };
+        if (node?.tag !== "link") return;
+        session.setLinkEnabled(nodeId, !value);
+        if (value) session.setAttribute(nodeId, "disabled", "");
+        else session.removeAttribute(nodeId, "disabled");
+      },
+      get media(): object {
+        const node = session.dom.nodes.get(nodeId);
+        return makeMediaList(node?.attrs?.get("media") ?? "");
+      },
+      // [PutForwards=mediaText]: `sheet.media = "print"` updates the list.
+      set media(v: unknown) {
+        session.setAttribute(nodeId, "media", coerceGuestString(v));
       },
       get title(): string | null {
         const node = session.dom.nodes.get(nodeId);
         return node?.attrs?.get("title") ?? null;
       },
+      replaceSync(text: unknown): undefined {
+        rewriteStyleText(coerceGuestString(text));
+        return undefined;
+      },
+      replace(text: unknown): Promise<object> {
+        rewriteStyleText(coerceGuestString(text));
+        return Promise.resolve(sheet);
+      },
       toString(): string {
         return "[object CSSStyleSheet]";
       },
     };
+    Object.setPrototypeOf(sheet, CSSStyleSheetCtor.prototype as object);
     styleSheetCache.set(nodeId, sheet);
     return sheet;
   };
@@ -2997,6 +3897,61 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         configurable: true,
       });
     }
+    if (tag === "link") {
+      // HTMLLinkElement.disabled — reflects the `disabled` attribute, OR an
+      // alternate stylesheet that was never explicitly enabled. The
+      // script-set "explicitly enabled" flag persists across disconnect.
+      const linkDisabled = (): boolean => {
+        const node = session.dom.nodes.get(id);
+        if (node === undefined) return false;
+        if (node.attrs?.has("disabled") === true) return true;
+        const tokens = (node.attrs?.get("rel") ?? "").toLowerCase().split(/\s+/);
+        return (
+          tokens.includes("stylesheet") &&
+          tokens.includes("alternate") &&
+          !session.isLinkEnabled(id)
+        );
+      };
+      const setLinkDisabled = (value: unknown): void => {
+        // Set the flag BEFORE the attribute change so the attribute-driven
+        // external-sheet rescan sees the new enablement state.
+        session.setLinkEnabled(id, !value);
+        if (value) session.setAttribute(id, "disabled", "");
+        else session.removeAttribute(id, "disabled");
+        mutations += 1;
+      };
+      const onEventProp = (type: string): PropertyDescriptor => ({
+        get: () => listeners.get(id)?.find((l) => l.type === type)?.fn ?? null,
+        set: (fn: unknown) => {
+          const list = (listeners.get(id) ?? []).filter((l) => l.type !== type);
+          if (typeof fn === "function") list.push({ type, fn: fn as GuestFn, capture: false });
+          listeners.set(id, list);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperties(w, {
+        disabled: { get: linkDisabled, set: setLinkDisabled, enumerable: true, configurable: true },
+        onload: onEventProp("load"),
+        onerror: onEventProp("error"),
+      });
+    }
+    if (tag === "iframe") {
+      // HTMLIFrameElement.contentDocument / .contentWindow — the nested
+      // browsing context is a lazily-built `#iframe-document` subtree.
+      Object.defineProperties(w, {
+        contentDocument: {
+          get: () => makeIframeDocument(ensureIframeDoc(id)),
+          enumerable: true,
+          configurable: true,
+        },
+        contentWindow: {
+          get: () => makeIframeWindow(ensureIframeDoc(id)),
+          enumerable: true,
+          configurable: true,
+        },
+      });
+    }
     wrapperCache.set(id, w);
     return w;
   };
@@ -3066,13 +4021,63 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return out;
   };
 
+  /**
+   * `url()` values inside a `style` attribute resolve against the document
+   * base URL at declaration time — the resolved absolute URL is what gets
+   * stored, so a later `<base>` change does not retroactively rewrite it
+   * (the frozen-at-parse semantics `css-style-attr-decl-block` requires).
+   */
+  const rewriteStyleAttrUrls = (text: string): string => {
+    if (!/url\s*\(/i.test(text)) return text;
+    let out = "";
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+      const headMatch = /^url\s*\(/i.exec(text.slice(i));
+      // A `url` preceded by an identifier char is a name tail (e.g. `xurl(`),
+      // not a url() token.
+      if (headMatch === null || (i > 0 && /[a-zA-Z0-9_-]/.test(text[i - 1] as string))) {
+        out += text[i] as string;
+        i += 1;
+        continue;
+      }
+      const head = headMatch[0];
+      const open = i + head.length;
+      let j = open;
+      let inner = "";
+      let closed = false;
+      while (j < n) {
+        const ch = text[j] as string;
+        if (ch === ")") { closed = true; break; }
+        if (ch === '"' || ch === "'") {
+          const q = ch;
+          inner += ch;
+          j += 1;
+          while (j < n && text[j] !== q) { inner += text[j] as string; j += 1; }
+          if (j < n) { inner += text[j] as string; j += 1; }
+          continue;
+        }
+        inner += ch;
+        j += 1;
+      }
+      if (!closed) { out += text.slice(i); i = n; break; }
+      const t = inner.trim();
+      const qm = /^(['"])([\s\S]*)\1$/.exec(t);
+      const bare = qm !== null ? (qm[2] as string) : t;
+      const abs = bare === "" ? null : resolveUrl(bare, session.baseUrl);
+      out += head + (abs === null ? inner : `"${abs.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`) + ")";
+      i = j + 1;
+    }
+    return out;
+  };
+
   const importParsedNode = (source: DomNode, sourceTree: DomTree): NodeId | null => {
     if (source.kind === "document") return null;
     let id: NodeId;
     if (source.kind === "element") {
       id = session.createElement(source.tag ?? "");
       for (const [name, value] of source.attrs ?? []) {
-        session.setAttribute(id, name, value);
+        session.setAttribute(id, name, name === "style" ? rewriteStyleAttrUrls(value) : value);
       }
     } else if (source.kind === "text") {
       id = session.createTextNode(source.text ?? "");
@@ -3562,7 +4567,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       return get(this, v);
     };
     Object.defineProperty(getter, "name", { value: `get ${attr}` });
-    return { get: getter as () => unknown, enumerable: true, configurable: true };
+    return { get: getter, enumerable: true, configurable: true };
   };
   Object.defineProperties(CSSRuleCtor.prototype as object, {
     type: ruleAccessor("type", "_type", (_o, v) => v),
@@ -3574,33 +4579,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     parentRule: ruleAccessor("parentRule", "_entry", () => null),
     parentStyleSheet: ruleAccessor("parentStyleSheet", "_sheet", (_o, v) => v),
   });
-  Object.defineProperties(CSSGroupingRuleCtor.prototype as object, {
-    cssRules: ruleAccessor("cssRules", "_entry", () => []),
-    insertRule: {
-      value: function insertRule(cssText: unknown, index?: unknown): number {
-        void cssText;
-        void index;
-        throw new Error("insertRule is not supported on this rule");
-      },
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    },
-    deleteRule: {
-      value: function deleteRule(index: unknown): void {
-        void index;
-        throw new Error("deleteRule is not supported on this rule");
-      },
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    },
-  });
   Object.defineProperties(CSSStyleRuleCtor.prototype as object, {
     selectorText: ruleAccessor(
       "selectorText",
       "_entry",
-      (_o, v) => splitRule((v as { cssText: string }).cssText)?.selector ?? "",
+      (o, v) => {
+        const sel = splitRule((v as { cssText: string }).cssText)?.selector ?? "";
+        const getNs = o["_nsctx"];
+        return serializeSelectorText(
+          sel,
+          typeof getNs === "function" ? (getNs as () => NsContext)() : undefined,
+        );
+      },
     ),
     style: ruleAccessor("style", "_decl", (_o, v) => v),
     // Typed OM: [SameObject] StylePropertyMap — cached on the rule.
@@ -3610,6 +4600,630 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         self._styleMap = makeStylePropertyMap(styleMapBackingForDecl(v as StyleDeclarationObject));
       }
       return self._styleMap;
+    }),
+  });
+
+  // Typed at-rule interfaces (CSSOM §5.4+). All are illegal to construct;
+  // instances are created internally by makeRuleObject with internal slots.
+  function CSSMediaRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSSupportsRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSPageRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSFontFaceRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSImportRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSNamespaceRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSKeyframesRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSKeyframeRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  const linkRuleCtor = (name: string, ctor: { prototype: object }, base: { prototype: object }): void => {
+    Object.defineProperty(ctor, "name", { value: name });
+    Object.setPrototypeOf(ctor, base);
+    Object.setPrototypeOf(ctor.prototype, base.prototype);
+    Object.defineProperty(ctor.prototype, "constructor", {
+      value: ctor, writable: true, enumerable: false, configurable: true,
+    });
+  };
+  linkRuleCtor("CSSMediaRule", CSSMediaRuleCtor, CSSGroupingRuleCtor);
+  linkRuleCtor("CSSSupportsRule", CSSSupportsRuleCtor, CSSGroupingRuleCtor);
+  linkRuleCtor("CSSPageRule", CSSPageRuleCtor, CSSGroupingRuleCtor);
+  linkRuleCtor("CSSFontFaceRule", CSSFontFaceRuleCtor, CSSRuleCtor);
+  linkRuleCtor("CSSImportRule", CSSImportRuleCtor, CSSRuleCtor);
+  linkRuleCtor("CSSNamespaceRule", CSSNamespaceRuleCtor, CSSRuleCtor);
+  linkRuleCtor("CSSKeyframesRule", CSSKeyframesRuleCtor, CSSRuleCtor);
+  linkRuleCtor("CSSKeyframeRule", CSSKeyframeRuleCtor, CSSRuleCtor);
+
+  const slotCheck = (o: Record<string, unknown>, slot: string): unknown => {
+    const v = o[slot];
+    if (v === undefined) throw new TypeError("Illegal invocation");
+    return v;
+  };
+  // [PutForwards=mediaText] shared by CSSMediaRule.media / CSSImportRule.media /
+  // StyleSheet.media.
+  const mediaForward = (slot: string): PropertyDescriptor => ({
+    get: function (this: Record<string, unknown>): unknown {
+      return slotCheck(this, slot);
+    },
+    set: function (this: Record<string, unknown>, v: unknown): void {
+      const list = slotCheck(this, slot) as Record<string, unknown>;
+      list["mediaText"] = coerceGuestString(v);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  const groupHost = (o: Record<string, unknown>): {
+    readonly cssRules: object;
+    insertRule(cssText: unknown, index?: unknown): number;
+    deleteRule(index: unknown): void;
+  } => slotCheck(o, "_group") as ReturnType<typeof makeRuleHost>;
+  Object.defineProperties(CSSGroupingRuleCtor.prototype as object, {
+    cssRules: {
+      get: function (this: Record<string, unknown>): unknown {
+        return groupHost(this).cssRules;
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    insertRule: {
+      value: function insertRule(this: Record<string, unknown>, cssText: unknown, index?: unknown): number {
+        return groupHost(this).insertRule(cssText, index);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    deleteRule: {
+      value: function deleteRule(this: Record<string, unknown>, index: unknown): void {
+        groupHost(this).deleteRule(index);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSMediaRuleCtor.prototype as object, {
+    media: mediaForward("_media"),
+    conditionText: {
+      get: function (this: Record<string, unknown>): unknown {
+        return slotCheck(this, "_prelude");
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        const media = slotCheck(this, "_media") as Record<string, unknown>;
+        media["mediaText"] = coerceGuestString(v);
+      },
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSSupportsRuleCtor.prototype as object, {
+    conditionText: {
+      get: function (this: Record<string, unknown>): unknown {
+        return slotCheck(this, "_prelude");
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        this["_prelude"] = coerceGuestString(v);
+        (this["_reserialize"] as (() => void) | undefined)?.();
+      },
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSPageRuleCtor.prototype as object, {
+    selectorText: {
+      get: function (this: Record<string, unknown>): unknown {
+        return slotCheck(this, "_pageSel");
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        slotCheck(this, "_pageSel");
+        const text = coerceGuestString(v);
+        // Page selector grammar: optional ident + page pseudos, no whitespace.
+        const m = /^([a-zA-Z_][\w-]*)?((?::[a-zA-Z-]+)*)$/.exec(text);
+        if (m === null) return;
+        const pseudos = (m[2] ?? "").match(/:[a-zA-Z-]+/g) ?? [];
+        const valid = pseudos.every((p) =>
+          [":first", ":left", ":right", ":blank"].includes(p.toLowerCase()));
+        if (!valid) return;
+        this["_pageSel"] = (m[1] ?? "") + pseudos.map((p) => p.toLowerCase()).join("");
+        (this["_reserialize"] as (() => void) | undefined)?.();
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    style: {
+      get: function (this: Record<string, unknown>): unknown {
+        return slotCheck(this, "_decl");
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        const decl = slotCheck(this, "_decl") as Record<string, unknown>;
+        decl["cssText"] = coerceGuestString(v);
+      },
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSFontFaceRuleCtor.prototype as object, {
+    style: ruleAccessor("style", "_decl", (_o, v) => v),
+  });
+  Object.defineProperties(CSSImportRuleCtor.prototype as object, {
+    href: ruleAccessor("href", "_import", (_o, v) => (v as { href: string }).href),
+    media: {
+      get: function (this: Record<string, unknown>): unknown {
+        return (slotCheck(this, "_import") as { media: object }).media;
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        const im = slotCheck(this, "_import") as { media: Record<string, unknown> };
+        im.media["mediaText"] = coerceGuestString(v);
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    styleSheet: ruleAccessor("styleSheet", "_import", (_o, v) => (v as { sheet: object }).sheet),
+    supportsText: ruleAccessor("supportsText", "_import", (_o, v) =>
+      (v as { supports: string | null }).supports),
+    layerName: ruleAccessor("layerName", "_import", (_o, v) =>
+      (v as { layerName: string | null }).layerName),
+  });
+  Object.defineProperties(CSSNamespaceRuleCtor.prototype as object, {
+    namespaceURI: ruleAccessor("namespaceURI", "_namespace", (_o, v) =>
+      (v as { uri: string }).uri),
+    prefix: ruleAccessor("prefix", "_namespace", (_o, v) =>
+      (v as { prefix: string | null }).prefix),
+  });
+  Object.defineProperties(CSSKeyframesRuleCtor.prototype as object, {
+    name: {
+      get: function (this: Record<string, unknown>): unknown {
+        return slotCheck(this, "_prelude");
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        slotCheck(this, "_prelude");
+        this["_prelude"] = coerceGuestString(v);
+        (this["_reserialize"] as (() => void) | undefined)?.();
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    cssRules: {
+      get: function (this: Record<string, unknown>): unknown {
+        return groupHost(this).cssRules;
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    appendRule: {
+      value: function appendRule(this: Record<string, unknown>, cssText: unknown): void {
+        groupHost(this).insertRule(cssText, (groupHost(this).cssRules as { length: number }).length);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    deleteRule: {
+      value: function deleteRule(this: Record<string, unknown>, select: unknown): void {
+        const host = groupHost(this);
+        const list = host.cssRules as { length: number; [i: number]: Record<string, unknown> };
+        const sel = coerceGuestString(select);
+        // CSSKeyframesRule.deleteRule removes the LAST rule with keyText match.
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          if (list[i]?.["keyText"] === sel) {
+            host.deleteRule(i);
+            return;
+          }
+        }
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    findRule: {
+      value: function findRule(this: Record<string, unknown>, select: unknown): unknown {
+        const list = groupHost(this).cssRules as { length: number; [i: number]: Record<string, unknown> };
+        const sel = coerceGuestString(select);
+        // CSSKeyframesRule.findRule returns the LAST rule with keyText match.
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          if (list[i]?.["keyText"] === sel) return list[i];
+        }
+        return null;
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSKeyframeRuleCtor.prototype as object, {
+    keyText: ruleAccessor("keyText", "_keyText", (_o, v) => v),
+    style: ruleAccessor("style", "_decl", (_o, v) => v),
+  });
+
+  // ── @font-feature-values (CSS Fonts 4 §om-fontfeaturevalues) ─────────
+  function CSSFontFeatureValuesRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSFontFeatureValuesMapCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  linkRuleCtor("CSSFontFeatureValuesRule", CSSFontFeatureValuesRuleCtor, CSSRuleCtor);
+  Object.defineProperty(CSSFontFeatureValuesMapCtor, "name", { value: "CSSFontFeatureValuesMap" });
+  Object.defineProperty(CSSFontFeatureValuesMapCtor.prototype as object, "constructor", {
+    value: CSSFontFeatureValuesMapCtor, writable: true, enumerable: false, configurable: true,
+  });
+
+  /** `[attribute-name, at-rule-name]` pairs in spec serialization order. */
+  const FFV_ATTRS: readonly (readonly [string, string])[] = [
+    ["annotation", "annotation"],
+    ["characterVariant", "character-variant"],
+    ["ornaments", "ornaments"],
+    ["stylistic", "stylistic"],
+    ["styleset", "styleset"],
+    ["swash", "swash"],
+  ];
+
+  interface FfvData {
+    fontFamily: string;
+    maps: Record<string, Map<string, number[]>>;
+    reserialize?: (() => void) | undefined;
+  }
+
+  const parseFfvBody = (body: string): Record<string, Map<string, number[]>> => {
+    const maps: Record<string, Map<string, number[]>> = {};
+    for (const [attr] of FFV_ATTRS) maps[attr] = new Map();
+    let i = 0;
+    while (i < body.length) {
+      const m = /@([a-zA-Z-]+)\s*\{/.exec(body.slice(i));
+      if (m === null) break;
+      const at = (m[1] ?? "").toLowerCase();
+      const start = i + m.index + m[0].length;
+      const close = body.indexOf("}", start);
+      const inner = close < 0 ? body.slice(start) : body.slice(start, close);
+      i = close < 0 ? body.length : close + 1;
+      const attr = FFV_ATTRS.find(([, a]) => a === at)?.[0];
+      if (attr === undefined) continue;
+      const map = maps[attr] as Map<string, number[]>;
+      for (const decl of inner.split(";")) {
+        const d = /^\s*([a-zA-Z_][\w-]*)\s*:\s*(.*?)\s*$/.exec(decl);
+        if (d === null) continue;
+        const nums = (d[2] ?? "").split(/\s+/).filter((t) => t !== "").map(Number);
+        if (nums.some((n) => !Number.isFinite(n))) continue;
+        map.set(d[1] as string, nums);
+      }
+    }
+    return maps;
+  };
+
+  const ffvSlot = (o: Record<string, unknown>): { ffv: FfvData; attr: string } =>
+    slotCheck(o, "_ffvMap") as { ffv: FfvData; attr: string };
+
+  const ffvMapOf = (o: Record<string, unknown>): Map<string, number[]> =>
+    ffvSlot(o).ffv.maps[ffvSlot(o).attr] as Map<string, number[]>;
+
+  Object.defineProperties(CSSFontFeatureValuesMapCtor.prototype as object, {
+    size: {
+      get: function (this: Record<string, unknown>): number {
+        return ffvMapOf(this).size;
+      },
+      enumerable: true, configurable: true,
+    },
+    set: {
+      value: function set(this: Record<string, unknown>, name: unknown, value: unknown): void {
+        const { ffv, attr } = ffvSlot(this);
+        const nums = Array.isArray(value)
+          ? value.map((v) => Number(v))
+          : [Number(value)];
+        if (nums.some((n) => !Number.isFinite(n))) {
+          throw new TypeError("CSSFontFeatureValuesMap.set: value must be a number or a list of numbers");
+        }
+        ffv.maps[attr]?.set(coerceGuestString(name), nums);
+        ffv.reserialize?.();
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    get: {
+      value: function get(this: Record<string, unknown>, name: unknown): unknown {
+        return ffvMapOf(this).get(coerceGuestString(name));
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    has: {
+      value: function has(this: Record<string, unknown>, name: unknown): boolean {
+        return ffvMapOf(this).has(coerceGuestString(name));
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    delete: {
+      value: function (this: Record<string, unknown>, name: unknown): void {
+        const { ffv, attr } = ffvSlot(this);
+        ffv.maps[attr]?.delete(coerceGuestString(name));
+        ffv.reserialize?.();
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    clear: {
+      value: function clear(this: Record<string, unknown>): void {
+        const { ffv, attr } = ffvSlot(this);
+        ffv.maps[attr]?.clear();
+        ffv.reserialize?.();
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    forEach: {
+      value: function forEach(this: Record<string, unknown>, cb: unknown, thisArg?: unknown): void {
+        const fn = cb as (v: number[], k: string, m: object) => void;
+        for (const [k, v] of ffvMapOf(this)) fn.call(thisArg, v, k, this);
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+  });
+
+  const ffvMapAccessor = (attr: string): PropertyDescriptor => ({
+    get: function (this: Record<string, unknown>): unknown {
+      const slot = `_ffvMap_${attr}`;
+      if (this[slot] === undefined) {
+        const ffv = slotCheck(this, "_ffv") as FfvData;
+        const o: Record<string, unknown> = { _ffvMap: { ffv, attr } };
+        Object.setPrototypeOf(o, CSSFontFeatureValuesMapCtor.prototype as object);
+        this[slot] = o;
+      }
+      return this[slot];
+    },
+    enumerable: true, configurable: true,
+  });
+
+  Object.defineProperties(CSSFontFeatureValuesRuleCtor.prototype as object, {
+    fontFamily: {
+      get: function (this: Record<string, unknown>): unknown {
+        return (slotCheck(this, "_ffv") as FfvData).fontFamily;
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        const ffv = slotCheck(this, "_ffv") as FfvData;
+        ffv.fontFamily = coerceGuestString(v);
+        ffv.reserialize?.();
+      },
+      enumerable: true, configurable: true,
+    },
+    ...Object.fromEntries(FFV_ATTRS.map(([attr]) => [attr, ffvMapAccessor(attr)])),
+  });
+
+  // ── CSSOM sheet interfaces ────────────────────────────────────────────
+  function MediaListCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+
+  // MediaList (CSSOM §5.2): comma-separated medium list with item/append/
+  // delete. `onChange` lets owning rules reserialize their cssText when the
+  // list is mutated through mediaText/appendMedium/deleteMedium.
+  const makeMediaList = (initial: string, onChange?: () => void): Record<string, unknown> => {
+    let mediaText = initial;
+    const changed = (): void => {
+      if (onChange !== undefined) onChange();
+    };
+    const items = (): string[] =>
+      mediaText.trim() === "" ? [] : mediaText.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    const list: Record<string, unknown> = {};
+    Object.defineProperties(list, {
+      mediaText: {
+        get: () => mediaText,
+        set: (v: unknown) => {
+          mediaText = coerceGuestString(v);
+          changed();
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      length: { get: () => items().length, enumerable: true, configurable: true },
+      item: {
+        value: (i: unknown) => items()[Math.trunc(Number(i))] ?? null,
+        writable: true, enumerable: true, configurable: true,
+      },
+      appendMedium: {
+        value: (m: unknown) => {
+          const medium = coerceGuestString(m);
+          const cur = items();
+          if (!cur.includes(medium)) {
+            mediaText = [...cur, medium].join(", ");
+            changed();
+          }
+        },
+        writable: true, enumerable: true, configurable: true,
+      },
+      deleteMedium: {
+        value: (m: unknown) => {
+          const medium = coerceGuestString(m);
+          const cur = items();
+          if (!cur.includes(medium)) throw new Error(`NotFoundError: medium "${medium}" not in list`);
+          mediaText = cur.filter((s) => s !== medium).join(", ");
+          changed();
+        },
+        writable: true, enumerable: true, configurable: true,
+      },
+      [Symbol.toStringTag]: { value: "MediaList", configurable: true },
+      toString: { value: () => mediaText, writable: true, enumerable: true, configurable: true },
+    });
+    Object.setPrototypeOf(list, MediaListCtor.prototype as object);
+    return list;
+  };
+
+  // CSSRule type constants (CSSOM §5.1) — own + prototype per WebIDL legacy.
+  const CSS_RULE_CONSTANTS: Record<string, number> = {
+    STYLE_RULE: 1, CHARSET_RULE: 2, IMPORT_RULE: 3, MEDIA_RULE: 4,
+    FONT_FACE_RULE: 5, PAGE_RULE: 6, KEYFRAMES_RULE: 7, KEYFRAME_RULE: 8,
+    MARGIN_RULE: 9, NAMESPACE_RULE: 10, COUNTER_STYLE_RULE: 11,
+    SUPPORTS_RULE: 12, FONT_FEATURE_VALUES_RULE: 14, VIEWPORT_RULE: 15,
+  };
+  Object.assign(CSSRuleCtor, CSS_RULE_CONSTANTS);
+  Object.assign(CSSRuleCtor.prototype, CSS_RULE_CONSTANTS);
+
+  // Constructed/adopted stylesheets: detached sheets keep their own rule text
+  // in `_text`; mutations notify so adopted sheets re-seed the cascade input.
+  let adoptedSheets: Record<string, unknown>[] = [];
+  const syncAdoptedSheets = (): void => {
+    session.setAdoptedSheets(
+      adoptedSheets
+        .filter((s) => s["_disabled"] !== true)
+        .map((s) => String((s["_cssText"] as () => string)())),
+    );
+    mutations += 1;
+  };
+  const adoptedSheetMutated = (sheet: Record<string, unknown>): void => {
+    if (adoptedSheets.includes(sheet)) syncAdoptedSheets();
+    for (const [rootId, list] of shadowAdopted) {
+      if (list.includes(sheet)) syncShadowAdopted(rootId);
+    }
+  };
+
+  function StyleSheetCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  /**
+   * Freeze `url()` references in a stylesheet text against the sheet's base
+   * URL (CSSOM §6.4.1 — constructed sheets resolve relative urls at parse
+   * time; the resolved absolute survives later document-base changes).
+   */
+  const absolutizeCssUrls = (text: string, base: string): string =>
+    text.replace(
+      /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s][^)]*?))\s*\)/gi,
+      (_m, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
+        const raw = (dq ?? sq ?? bare ?? "").trim();
+        if (raw === "" || /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|#)/.test(raw)) return `url("${raw}")`;
+        try {
+          return `url("${new HostURL(raw, base).href}")`;
+        } catch {
+          return `url("${raw}")`;
+        }
+      },
+    );
+
+  const constructSheet = (options: unknown, ownerDoc: object): object => {
+    const opts = (options ?? {}) as Record<string, unknown>;
+    // CSSStyleSheetInit.baseURL — "must be a valid URL"; resolved against the
+    // constructor document's base URL, defaulting to it when absent.
+    let baseURL = session.baseUrl;
+    if (opts["baseURL"] !== undefined) {
+      try {
+        baseURL = new HostURL(cssomString(opts["baseURL"]), session.baseUrl).href;
+      } catch {
+        throw new DOMException("CSSStyleSheet: invalid baseURL", "NotAllowedError");
+      }
+    }
+    const self: Record<string, unknown> = {
+      _text: "",
+      _constructed: true,
+      _baseURL: baseURL,
+      _ownerDoc: ownerDoc,
+      _disabled: opts["disabled"] === true,
+      _media: makeMediaList(typeof opts["media"] === "string" ? opts["media"] : ""),
+    };
+    Object.setPrototypeOf(self, CSSStyleSheetCtor.prototype as object);
+    self["_host"] = makeRuleHost(
+      () => self["_text"] as string,
+      (text) => {
+        self["_text"] = absolutizeCssUrls(text, self["_baseURL"] as string);
+        adoptedSheetMutated(self);
+      },
+      () => self,
+      { disallowImport: true },
+    );
+    self["_cssText"] = () => self["_text"] as string;
+    return self;
+  };
+  function CSSStyleSheetCtor(this: unknown, options?: unknown): object {
+    // Sheets remember their constructor document — adopting a sheet into a
+    // DIFFERENT document's adoptedStyleSheets throws NotAllowedError.
+    return constructSheet(options, document);
+  }
+  Object.defineProperty(CSSStyleSheetCtor, "name", { value: "CSSStyleSheet" });
+  Object.setPrototypeOf(CSSStyleSheetCtor, StyleSheetCtor);
+  Object.setPrototypeOf(CSSStyleSheetCtor.prototype as object, StyleSheetCtor.prototype as object);
+  Object.defineProperty(CSSStyleSheetCtor.prototype, "constructor", {
+    value: CSSStyleSheetCtor, writable: true, enumerable: false, configurable: true,
+  });
+  const sheetAccessor = (
+    attr: string,
+    get: (o: Record<string, unknown>) => unknown,
+  ): PropertyDescriptor => {
+    const getter = function (this: Record<string, unknown>): unknown {
+      if (this["_host"] === undefined && this["_sheetKind"] === undefined) {
+        throw new TypeError("Illegal invocation");
+      }
+      return get(this);
+    };
+    Object.defineProperty(getter, "name", { value: `get ${attr}` });
+    return { get: getter, enumerable: true, configurable: true };
+  };
+  const sheetMethod = (fn: (o: Record<string, unknown>, ...args: unknown[]) => unknown): PropertyDescriptor => ({
+    value: function (this: Record<string, unknown>, ...args: unknown[]): unknown {
+      if (this["_host"] === undefined && this["_sheetKind"] === undefined) {
+        throw new TypeError("Illegal invocation");
+      }
+      return fn(this, ...args);
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  Object.defineProperties(StyleSheetCtor.prototype as object, {
+    type: sheetAccessor("type", () => "text/css"),
+    href: sheetAccessor("href", () => null),
+    ownerNode: sheetAccessor("ownerNode", (o) => o["_ownerNode"] ?? null),
+    parentStyleSheet: sheetAccessor("parentStyleSheet", () => null),
+    title: sheetAccessor("title", (o) => o["_title"] ?? null),
+    media: {
+      get: function (this: Record<string, unknown>): unknown {
+        if (this["_host"] === undefined && this["_sheetKind"] === undefined) {
+          throw new TypeError("Illegal invocation");
+        }
+        return this["_media"];
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        if (this["_host"] === undefined && this["_sheetKind"] === undefined) {
+          throw new TypeError("Illegal invocation");
+        }
+        const list = this["_media"] as Record<string, unknown> | undefined;
+        if (list !== undefined) list["mediaText"] = coerceGuestString(v);
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    disabled: {
+      get: function (this: Record<string, unknown>): unknown {
+        return this["_disabled"] === true;
+      },
+      set: function (this: Record<string, unknown>, v: unknown): void {
+        this["_disabled"] = v === true;
+        adoptedSheetMutated(this);
+      },
+      enumerable: true, configurable: true,
+    },
+  });
+  Object.defineProperties(CSSStyleSheetCtor.prototype as object, {
+    ownerRule: sheetAccessor("ownerRule", () => null),
+    cssRules: sheetAccessor("cssRules", (o) => (o["_host"] as ReturnType<typeof makeRuleHost>).cssRules),
+    rules: sheetAccessor("rules", (o) => (o["_host"] as ReturnType<typeof makeRuleHost>).cssRules),
+    insertRule: sheetMethod((o, cssText, index) =>
+      (o["_host"] as ReturnType<typeof makeRuleHost>).insertRule(
+        absolutizeCssUrls(coerceGuestString(cssText), o["_baseURL"] as string ?? session.baseUrl),
+        index,
+      )),
+    deleteRule: sheetMethod((o, index) =>
+      (o["_host"] as ReturnType<typeof makeRuleHost>).deleteRule(index)),
+    replaceSync: sheetMethod((o, text) => {
+      o["_text"] = absolutizeCssUrls(coerceGuestString(text), o["_baseURL"] as string ?? session.baseUrl);
+      adoptedSheetMutated(o);
+      return undefined;
+    }),
+    replace: sheetMethod((o, text) => {
+      o["_text"] = absolutizeCssUrls(coerceGuestString(text), o["_baseURL"] as string ?? session.baseUrl);
+      adoptedSheetMutated(o);
+      return Promise.resolve(o);
     }),
   });
 
@@ -3657,9 +5271,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   // and keeping `[...getComputedStyle(el)]` consistent with computedStyleMap).
   const computedPropertyNames = CSS_PROPERTIES.filter((p) => p.initial !== "").map((p) => p.name);
   let gcsMutEpoch = -1;
-  const gcsProxyCache = new Map<NodeId, object>();
-  const gcsValueCache = new Map<NodeId, Record<string, unknown>>();
-  const gcsSerializedCache = new Map<NodeId, Map<string, string>>();
+  const gcsProxyCache = new Map<string, object>();
+  const gcsValueCache = new Map<string, Record<string, unknown>>();
+  const gcsSerializedCache = new Map<string, Map<string, string>>();
 
   const FAST_GCS_DEFAULTS: Record<string, string> = {
     display: "block",
@@ -3723,9 +5337,80 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   };
   let fastGcsShared: object | null = null;
 
-  function getComputedStyle(el: unknown): object {
+  /**
+   * Parse a `getComputedStyle` pseudo-element argument: `::?ident` with CSS
+   * escape decoding, consuming to the END of the string — anything else
+   * (trailing whitespace, punctuation, a lone `\`) is malformed → `null`.
+   */
+  const parsePseudoIdent = (s: string): string | null => {
+    const m = /^(::?)/.exec(s);
+    if (m === null) return null;
+    const rest = s.slice((m[1] as string).length);
+    let name = "";
+    let i = 0;
+    while (i < rest.length) {
+      const c = rest[i] as string;
+      if (c === "\\") {
+        let j = i + 1;
+        let hex = "";
+        while (j < rest.length && hex.length < 6 && /[0-9a-fA-F]/.test(rest[j] as string)) {
+          hex += rest[j];
+          j += 1;
+        }
+        if (hex !== "") {
+          name += String.fromCodePoint(parseInt(hex, 16));
+          if (rest[j] !== undefined && /\s/.test(rest[j] as string)) j += 1;
+          i = j;
+          continue;
+        }
+        if (j < rest.length) {
+          name += rest[j];
+          i = j + 1;
+          continue;
+        }
+        return null;
+      }
+      if (/[\w-]/.test(c) || c.charCodeAt(0) >= 0x80) {
+        name += c;
+        i += 1;
+        continue;
+      }
+      return null;
+    }
+    return name === "" ? null : name.toLowerCase();
+  };
+
+  function getComputedStyle(el: unknown, pseudoElt?: unknown): object {
     gCsCalls += 1;
     const id = idFromWrapper(el);
+    // Pseudo-element argument (CSSOM §dom-window-getcomputedstyle): absent,
+    // empty, or non-`:`-prefixed → the element's own style; a well-formed
+    // `::?ident` selects a pseudo-element; malformed or unknown pseudo names
+    // produce an EMPTY immutable declaration.
+    let pseudoName: string | null = null;
+    let pseudoEmpty = false;
+    if (pseudoElt !== undefined && pseudoElt !== null) {
+      const s = cssomString(pseudoElt);
+      if (s.startsWith(":")) {
+        const parsed = parsePseudoIdent(s);
+        const elNode = id !== undefined ? session.dom.nodes.get(id) : undefined;
+        const isFileInput =
+          elNode?.kind === "element" &&
+          elNode.tag === "input" &&
+          (elNode.attrs?.get("type") ?? "").toLowerCase() === "file";
+        if (parsed === null) {
+          pseudoEmpty = true;
+        } else if (
+          parsed === "before" || parsed === "after" ||
+          (parsed === "file-selector-button" && isFileInput)
+        ) {
+          pseudoName = parsed;
+        } else {
+          pseudoEmpty = true;
+        }
+      }
+    }
+    const cacheKey = `${id ?? "x"}\0${pseudoEmpty ? "?" : (pseudoName ?? "")}`;
     if (styleMode === "fast") {
       if (fastGcsShared === null) {
         const resolveFast = (cssName: string): string => FAST_GCS_DEFAULTS[cssName] ?? "";
@@ -3779,17 +5464,77 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       gcsSerializedCache.clear();
     }
     if (id !== undefined) {
-      const hit = gcsProxyCache.get(id);
+      const hit = gcsProxyCache.get(cacheKey);
       if (hit !== undefined) return hit;
     }
 
+    // Elements inside a NON-RENDERED iframe document (the iframe element's
+    // `display: none` suppresses its browsing context) produce an empty
+    // declaration, same as detached nodes.
+    const underNonRenderedIframe = (nodeId: NodeId): boolean => {
+      let cur: NodeId | null = session.dom.nodes.get(nodeId)?.parent ?? null;
+      while (cur !== null) {
+        const n = session.dom.nodes.get(cur);
+        if (n === undefined) return false;
+        if (n.kind === "element" && n.tag === "#iframe-document") {
+          const iframeId = n.parent;
+          if (iframeId === null) return false;
+          const cs = session.computed(iframeId) as Record<string, unknown> | null;
+          if (cs === null) return false;
+          const meta = CSS_NAME_TO_META.get("display");
+          return meta !== undefined && serializeComputed(meta.tsType, cs[meta.field]) === "none";
+        }
+        cur = n.parent;
+      }
+      return false;
+    };
+
+    // Light-DOM children of a shadow host render only when slotted into the
+    // shadow tree (flat-tree §3): find a `<slot>` in the shadow whose `name`
+    // matches the child's `slot` attribute (default "" both sides).
+    const isSlottedIntoShadow = (lightChildId: NodeId, rootId: NodeId): boolean => {
+      const want = session.dom.nodes.get(lightChildId)?.attrs?.get("slot") ?? "";
+      const walk = (nid: NodeId): boolean => {
+        const n = session.dom.nodes.get(nid);
+        if (n === undefined) return false;
+        if (n.kind === "element" && n.tag === "slot" && (n.attrs?.get("name") ?? "") === want) return true;
+        return n.children.some(walk);
+      };
+      return walk(rootId);
+    };
+    const isUnslottedLight = (nodeId: NodeId): boolean => {
+      let cur: NodeId | null | undefined = nodeId;
+      while (cur !== null && cur !== undefined) {
+        const n = session.dom.nodes.get(cur);
+        if (n === undefined) return false;
+        const parent = n.parent;
+        if (parent !== null) {
+          const entry = shadowRootIds.get(parent);
+          if (entry !== undefined && !isSlottedIntoShadow(cur, entry.rootId)) return true;
+        }
+        cur = parent;
+      }
+      return false;
+    };
+
+    // Elements outside the flat tree — and unknown/malformed pseudo-element
+    // requests — produce an empty declaration block: disconnected nodes have
+    // no computed style at all (CSSOM §6.1 — "if the element is not being
+    // rendered, return an empty declaration").
+    const isDetached = (): boolean =>
+      pseudoEmpty ||
+      (id !== undefined &&
+        (!isConnectedToDocument(session.dom, id, shadowHostResolver) ||
+          underNonRenderedIframe(id) ||
+          isUnslottedLight(id)));
     const customNames = (): string[] => {
+      if (isDetached()) return [];
       const raw = ensureRaw();
       return raw === null ? [] : [...(customPropertiesOf(raw)?.keys() ?? [])];
     };
     const item = (index: unknown): string => {
       const n = Number(index);
-      if (!Number.isInteger(n) || n < 0) return "";
+      if (!Number.isInteger(n) || n < 0 || isDetached()) return "";
       if (n < computedPropertyNames.length) return computedPropertyNames[n] ?? "";
       return customNames()[n - computedPropertyNames.length] ?? "";
     };
@@ -3807,23 +5552,23 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     };
 
     const ensureRaw = (): Record<string, unknown> | null => {
-      if (id === undefined) return null;
+      if (id === undefined || pseudoEmpty) return null;
       syncEpoch();
-      let raw = gcsValueCache.get(id);
+      let raw = gcsValueCache.get(cacheKey);
       if (raw !== undefined) return raw;
       gCsCascade += 1;
-      raw = session.computed(id);
-      gcsValueCache.set(id, raw);
+      raw = pseudoName === null ? session.computed(id) : session.computedPseudo(id, pseudoName);
+      gcsValueCache.set(cacheKey, raw);
       return raw;
     };
 
     const fieldString = (field: string, tsType: string): string => {
       if (id === undefined) return "";
       syncEpoch();
-      let ser = gcsSerializedCache.get(id);
+      let ser = gcsSerializedCache.get(cacheKey);
       if (ser === undefined) {
         ser = new Map();
-        gcsSerializedCache.set(id, ser);
+        gcsSerializedCache.set(cacheKey, ser);
       }
       const cached = ser.get(field);
       if (cached !== undefined) return cached;
@@ -3839,11 +5584,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     };
 
     const resolveCssName = (cssName: string, resolved = true): string => {
+      if (isDetached()) return "";
       if (cssName.startsWith("--")) {
         const raw = ensureRaw();
         return raw === null ? "" : (customPropertiesOf(raw)?.get(cssName) ?? "");
       }
-      const shorthandSer = SHORTHAND_COMPUTED[cssName]?.((n) => resolveCssName(n, resolved));
+      const shorthandSer = (Object.hasOwn(SHORTHAND_COMPUTED, cssName) ? SHORTHAND_COMPUTED[cssName] : undefined)?.((n) => resolveCssName(n, resolved));
       if (shorthandSer !== undefined) return shorthandSer;
       const meta = CSS_NAME_TO_META.get(cssName);
       if (meta === undefined) return "";
@@ -3854,6 +5600,35 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (resolved && (cssName === "width" || cssName === "height")) {
         const tree = resolveLayoutTree();
         if (tree !== null && id !== undefined) {
+          if (pseudoName !== null) {
+            // A pseudo-element has no layout fragment: resolve its percentage
+            // size against the containing block — the originating element's
+            // content box (or the nearest ANCESTOR with a box when the element
+            // itself generates none, e.g. display: contents).
+            const computed = fieldString(meta.field, meta.tsType);
+            const pm = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/.exec(computed.trim());
+            if (pm === null) {
+              return computed === "" ? computed : canonicalizeCssValueText(computed, cssName);
+            }
+            let cur: NodeId | undefined = id;
+            while (cur !== undefined) {
+              // `display: contents`/`none` elements generate no box — their
+              // pseudo's containing block is the nearest ancestor WITH one.
+              const d = session.computed(cur)["display" as keyof ReturnType<typeof session.computed>];
+              if (d !== "contents" && d !== "none") {
+                for (const frag of tree.fragments.values()) {
+                  if (frag.node === cur) {
+                    const box = frag.box.contentBox;
+                    const cb = Number(cssName === "width" ? box.width : box.height);
+                    const pct = Number(pm[1]);
+                    return `${pct * cb / 100}px`;
+                  }
+                }
+              }
+              cur = session.dom.nodes.get(cur)?.parent ?? undefined;
+            }
+            return computed;
+          }
           for (const frag of tree.fragments.values()) {
             if (frag.node === id) {
               const box = frag.box.contentBox;
@@ -3863,12 +5638,16 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           }
         }
       }
-      return fieldString(meta.field, meta.tsType);
+      const computed = fieldString(meta.field, meta.tsType);
+      // Computed values serialize through the same canonicalization as
+      // declaration values (url() quoting, font-family quote rules, number
+      // canonicalization) so style.cssText and getComputedStyle agree.
+      return computed === "" ? computed : canonicalizeCssValueText(computed, cssName);
     };
 
     const decl: Record<string, unknown> = {
       get length(): number {
-        return computedPropertyNames.length + customNames().length;
+        return isDetached() ? 0 : computedPropertyNames.length + customNames().length;
       },
       item,
       // The optional `resolved` flag is an internal hook for computedStyleMap:
@@ -3879,10 +5658,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         resolveCssName(String(name), resolved !== false),
       getPropertyPriority: (): string => "",
       setProperty: (): never => {
-        throw new Error("getComputedStyle declarations are read-only");
+        throw new DOMException("getComputedStyle declarations are read-only", "NoModificationAllowedError");
       },
       removeProperty: (): never => {
-        throw new Error("getComputedStyle declarations are read-only");
+        throw new DOMException("getComputedStyle declarations are read-only", "NoModificationAllowedError");
       },
       cssText: "",
       // CSSStyleDeclaration enumerates its longhand property names (plus any
@@ -3933,11 +5712,14 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       set(target, prop, value, receiver): boolean {
         if (typeof prop === "string" && (prop === "cssText" || prop === "cssFloat" || CSSOM_PROPERTY_ALIAS_TO_NAME.has(prop))) {
-          return true;
+          throw new DOMException("getComputedStyle declarations are read-only", "NoModificationAllowedError");
         }
         return Reflect.set(target, prop, value, receiver);
       },
       has(target, prop): boolean {
+        if (typeof prop === "string" && isCssomArrayIndex(prop)) {
+          return item(Number(prop)) !== "";
+        }
         return (
           (typeof prop === "string" && (prop === "cssFloat" || CSSOM_PROPERTY_ALIAS_TO_NAME.has(prop))) ||
           Reflect.has(target, prop)
@@ -3953,7 +5735,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
     });
 
-    if (id !== undefined) gcsProxyCache.set(id, proxy);
+    if (id !== undefined) gcsProxyCache.set(cacheKey, proxy);
     return proxy;
   }
 
@@ -4012,6 +5794,38 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     },
     get styleSheets(): object[] {
       return documentStyleSheetsList();
+    },
+    // CSSOM §6.4.2 — FrozenArray<CSSStyleSheet>: the same array object is
+    // returned until the attribute is set again; adopted sheets feed the
+    // cascade (after the document's own sheets) unless disabled.
+    get adoptedStyleSheets(): object[] {
+      return adoptedSheets;
+    },
+    set adoptedStyleSheets(value: unknown) {
+      if (
+        value === null ||
+        (typeof value !== "object" && typeof value !== "function") ||
+        typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function"
+      ) {
+        throw new TypeError("adoptedStyleSheets must be a sequence of CSSStyleSheet");
+      }
+      const list = [...(value as Iterable<unknown>)] as Record<string, unknown>[];
+      for (const item of list) {
+        if (item === null || (typeof item !== "object" && typeof item !== "function") || item["_cssText"] === undefined) {
+          throw new TypeError("adoptedStyleSheets entries must be CSSStyleSheet");
+        }
+        // CSSOM §6.4.2: only constructed sheets may be adopted — element-backed
+        // (non-constructed) sheets throw "NotAllowedError".
+        if (item["_constructed"] !== true) {
+          throw new DOMException("only constructed stylesheets may be adopted", "NotAllowedError");
+        }
+        // …and a sheet's document must be THIS document (no cross-tree adopt).
+        if (item["_ownerDoc"] !== document) {
+          throw new DOMException("stylesheet belongs to a different document", "NotAllowedError");
+        }
+      }
+      adoptedSheets = list;
+      syncAdoptedSheets();
     },
     get location(): unknown {
       if (options.locationBox !== undefined && options.locationBox.current !== null) {
@@ -4149,7 +5963,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return body ?? null;
       }
       const n = session.dom.nodes.get(focusedNodeId);
-      if (n === undefined || n.kind !== "element" || !isConnectedToDocument(session.dom, focusedNodeId)) {
+      if (n === undefined || n.kind !== "element" || !isConnectedToDocument(session.dom, focusedNodeId, shadowHostResolver)) {
         return (document as { body?: object | null }).body ?? null;
       }
       return makeElementCached(focusedNodeId);
@@ -4168,7 +5982,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       return hits.length === 0 ? null : makeElementCached(hits[0] as NodeId);
     },
     elementsFromPoint(x: unknown, y: unknown): object[] {
-      return fragmentsAt(Number(x), Number(y)).map((id) => makeElementCached(id) as object);
+      return fragmentsAt(Number(x), Number(y)).map((id) => makeElementCached(id));
     },
     get cookie(): string {
       return cookieJar;
@@ -4296,6 +6110,34 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       const id = session.createComment(String(text));
       mutations += 1;
       return makeElementCached(id);
+    },
+    // DOM §4.6 `adoptNode` — detach from the old parent; adopting a node that
+    // lived in an iframe document empties its shadow roots' adoptedStyleSheets.
+    adoptNode(node: unknown): object {
+      const nodeId = idFromWrapper(node);
+      if (nodeId === undefined) throw new TypeError("adoptNode requires a Node");
+      if (docScopeOfNode(nodeId) !== null) {
+        for (const [hostId, entry] of shadowRootIds) {
+          if (containsNode(session.dom, nodeId, hostId)) {
+            shadowAdopted.delete(entry.rootId);
+            syncShadowAdopted(entry.rootId);
+          }
+        }
+      }
+      const parent = session.dom.nodes.get(nodeId)?.parent ?? null;
+      if (parent !== null) session.removeChild(parent, nodeId);
+      mutations += 1;
+      return node as object;
+    },
+    // DOM §4.6 `importNode` — clone into this document; the shadow root (and
+    // its adoptedStyleSheets) are NOT copied.
+    importNode(node: unknown, deep?: unknown): object {
+      const nodeId = idFromWrapper(node);
+      if (nodeId === undefined) throw new TypeError("importNode requires a Node");
+      const cloneId = cloneSubtree(nodeId, deep !== false);
+      if (cloneId === null) throw new DOMException("cannot import this node", "NotSupportedError");
+      mutations += 1;
+      return makeElementCached(cloneId);
     },
     createEvent(eventType: unknown): object {
       // Real event instances so initEvent/initCustomEvent and dispatch share
@@ -4573,9 +6415,69 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     Object.defineProperties(frag, {
       mode: { value: mode, enumerable: true },
       host: { get: () => makeElementCached(nodeIdOfHost(rootId)), enumerable: true },
+      // ShadowRoot.getElementById — id lookup scoped to this shadow subtree.
+      getElementById: {
+        value: (id: unknown): object | null => {
+          const wanted = String(id);
+          const walk = (nid: NodeId): NodeId | null => {
+            const n = session.dom.nodes.get(nid);
+            if (n === undefined) return null;
+            if (n.kind === "element" && n.attrs?.get("id") === wanted) return nid;
+            for (const c of n.children) {
+              const hit = walk(c);
+              if (hit !== null) return hit;
+            }
+            return null;
+          };
+          const hit = walk(rootId);
+          return hit === null ? null : makeElementCached(hit);
+        },
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      },
+      // CSSOM §6.4.2 — FrozenArray<CSSStyleSheet> scoped to this shadow tree.
+      adoptedStyleSheets: {
+        get: (): object[] => shadowAdopted.get(rootId) ?? [],
+        set: (value: unknown): void => {
+          if (
+            value === null ||
+            (typeof value !== "object" && typeof value !== "function") ||
+            typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function"
+          ) {
+            throw new TypeError("adoptedStyleSheets must be a sequence of CSSStyleSheet");
+          }
+          const list = [...(value as Iterable<unknown>)] as Record<string, unknown>[];
+          for (const item of list) {
+            if (item === null || (typeof item !== "object" && typeof item !== "function") || item["_cssText"] === undefined) {
+              throw new TypeError("adoptedStyleSheets entries must be CSSStyleSheet");
+            }
+            if (item["_constructed"] !== true) {
+              throw new DOMException("only constructed stylesheets may be adopted", "NotAllowedError");
+            }
+          }
+          shadowAdopted.set(rootId, list);
+          syncShadowAdopted(rootId);
+          mutations += 1;
+        },
+        enumerable: true,
+        configurable: true,
+      },
     });
     shadowRootWrappers.set(rootId, frag);
     return frag;
+  };
+
+  /** Per-shadow-root adopted sheet objects (`shadowRoot.adoptedStyleSheets`). */
+  const shadowAdopted = new Map<NodeId, Record<string, unknown>[]>();
+  const syncShadowAdopted = (rootId: NodeId): void => {
+    session.setShadowAdoptedSheets(
+      rootId,
+      (shadowAdopted.get(rootId) ?? [])
+        .filter((s) => s["_disabled"] !== true)
+        .map((s) => String((s["_cssText"] as () => string)())),
+    );
+    mutations += 1;
   };
 
   /** Resolve the host element id for a shadow root via the attachShadow map. */
@@ -4584,6 +6486,187 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (entry.rootId === shadowRootId) return hostId;
     }
     return shadowRootId;
+  };
+  /** Connectedness resolver for {@link isConnectedToDocument}: null when the
+   * id is not a registered shadow root (otherwise `nodeIdOfHost` echoes it). */
+  const shadowHostResolver = (rootId: NodeId): NodeId | null => {
+    const h = nodeIdOfHost(rootId);
+    return h === rootId ? null : h;
+  };
+
+  // ---- iframe nested documents ---------------------------------------------
+  // An iframe's `contentDocument` is modeled as a `#iframe-document` SUBTREE of
+  // the same session DOM: it hangs off the iframe element, so connectedness,
+  // element wrappers, and the kernel stay unified — while `treeScopeOf` treats
+  // it as a scope boundary (its styles are its own `<style>`s + own adopted
+  // sheets; the outer document's sheets never reach inside).
+  /** iframe element id → its nested `#iframe-document` root id. */
+  const iframeDocRoots = new Map<NodeId, NodeId>();
+  /** `#iframe-document` root id → its document wrapper. */
+  const iframeDocWrappers = new Map<NodeId, object>();
+  /** `#iframe-document` root id → its `contentWindow` object. */
+  const iframeWindowWrappers = new Map<NodeId, object>();
+
+  /** The document OWNING a node: `null` = main document, else the
+   * `#iframe-document` root id whose subtree contains it. Shadow trees resolve
+   * through their host. */
+  const docScopeOfNode = (id: NodeId): NodeId | null => {
+    let cur: NodeId | null | undefined = id;
+    const seen = new Set<NodeId>();
+    while (cur !== null && cur !== undefined && !seen.has(cur)) {
+      seen.add(cur);
+      const n = session.dom.nodes.get(cur);
+      if (n === undefined) return null;
+      if (n.kind === "element" && n.tag === "#iframe-document") return cur;
+      if (n.kind === "element" && n.tag === "#shadow-root") {
+        cur = shadowHostResolver(cur);
+        continue;
+      }
+      cur = n.parent;
+    }
+    return null;
+  };
+
+  /** Lazily create the iframe's nested document subtree (srcdoc or about:blank
+   * skeleton). Safe to call repeatedly. */
+  const ensureIframeDoc = (iframeId: NodeId): NodeId => {
+    const existing = iframeDocRoots.get(iframeId);
+    if (existing !== undefined) return existing;
+    const rootId = session.createElement("#iframe-document");
+    session.appendChild(iframeId, rootId);
+    iframeDocRoots.set(iframeId, rootId);
+    // about:blank skeleton — built explicitly (the fragment parser drops
+    // <html>/<head>/<body> as context-only tags).
+    const html = session.createElement("html");
+    const head = session.createElement("head");
+    const body = session.createElement("body");
+    session.appendChild(rootId, html);
+    session.appendChild(html, head);
+    session.appendChild(html, body);
+    const srcdoc = session.dom.nodes.get(iframeId)?.attrs?.get("srcdoc");
+    if (srcdoc !== undefined && srcdoc !== "") insertHtmlIntoParent(body, srcdoc);
+    mutations += 1;
+    return rootId;
+  };
+
+  /** The `document` object of an iframe's nested browsing context. */
+  const makeIframeDocument = (docRootId: NodeId): object => {
+    const existing = iframeDocWrappers.get(docRootId);
+    if (existing !== undefined) return existing;
+    const doc: Record<string, unknown> = {
+      nodeType: 9,
+      nodeName: "#document",
+      get documentElement(): object | null {
+        for (const child of session.dom.nodes.get(docRootId)?.children ?? []) {
+          const n = session.dom.nodes.get(child);
+          if (n?.kind === "element" && n.tag === "html") return makeElementCached(child);
+        }
+        return null;
+      },
+      get body(): object | null {
+        const walk = (id: NodeId): NodeId | null => {
+          const n = session.dom.nodes.get(id);
+          if (n === undefined) return null;
+          if (n.kind === "element" && n.tag === "body") return id;
+          for (const c of n.children) {
+            const hit = walk(c);
+            if (hit !== null) return hit;
+          }
+          return null;
+        };
+        const id = walk(docRootId);
+        return id === null ? null : makeElementCached(id);
+      },
+      createElement(tag: unknown): object {
+        const elId = session.createElement(String(tag));
+        mutations += 1;
+        return makeElementCached(elId);
+      },
+      createTextNode(text: unknown): object {
+        const elId = session.createTextNode(String(text));
+        mutations += 1;
+        return makeElementCached(elId);
+      },
+      // Per-document adopted sheets — the doc root doubles as the cascade
+      // scope key, so this reuses the shadow-adopted plumbing.
+      get adoptedStyleSheets(): object[] {
+        return shadowAdopted.get(docRootId) ?? [];
+      },
+      set adoptedStyleSheets(value: unknown) {
+        if (
+          value === null ||
+          (typeof value !== "object" && typeof value !== "function") ||
+          typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function"
+        ) {
+          throw new TypeError("adoptedStyleSheets must be a sequence of CSSStyleSheet");
+        }
+        const list = [...(value as Iterable<unknown>)] as Record<string, unknown>[];
+        for (const item of list) {
+          if (item === null || (typeof item !== "object" && typeof item !== "function") || item["_cssText"] === undefined) {
+            throw new TypeError("adoptedStyleSheets entries must be CSSStyleSheet");
+          }
+          if (item["_constructed"] !== true || item["_ownerDoc"] !== doc) {
+            throw new DOMException("only this document's constructed stylesheets may be adopted", "NotAllowedError");
+          }
+        }
+        shadowAdopted.set(docRootId, list);
+        syncShadowAdopted(docRootId);
+        mutations += 1;
+      },
+      // DOM §4.6 `adoptNode`: remove from the old parent; crossing a document
+      // boundary empties every shadow root's adoptedStyleSheets inside.
+      adoptNode(node: unknown): object {
+        const nodeId = idFromWrapper(node);
+        if (nodeId === undefined) throw new TypeError("adoptNode requires a Node");
+        if (docScopeOfNode(nodeId) !== docRootId) {
+          for (const [hostId, entry] of shadowRootIds) {
+            if (containsNode(session.dom, nodeId, hostId)) {
+              shadowAdopted.delete(entry.rootId);
+              syncShadowAdopted(entry.rootId);
+            }
+          }
+        }
+        const parent = session.dom.nodes.get(nodeId)?.parent ?? null;
+        if (parent !== null) session.removeChild(parent, nodeId);
+        mutations += 1;
+        return node as object;
+      },
+      // DOM §4.6 `importNode`: clone without copying the shadow root.
+      importNode(node: unknown, deep?: unknown): object {
+        const nodeId = idFromWrapper(node);
+        if (nodeId === undefined) throw new TypeError("importNode requires a Node");
+        const cloneId = cloneSubtree(nodeId, deep !== false);
+        if (cloneId === null) throw new DOMException("cannot import this node", "NotSupportedError");
+        mutations += 1;
+        return makeElementCached(cloneId);
+      },
+      get defaultView(): object {
+        return makeIframeWindow(docRootId);
+      },
+    };
+    iframeDocWrappers.set(docRootId, doc);
+    return doc;
+  };
+
+  /** The `contentWindow` of an iframe: its own document + own CSSStyleSheet
+   * constructor (whose sheets are owned by the nested document). */
+  const makeIframeWindow = (docRootId: NodeId): object => {
+    const existing = iframeWindowWrappers.get(docRootId);
+    if (existing !== undefined) return existing;
+    const doc = makeIframeDocument(docRootId);
+    const win: Record<string, unknown> = {
+      document: doc,
+      DOMException,
+      getComputedStyle: (el: unknown, pseudo?: unknown) => getComputedStyle(el, pseudo),
+    };
+    win["CSSStyleSheet"] = function (this: unknown, options?: unknown): object {
+      return constructSheet(options, doc);
+    };
+    Object.defineProperty(win["CSSStyleSheet"], "name", { value: "CSSStyleSheet" });
+    Object.setPrototypeOf(win["CSSStyleSheet"], CSSStyleSheetCtor);
+    (win["CSSStyleSheet"] as { prototype: object }).prototype = CSSStyleSheetCtor.prototype as object;
+    iframeWindowWrappers.set(docRootId, win);
+    return win;
   };
 
   const MutationObserverCtor = class MutationObserver {
@@ -4638,9 +6721,79 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     CSSRule: CSSRuleCtor,
     CSSGroupingRule: CSSGroupingRuleCtor,
     CSSStyleRule: CSSStyleRuleCtor,
+    StyleSheet: StyleSheetCtor,
+    CSSStyleSheet: CSSStyleSheetCtor,
+    MediaList: MediaListCtor,
+    CSSMediaRule: CSSMediaRuleCtor,
+    CSSSupportsRule: CSSSupportsRuleCtor,
+    CSSPageRule: CSSPageRuleCtor,
+    CSSFontFaceRule: CSSFontFaceRuleCtor,
+    CSSImportRule: CSSImportRuleCtor,
+    CSSNamespaceRule: CSSNamespaceRuleCtor,
+    CSSKeyframesRule: CSSKeyframesRuleCtor,
+    CSSKeyframeRule: CSSKeyframeRuleCtor,
+    CSSFontFeatureValuesRule: CSSFontFeatureValuesRuleCtor,
+    CSSFontFeatureValuesMap: CSSFontFeatureValuesMapCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
     getComputedStyle,
+    // `CSS` namespace (CSSOM §namespaces): supports() validates declarations
+    // (2-arg form) or support conditions (1-arg `(prop: value)` / not/and/or).
+    CSS: (() => {
+      const supportsDecl = (prop: string, value: string): boolean => {
+        const name = prop.trim().toLowerCase();
+        if (name === "" || value.trim() === "" || /!/.test(value)) return false;
+        if (name.startsWith("--")) return /^--[a-zA-Z0-9_-]/.test(name);
+        if (!CSS_NAME_TO_META.has(name) && !isShorthandName(name)) return false;
+        return expandShorthand(name, value) !== null || isDeclarationValueValid(name, value);
+      };
+      // Split `s` at top-level ` <kw> ` (paren depth 0); null when absent.
+      const splitAt = (s: string, kw: "or" | "and"): string[] | null => {
+        const parts: string[] = [];
+        let depth = 0;
+        let last = 0;
+        let i = 0;
+        while (i < s.length) {
+          const ch = s[i] as string;
+          if (ch === "(") depth += 1;
+          else if (ch === ")") depth -= 1;
+          else if (depth === 0) {
+            const m = new RegExp(`^\\s+${kw}\\s+`, "i").exec(s.slice(i));
+            if (m !== null) {
+              parts.push(s.slice(last, i));
+              i += m[0].length;
+              last = i;
+              continue;
+            }
+          }
+          i += 1;
+        }
+        if (parts.length === 0) return null;
+        parts.push(s.slice(last));
+        return parts;
+      };
+      const supportsCond = (cond: string): boolean => {
+        const s = cond.trim();
+        if (/^not\s+/i.test(s)) return !supportsCond(s.slice(4));
+        const ors = splitAt(s, "or");
+        if (ors !== null) return ors.some(supportsCond);
+        const ands = splitAt(s, "and");
+        if (ands !== null) return ands.every(supportsCond);
+        const inner = s.startsWith("(") && s.endsWith(")") ? s.slice(1, -1).trim() : s;
+        const idx = inner.indexOf(":");
+        return idx > 0 && supportsDecl(inner.slice(0, idx), inner.slice(idx + 1));
+      };
+      return {
+        supports(prop: unknown, value?: unknown): boolean {
+          if (prop === undefined) throw new TypeError("supports() requires a condition");
+          if (value === undefined) return supportsCond(cssomString(prop));
+          return supportsDecl(cssomString(prop), cssomString(value));
+        },
+        escape(ident: unknown): string {
+          return String(ident).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch.codePointAt(0)?.toString(16)} `);
+        },
+      };
+    })(),
   };
   /**
    * HTML §7.8 lifecycle: after parsing completes (all classic scripts have
@@ -4689,14 +6842,25 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 // ---------------------------------------------------------------------------
 
 /** Whether `nodeId` is currently reachable from the document root. */
-export function isConnectedToDocument(dom: DomTree, nodeId: NodeId): boolean {
+export function isConnectedToDocument(
+  dom: DomTree,
+  nodeId: NodeId,
+  shadowHost?: (shadowRootId: NodeId) => NodeId | null,
+): boolean {
   let current: NodeId | null | undefined = nodeId;
   const seen = new Set<NodeId>();
   while (current !== null && current !== undefined) {
     if (seen.has(current)) return false;
     seen.add(current);
     if (current === dom.root) return true;
-    current = dom.nodes.get(current)?.parent;
+    const node = dom.nodes.get(current);
+    // A shadow root is detached in the flat DOM but connected through its host
+    // (DOM §shadow-tree connectedness): hop to the host and keep walking.
+    if (node?.kind === "element" && node.tag === "#shadow-root") {
+      current = shadowHost?.(current) ?? null;
+      continue;
+    }
+    current = node?.parent;
   }
   return false;
 }
@@ -4725,6 +6889,617 @@ function textContentString(text: unknown): string {
 function cssomString(value: unknown): string {
   return String(value);
 }
+
+/** Internal slot read: rule records carry string slots (`_prelude`, …). */
+const slotText = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/**
+ * CSSOM "serialize a component value" normalization for declared values:
+ * whitespace runs collapse to one space and number tokens get their canonical
+ * serialization (leading zero — `.5` → `0.5`, `-0` → `0`, `+2` → `2`,
+ * `1.` → `1`, exponent folded). String contents and `var()`/`url()` bodies are
+ * untouched.
+ */
+// ---------------------------------------------------------------------------
+// CSSOM declaration-block serialization: shorthand synthesis.
+//
+// Declarations are stored as longhands (shorthands expand on parse). On
+// serialize — and on `getPropertyValue(shorthand)` — fully-declared shorthand
+// groups fold back into their shorthand per the CSSOM "serialize a CSS
+// declaration block" rules: a shorthand is emitted only when every longhand
+// it covers is declared, all with the same priority.
+// ---------------------------------------------------------------------------
+
+type StylePriority = "" | "important";
+interface StyleDeclarationEntry {
+  readonly value: string;
+  readonly priority: StylePriority;
+  /** Set when the entry carries a shorthand's pending-substitution value
+   *  (`background: var(--a)` spreads the raw var() text onto every longhand):
+   *  the longhand's own serialization is empty. */
+  readonly pending?: boolean;
+}
+
+const CSS_WIDE_VALUE_SET: ReadonlySet<string> = new Set([
+  "initial", "inherit", "unset", "revert", "revert-layer",
+]);
+
+/** `all` covers every longhand except these (and itself), per CSS Cascade §4. */
+const ALL_SHORTHAND_EXCLUDED: ReadonlySet<string> = new Set([
+  "all", "direction", "unicode-bidi",
+]);
+
+let allLonghandNamesCache: string[] | null = null;
+const allLonghandNames = (): string[] => {
+  if (allLonghandNamesCache === null) {
+    allLonghandNamesCache = CSS_PROPERTIES
+      .map((p) => p.name)
+      .filter((n) => !n.startsWith("--") && !ALL_SHORTHAND_EXCLUDED.has(n) && !isShorthandName(n));
+  }
+  return allLonghandNamesCache;
+};
+
+interface ShorthandFoldRule {
+  readonly name: string;
+  readonly longhands: readonly string[];
+  /** Joins the longhand values into the shorthand value, or null when the
+   *  shorthand cannot represent them. `values[i]` corresponds to
+   *  `longhands[i]`. */
+  readonly synthesize: (values: readonly string[]) => string | null;
+}
+
+/** Blink-style quad collapse: identical values merge right→left→bottom. */
+const joinQuad = (t: string, r: string, b: string, l: string): string =>
+  t === r && r === b && b === l ? t :
+  b === t && l === r ? `${t} ${r}` :
+  l === r ? `${t} ${r} ${b}` :
+  `${t} ${r} ${b} ${l}`;
+
+const quadRule = (name: string, props: readonly string[]): ShorthandFoldRule => ({
+  name,
+  longhands: props,
+  synthesize: (v) => joinQuad(v[0] as string, v[1] as string, v[2] as string, v[3] as string),
+});
+
+const pairRule = (name: string, props: readonly string[]): ShorthandFoldRule => ({
+  name,
+  longhands: props,
+  synthesize: (v) => (v[0] === v[1] ? (v[0] as string) : `${v[0]} ${v[1]}`),
+});
+
+const borderEdgeLH = (edge: string): readonly string[] => [
+  `border-${edge}-width`, `border-${edge}-style`, `border-${edge}-color`,
+];
+
+/** `<width> <style> <color>` — omit components at their initial value. */
+const joinBorderEdge = (v: readonly string[]): string => {
+  const parts: string[] = [];
+  if (v[0] !== "medium") parts.push(v[0] as string);
+  if (v[1] !== "none") parts.push(v[1] as string);
+  if (v[2] !== "currentcolor") parts.push(v[2] as string);
+  return parts.length === 0 ? "medium" : parts.join(" ");
+};
+
+const SHORTHAND_FOLD_RULES: readonly ShorthandFoldRule[] = [
+  {
+    name: "all",
+    longhands: allLonghandNames(),
+    synthesize: (v) =>
+      v.every((x) => x === v[0]) && CSS_WIDE_VALUE_SET.has(v[0] as string)
+        ? (v[0] as string)
+        : null,
+  },
+  {
+    name: "border",
+    longhands: [
+      "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+      "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+      "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+      "border-image",
+    ],
+    synthesize: (v) => {
+      const allEq = (i: number): boolean => v[i] === v[i + 1] && v[i + 1] === v[i + 2] && v[i + 2] === v[i + 3];
+      if (v[12] !== "none" || !allEq(0) || !allEq(4) || !allEq(8)) return null;
+      return joinBorderEdge([v[0] as string, v[4] as string, v[8] as string]);
+    },
+  },
+  quadRule("border-width", ["border-top-width", "border-right-width", "border-bottom-width", "border-left-width"]),
+  quadRule("border-style", ["border-top-style", "border-right-style", "border-bottom-style", "border-left-style"]),
+  quadRule("border-color", ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"]),
+  { name: "border-top", longhands: borderEdgeLH("top"), synthesize: joinBorderEdge },
+  { name: "border-right", longhands: borderEdgeLH("right"), synthesize: joinBorderEdge },
+  { name: "border-bottom", longhands: borderEdgeLH("bottom"), synthesize: joinBorderEdge },
+  { name: "border-left", longhands: borderEdgeLH("left"), synthesize: joinBorderEdge },
+  quadRule("margin", ["margin-top", "margin-right", "margin-bottom", "margin-left"]),
+  quadRule("padding", ["padding-top", "padding-right", "padding-bottom", "padding-left"]),
+  quadRule("inset", ["top", "right", "bottom", "left"]),
+  quadRule("border-radius", ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"]),
+  {
+    name: "list-style",
+    longhands: ["list-style-position", "list-style-type", "list-style-image"],
+    synthesize: (v) => {
+      const parts: string[] = [];
+      if (v[0] !== "outside") parts.push(v[0] as string);
+      if (v[1] !== "disc") parts.push(v[1] as string);
+      if (v[2] !== "none") parts.push(v[2] as string);
+      return parts.length === 0 ? null : parts.join(" ");
+    },
+  },
+  {
+    name: "outline",
+    longhands: ["outline-color", "outline-style", "outline-width"],
+    synthesize: (v) => {
+      const parts: string[] = [];
+      if (v[0] !== "invert" && v[0] !== "currentcolor") parts.push(v[0] as string);
+      if (v[1] !== "none") parts.push(v[1] as string);
+      if (v[2] !== "medium") parts.push(v[2] as string);
+      return parts.length === 0 ? null : parts.join(" ");
+    },
+  },
+  {
+    name: "flex",
+    longhands: ["flex-grow", "flex-basis", "flex-shrink"],
+    synthesize: (v) => {
+      const [g, b, s] = v as [string, string, string];
+      if (g === "0" && s === "1" && b === "auto") return "initial";
+      if (g === "0" && s === "0" && b === "auto") return "none";
+      if (g === "1" && s === "1" && b === "auto") return "auto";
+      const basis = b === "0" || b === "0%" ? "0px" : b;
+      return `${g} ${s} ${basis}`;
+    },
+  },
+  {
+    name: "font",
+    longhands: ["font-style", "font-weight", "font-stretch", "font-size", "line-height", "font-family"],
+    synthesize: (v) => {
+      const parts: string[] = [];
+      if (v[0] !== "normal") parts.push(v[0] as string);
+      if (v[1] !== "normal" && v[1] !== "400") parts.push(v[1] as string);
+      if (v[2] !== "normal") parts.push(v[2] as string);
+      parts.push(v[3] as string);
+      if (v[4] !== "normal") parts[parts.length - 1] = `${v[3]} / ${v[4]}`;
+      parts.push(v[5] as string);
+      return parts.join(" ");
+    },
+  },
+  {
+    name: "font-variant",
+    longhands: [
+      "font-variant-ligatures", "font-variant-caps", "font-variant-alternates",
+      "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
+      "font-variant-emoji",
+    ],
+    synthesize: (v) => {
+      const nonNormal = v.filter((x) => x !== "normal");
+      if (nonNormal.length === 0) return "normal";
+      if (nonNormal.length === 1) {
+        return v[0] === "none" ? "none" : (nonNormal[0] as string);
+      }
+      return null;
+    },
+  },
+  {
+    name: "text-decoration",
+    longhands: ["text-decoration-line", "text-decoration-style", "text-decoration-color", "text-decoration-thickness"],
+    synthesize: (v) => {
+      const parts: string[] = [v[0] as string];
+      if (v[1] !== "solid") parts.push(v[1] as string);
+      if (v[2] !== "currentcolor") parts.push(v[2] as string);
+      if (v[3] !== "auto" && v[3] !== "from-font") parts.push(v[3] as string);
+      return parts.join(" ");
+    },
+  },
+  {
+    name: "background",
+    longhands: [
+      "background-color", "background-image", "background-repeat", "background-attachment",
+      "background-position", "background-size", "background-origin", "background-clip",
+    ],
+    synthesize: (v) => {
+      const [color, image, repeat, attachment, position, size, origin, clip] =
+        v as [string, string, string, string, string, string, string, string];
+      const parts: string[] = [];
+      if (color !== "transparent" && color !== "rgba(0, 0, 0, 0)") parts.push(color);
+      if (image !== "none") parts.push(image);
+      if (repeat !== "repeat") parts.push(repeat);
+      if (attachment !== "scroll") parts.push(attachment);
+      if (position !== "0% 0%" || size !== "auto") {
+        parts.push(size === "auto" ? position : `${position} / ${size}`);
+      }
+      if (origin !== "padding-box" || clip !== "border-box") {
+        if (origin === clip) parts.push(origin);
+        else {
+          if (origin !== "padding-box") parts.push(origin);
+          if (clip !== "border-box") parts.push(clip);
+        }
+      }
+      return parts.length === 0 ? null : parts.join(" ");
+    },
+  },
+  pairRule("overflow", ["overflow-x", "overflow-y"]),
+  pairRule("gap", ["row-gap", "column-gap"]),
+  pairRule("inset-block", ["inset-block-start", "inset-block-end"]),
+  pairRule("inset-inline", ["inset-inline-start", "inset-inline-end"]),
+  pairRule("place-items", ["align-items", "justify-items"]),
+  pairRule("place-content", ["align-content", "justify-content"]),
+  pairRule("place-self", ["align-self", "justify-self"]),
+];
+
+/** Shorthands without a fold rule still need a longhand list for `all`-style
+ *  CSS-wide expansion (`overflow: inherit` → every longhand `inherit`). */
+const EXTRA_SHORTHAND_COVERAGE: Readonly<Record<string, readonly string[]>> = {
+  transition: ["transition-property", "transition-duration", "transition-timing-function", "transition-delay"],
+  "border-image": ["border-image-source", "border-image-slice", "border-image-width", "border-image-outset", "border-image-repeat"],
+  "grid-row": ["grid-row-start", "grid-row-end"],
+  "grid-column": ["grid-column-start", "grid-column-end"],
+  "grid-area": ["grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"],
+  "grid-gap": ["row-gap", "column-gap"],
+  "overflow-block": ["overflow-y"],
+  "overflow-inline": ["overflow-x"],
+  "-webkit-line-clamp": ["line-clamp"],
+};
+
+const coveredLonghands = (name: string): readonly string[] | null => {
+  if (name === "all") return allLonghandNames();
+  const rule = SHORTHAND_FOLD_RULES.find((r) => r.name === name);
+  if (rule !== undefined) return rule.longhands;
+  return Object.hasOwn(EXTRA_SHORTHAND_COVERAGE, name) ? (EXTRA_SHORTHAND_COVERAGE[name] ?? null) : null;
+};
+
+const FOLD_RULES_BY_LONGHAND: ReadonlyMap<string, ShorthandFoldRule[]> = (() => {
+  const m = new Map<string, ShorthandFoldRule[]>();
+  for (const rule of SHORTHAND_FOLD_RULES) {
+    for (const lh of rule.longhands) {
+      const list = m.get(lh);
+      if (list === undefined) m.set(lh, [rule]);
+      else list.push(rule);
+    }
+  }
+  return m;
+})();
+
+/** Try to synthesize `shorthand` from its longhands in `map`; null when the
+ *  group is incomplete or the value is not shorthand-representable. */
+const synthesizeShorthand = (
+  map: Map<string, StyleDeclarationEntry>,
+  shorthand: string,
+): { value: string; priority: StylePriority; covered: readonly string[] } | null => {
+  const rules = SHORTHAND_FOLD_RULES.filter((r) => r.name === shorthand);
+  for (const rule of rules) {
+    const entries = rule.longhands.map((l) => map.get(l));
+    if (entries.some((e) => e === undefined)) continue;
+    const priority = (entries[0] as StyleDeclarationEntry).priority;
+    if (!entries.every((e) => (e as StyleDeclarationEntry).priority === priority)) continue;
+    const vals = entries.map((e) => (e as StyleDeclarationEntry).value);
+    const wideCount = vals.filter((v) => CSS_WIDE_VALUE_SET.has(v)).length;
+    if (wideCount > 0 && wideCount < vals.length) continue;
+    // Pending-substitution shorthand (`background: var(--x)` spreads the raw
+    // var() text onto every longhand): the shorthand reads back verbatim, but
+    // any non-uniform var()-bearing mix cannot be shorthand-serialized.
+    if (vals.some((v) => /\b(?:var|env)\(/.test(v))) {
+      if (vals.every((v) => v === vals[0])) {
+        return { value: vals[0] as string, priority, covered: rule.longhands };
+      }
+      continue;
+    }
+    const value = wideCount === vals.length
+      ? (vals.every((v) => v === vals[0]) ? (vals[0] as string) : null)
+      : rule.synthesize(vals);
+    if (value === null) continue;
+    return { value, priority, covered: rule.longhands };
+  }
+  return null;
+};
+
+const canonicalDeclValue = (
+  prop: string,
+  text: string,
+  urlResolver?: (inner: string) => string | null,
+): string => {
+  const v = canonicalizeCssValueText(text, prop, urlResolver);
+  return v === "0" && LENGTH_BARE_ZERO_PX.has(prop) ? "0px" : v;
+};
+
+// Custom property names are stored unescaped (`--\61 b` → `--ab`); on
+// serialization they re-escape per serialize-an-identifier (non-word chars
+// become `\hh ` escapes so `;`/`"` can't corrupt the declaration block).
+const serializeDeclName = (name: string): string => {
+  if (!name.startsWith("--")) return name;
+  let out = "--";
+  for (const ch of name.slice(2)) {
+    if (/[a-zA-Z0-9_-]/.test(ch)) {
+      out += ch;
+    } else {
+      out += `\\${(ch.codePointAt(0) as number).toString(16)} `;
+    }
+  }
+  return out;
+};
+
+/** Applies one declaration with Blink-style remove+append semantics: a
+ *  re-declared property moves to the end of the block, and an `!important`
+ *  entry cannot be overridden by a normal-priority write. */
+const applyDecl = (
+  map: Map<string, StyleDeclarationEntry>,
+  name: string,
+  value: string,
+  priority: StylePriority,
+  pending = false,
+): void => {
+  const prev = map.get(name);
+  if (prev !== undefined && prev.priority === "important" && priority !== "important") return;
+  map.delete(name);
+  map.set(name, pending ? { value, priority, pending: true } : { value, priority });
+};
+
+const serializeDeclarations = (map: Map<string, StyleDeclarationEntry>): string => {
+  const lines: string[] = [];
+  const group: Array<[string, StyleDeclarationEntry]> = [...map.entries()];
+  const remaining = new Set(group.map(([k]) => k));
+  for (const [name, decl] of group) {
+    if (!remaining.has(name)) continue;
+    const imp = decl.priority === "important" ? " !important" : "";
+    let folded = false;
+    for (const rule of FOLD_RULES_BY_LONGHAND.get(name) ?? []) {
+      if (!rule.longhands.every((l) => remaining.has(l))) continue;
+      const lEntries = rule.longhands.map((l) => map.get(l) as StyleDeclarationEntry);
+      // A shorthand only folds when every covered longhand shares one
+      // priority — a mixed-priority group serializes as longhands.
+      if (!lEntries.every((e) => e.priority === decl.priority)) continue;
+      const vals = lEntries.map((e) => e.value);
+      const wideCount = vals.filter((v) => CSS_WIDE_VALUE_SET.has(v)).length;
+      if (wideCount > 0 && wideCount < vals.length) continue;
+      // Pending-substitution shorthand: `font: var(--a)` spreads the raw
+      // var() text onto every longhand — serialize it back verbatim. A
+      // non-uniform var() mix cannot fold; longhands serialize as-is.
+      if (vals.some((v) => /\b(?:var|env)\(/.test(v))) {
+        if (!vals.every((v) => v === vals[0])) continue;
+        lines.push(`${serializeDeclName(rule.name)}: ${vals[0]}${imp};`);
+        for (const l of rule.longhands) remaining.delete(l);
+        folded = true;
+        break;
+      }
+      const value = wideCount === vals.length
+        ? (vals.every((v) => v === vals[0]) ? (vals[0] as string) : null)
+        : rule.synthesize(vals);
+      if (value === null) continue;
+      lines.push(`${serializeDeclName(rule.name)}: ${value}${imp};`);
+      for (const l of rule.longhands) remaining.delete(l);
+      folded = true;
+      break;
+    }
+    if (!folded) {
+      lines.push(`${serializeDeclName(name)}: ${decl.value}${imp};`);
+      remaining.delete(name);
+    }
+  }
+  return lines.join(" ");
+};
+
+function canonicalizeCssValueText(
+  text: string,
+  propName = "",
+  urlResolver?: (inner: string) => string | null,
+): string {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  const isDigit = (c: string): boolean => c >= "0" && c <= "9";
+  const isNameStart = (c: string): boolean => /[a-zA-Z_]/.test(c) || (c !== "" && (c.codePointAt(0) ?? 0) >= 0x80);
+  const isNameChar = (c: string): boolean => isNameStart(c) || isDigit(c) || c === "-";
+  const scanString = (from: number): { end: number; body: string } => {
+    const quote = text[from] as string;
+    let j = from + 1;
+    let body = "";
+    while (j < n && text[j] !== quote) {
+      if (text[j] === "\\" && j + 1 < n) {
+        body += text[j] as string;
+        j += 1;
+      }
+      body += text[j] as string;
+      j += 1;
+    }
+    j += 1;
+    return { end: j, body };
+  };
+  const emitQuoted = (body: string): string => `"${body.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const scanBalanced = (from: number): number => {
+    // `from` points just past `(`; returns index just past the matching `)`.
+    let depth = 1;
+    let j = from;
+    while (j < n && depth > 0) {
+      const c = text[j] as string;
+      if (c === '"' || c === "'") {
+        const q = c;
+        j += 1;
+        while (j < n && text[j] !== q) {
+          if (text[j] === "\\") j += 1;
+          j += 1;
+        }
+        j += 1;
+        continue;
+      }
+      if (c === "(") depth += 1;
+      if (c === ")") depth -= 1;
+      j += 1;
+    }
+    return j;
+  };
+  const normFunc = (fname: string, inner: string): string => {
+    const lower = fname.toLowerCase();
+    if (lower === "attr") {
+      const hadPipe = inner.includes("|");
+      const cleaned = inner.replace(/\|/g, " ");
+      const commaIdx = cleaned.indexOf(",");
+      const name = cleaned.slice(0, commaIdx < 0 ? cleaned.length : commaIdx).trim();
+      let fallback = commaIdx < 0 ? "" : cleaned.slice(commaIdx + 1).trim();
+      const fbMatch = /^(['"])(.*)\1$/.exec(fallback);
+      const hadFallback = fbMatch !== null;
+      if (hadFallback) {
+        const body = (fbMatch)[2] as string;
+        if (hadPipe && body === "") return `attr(${name})`;
+        fallback = emitQuoted(body);
+      } else if (fallback !== "") {
+        fallback = canonicalizeCssValueText(fallback);
+      }
+      return fallback === "" ? `attr(${name})` : `attr(${name}, ${fallback})`;
+    }
+    if (lower === "counter" || lower === "counters") {
+      const parts: string[] = [];
+      let depth = 0;
+      let last = 0;
+      for (let k = 0; k < inner.length; k += 1) {
+        const c = inner[k] as string;
+        if (c === "(") depth += 1;
+        if (c === ")") depth -= 1;
+        if (c === "," && depth === 0) {
+          parts.push(inner.slice(last, k));
+          last = k + 1;
+        }
+      }
+      parts.push(inner.slice(last));
+      const args = parts.map((p) => p.trim());
+      if (lower === "counter" && args.length === 2 && args[1] === "decimal") args.pop();
+      if (lower === "counters" && args.length === 3 && args[2] === "decimal") args.pop();
+      return `${lower}(${args.map((a) => {
+        const m = /^(['"])(.*)\1$/.exec(a);
+        return m !== null ? emitQuoted(m[2] as string) : a;
+      }).join(", ")})`;
+    }
+    return `${fname}(${canonicalizeCssValueText(inner)})`;
+  };
+  while (i < n) {
+    const ch = text[i] as string;
+    if (/\s/.test(ch)) {
+      while (i < n && /\s/.test(text[i] as string)) i += 1;
+      out += " ";
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const { end, body } = scanString(i);
+      i = end;
+      out += emitQuoted(body);
+      continue;
+    }
+    if (isNameStart(ch) || (ch === "-" && (isNameStart(text[i + 1] ?? "") || text[i + 1] === "-"))) {
+      const start = i;
+      i += 1;
+      while (i < n && isNameChar(text[i] as string)) i += 1;
+      const word = text.slice(start, i);
+      if (text[i] === "(") {
+        const end = scanBalanced(i + 1);
+        const inner = text.slice(i + 1, end - 1);
+        i = end;
+        if (word.toLowerCase() === "url") {
+          const t = inner.trim();
+          const m = /^(['"])(.*)\1$/.exec(t);
+          const bare = m !== null ? (m[2] as string) : t;
+          const resolved = urlResolver !== undefined && bare !== "" ? (urlResolver(bare) ?? bare) : bare;
+          out += `url(${emitQuoted(resolved)})`;
+        } else {
+          out += normFunc(word, inner);
+        }
+        continue;
+      }
+      out += word;
+      continue;
+    }
+    // number token: [+-]? ( digits [. digits]? | . digits ) (e [+-]? digits)?
+    const numMatch = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(text.slice(i));
+    if (numMatch !== null) {
+      const prev = i > 0 ? (text[i - 1] as string) : "";
+      const num = numMatch[0];
+      // A number can't start a new token right after an ident/delim char.
+      if (isNameChar(prev) || prev === "." || prev === ")" ) {
+        out += num;
+        i += num.length;
+        continue;
+      }
+      let s = num;
+      let neg = false;
+      if (s[0] === "+" || s[0] === "-") {
+        neg = s[0] === "-";
+        s = s.slice(1);
+      }
+      // fold exponent: 2e2 → 200, 1e-1 → 0.1
+      const eMatch = /[eE]([+-]?\d+)$/.exec(s);
+      if (eMatch !== null) {
+        const mantissa = s.slice(0, eMatch.index);
+        const exp = Number(eMatch[1]);
+        if (Number.isSafeInteger(exp)) {
+          const digits = mantissa.replace(".", "");
+          const point = mantissa.includes(".") ? mantissa.indexOf(".") : mantissa.length;
+          const newPoint = point + exp;
+          if (newPoint <= 0) {
+            s = `0.${"0".repeat(-newPoint)}${digits}`;
+          } else if (newPoint >= digits.length) {
+            s = digits + "0".repeat(newPoint - digits.length);
+          } else {
+            s = `${digits.slice(0, newPoint)}.${digits.slice(newPoint)}`;
+          }
+        }
+      }
+      // canonical number: strip trailing . and fraction zeros, add leading 0,
+      // drop - for zero.
+      if (s.includes(".")) {
+        s = s.replace(/0+$/, "").replace(/\.$/, "");
+      }
+      if (s.startsWith(".")) s = `0${s}`;
+      if (s === "" || s === "0") neg = false;
+      if (s === "") s = "0";
+      s = (neg ? "-" : "") + s;
+      // unit or % follows — lowercase it
+      const unitMatch = /^[%]?[a-zA-Z][a-zA-Z0-9-]*/.exec(text.slice(i + numMatch[0].length));
+      if (unitMatch !== null) {
+        s += unitMatch[0].toLowerCase();
+        i += numMatch[0].length + unitMatch[0].length;
+      } else {
+        if (text[i + numMatch[0].length] === "%") {
+          s += "%";
+          i += 1;
+        }
+        i += numMatch[0].length;
+      }
+      out += s;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  let result = out.trim();
+  if (propName === "font-family") {
+    // <family-name>: a quoted name that would parse differently unquoted —
+    // generic-family keywords, CSS-wide keywords, `default`, digit-starting
+    // names, and non-ident text — must stay quoted (with double quotes);
+    // any other quoted name that is a valid ident sequence drops the quotes.
+    result = result
+      .split(",")
+      .map((part) => {
+        const t = part.trim();
+        const m = /^"(.*)"$/.exec(t);
+        if (m === null) return t;
+        const inner = m[1] as string;
+        const low = inner.toLowerCase();
+        if (
+          GENERIC_FONT_FAMILIES.has(low)
+          || /^generic\(/.test(low)
+          || CSS_WIDE_VALUE_SET.has(low)
+          || low === "default"
+          || !/^[a-zA-Z_-][\w-]*( [a-zA-Z_-][\w-]*)*$/.test(inner)
+        ) {
+          return `"${inner}"`;
+        }
+        return inner;
+      })
+      .join(", ");
+  }
+  return result;
+}
+
+const GENERIC_FONT_FAMILIES: ReadonlySet<string> = new Set([
+  "serif", "sans-serif", "cursive", "fantasy", "monospace", "system-ui",
+  "math", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+]);
 
 /** HTML element attribute names are ASCII-case-insensitive in this bridge. */
 function htmlAttributeName(value: unknown): string {

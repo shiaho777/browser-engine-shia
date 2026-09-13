@@ -20,7 +20,7 @@ export interface GeneratedComputedStyleFields {
   readonly height: LengthOrAuto;
   readonly margin: Edges<Px>;
   readonly backgroundColor: Color;
-  readonly fontSize: Px;
+  readonly fontSize: LengthOrAuto;
   readonly position: PositionValue;
   readonly float: FloatValue;
   readonly top: LengthOrAuto;
@@ -31,7 +31,7 @@ export interface GeneratedComputedStyleFields {
   readonly gridTemplateColumns: string;
   readonly opacity: number;
   readonly transform: TransformValue;
-  readonly zIndex: number;
+  readonly zIndex: number | "auto";
   readonly padding: Edges<Px>;
   readonly marginTop: LengthOrAuto;
   readonly marginRight: LengthOrAuto;
@@ -57,14 +57,14 @@ export interface GeneratedComputedStyleFields {
   readonly overflow: string;
   readonly cursor: string;
   readonly fontFamily: string;
-  readonly fontWeight: number;
+  readonly fontWeight: number | "normal" | "bold" | "bolder" | "lighter";
   readonly fontStyle: string;
   readonly lineHeight: string | number;
   readonly textAlign: string;
   readonly textDecorationLine: string;
   readonly textTransform: string;
   readonly whiteSpace: string;
-  readonly letterSpacing: Px;
+  readonly letterSpacing: LengthOrAuto;
   readonly flexWrap: string;
   readonly justifyContent: string;
   readonly alignItems: string;
@@ -76,19 +76,19 @@ export interface GeneratedComputedStyleFields {
   readonly order: number;
   readonly gridTemplateRows: string;
   readonly gap: Px;
-  readonly borderTopWidth: Px;
-  readonly borderRightWidth: Px;
-  readonly borderBottomWidth: Px;
-  readonly borderLeftWidth: Px;
-  readonly outlineWidth: Px;
+  readonly borderTopWidth: LengthOrAuto;
+  readonly borderRightWidth: LengthOrAuto;
+  readonly borderBottomWidth: LengthOrAuto;
+  readonly borderLeftWidth: LengthOrAuto;
+  readonly outlineWidth: LengthOrAuto;
   readonly outlineStyle: string;
-  readonly outlineColor: Color;
+  readonly outlineColor: Color | string;
   readonly outlineOffset: Px;
   readonly listStyleType: string;
   readonly listStylePosition: string;
   readonly verticalAlign: string;
   readonly textIndent: Px;
-  readonly wordSpacing: Px;
+  readonly wordSpacing: LengthOrAuto;
   readonly wordBreak: string;
   readonly overflowWrap: string;
   readonly textOverflow: string;
@@ -269,6 +269,9 @@ export interface GeneratedComputedStyleFields {
   readonly lightingColor: Color;
   readonly textAnchor: string;
   readonly dominantBaseline: string;
+  readonly alignmentBaseline: string;
+  readonly baselineShift: string;
+  readonly baselineSource: string;
   readonly colorInterpolation: string;
   readonly shapeRendering: string;
   readonly vectorEffect: string;
@@ -720,6 +723,9 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "lightingColor",
   "textAnchor",
   "dominantBaseline",
+  "alignmentBaseline",
+  "baselineShift",
+  "baselineSource",
   "colorInterpolation",
   "shapeRendering",
   "vectorEffect",

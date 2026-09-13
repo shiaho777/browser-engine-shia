@@ -20,13 +20,13 @@ test(function () {
   sheet.textContent = "";
 
   assert_equals(document.getElementById("refill-sheet"), sheet, "cleared style remains attached");
-  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "clearing removes old width");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "784px", "clearing removes old width");
   assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "clearing removes old color");
 
   sheet.textContent = "#refill-target { height: 23px; background-color: #0080ff; }";
 
   assert_equals(document.getElementById("refill-sheet"), sheet, "refilled style is still the same element");
-  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "old width rule does not come back after refill");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "784px", "old width rule does not come back after refill");
   assert_equals(getComputedStyle(target).getPropertyValue("height"), "23px", "refilled style contributes new height");
   assert_equals(
     getComputedStyle(target).getPropertyValue("background-color"),
@@ -49,7 +49,7 @@ test(function () {
 
   sheet.textContent = "";
 
-  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "clearing created style removes width");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "784px", "clearing created style removes width");
   assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "clearing created style removes color");
 
   sheet.textContent = "#created-refill-target { width: 52px; height: 29px; }";

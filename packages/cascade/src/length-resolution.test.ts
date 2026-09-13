@@ -67,7 +67,11 @@ void test("em in a margin edge quad resolves each edge against font-size", () =>
   const dom = tree();
   const sheets = [sheet([{ selector: "div", decls: { "font-size": "10px", margin: "1em 2em" } }])];
   const style = cascade(dom, sheets, nodeId(0));
-  assert.deepEqual(field(style, "margin"), { top: 10, right: 20, bottom: 10, left: 20 });
+  // `margin` expands to per-edge longhands; each em resolves against font-size.
+  assert.deepEqual(
+    [field(style, "marginTop"), field(style, "marginRight"), field(style, "marginBottom"), field(style, "marginLeft")],
+    [10, 20, 10, 20],
+  );
 });
 
 void test("inherited font-size makes em on a child resolve against the inherited value", () => {

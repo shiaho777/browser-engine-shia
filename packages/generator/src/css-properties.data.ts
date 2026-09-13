@@ -21,7 +21,7 @@ import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { FlexDirection, FloatValue, PositionValue } from "@browser-engine/ir";
 import { defineProperty, type CssPropertyDef } from "./css-property-def.js";
 import { LADYBIRD_PROPERTIES } from "./generated/ladybird-properties.data.js";
-import { color, cursor, display as displayGrammar, edges, integer, keyword, length, lengthOr, number, string as stringValue, times, transform } from "./value-grammar.js";
+import { color, colorOr, cursor, display as displayGrammar, edges, integer, integerOrKeyword, keyword, length, lengthOr, number, string as stringValue, times, transform } from "./value-grammar.js";
 import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar.js";
 
 // ---- shared initial-value constants ---------------------------------------
@@ -112,15 +112,15 @@ const BACKGROUND_COLOR: CssPropertyDef<Color, Color> = defineProperty<Color, Col
   // field defaults to "backgroundColor" via toCamelCase.
 });
 
-/** `font-size` — inherited; a `<length>` in px (initial: 16px medium). */
-const FONT_SIZE: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `font-size` — inherited; an absolute/relative size keyword or `<length>` (initial: 16px medium). */
+const FONT_SIZE: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "font-size",
   inherited: true,
   initial: px(16),
-  syntax: length(),
+  syntax: lengthOr("xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large", "smaller", "larger"),
   computeValue: (specified) => specified,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 // ---------------------------------------------------------------------------
@@ -265,14 +265,14 @@ const TRANSFORM: CssPropertyDef<TransformValue, TransformValue> = defineProperty
  * `z-index` — not inherited; an `<integer>` stacking level (initial: 0, which
  * the paint engine reads as `auto`). Reuses the integer shape.
  */
-const Z_INDEX: CssPropertyDef<number, number> = defineProperty<number, number>({
+const Z_INDEX: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "z-index",
   inherited: false,
   initial: 0,
-  syntax: integer(),
+  syntax: integerOrKeyword(["auto"]),
   computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "number",
+  tsType: 'number | "auto"',
   // field defaults to "zIndex" via toCamelCase.
 });
 
@@ -485,15 +485,15 @@ const FONT_FAMILY: CssPropertyDef<string, string> = defineProperty<string, strin
   tsType: "string",
 });
 
-/** `font-weight` — inherited; an `<integer>` 1..1000 (initial: 400). */
-const FONT_WEIGHT: CssPropertyDef<number, number> = defineProperty<number, number>({
+/** `font-weight` — inherited; a weight keyword or `<integer>` 1..1000 (initial: 400). */
+const FONT_WEIGHT: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "font-weight",
   inherited: true,
   initial: 400,
-  syntax: integer({ min: 1, max: 1000 }),
+  syntax: integerOrKeyword(["normal", "bold", "bolder", "lighter"], { min: 1, max: 1000 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: 'number | "normal" | "bold" | "bolder" | "lighter"',
 });
 
 /** `font-style` — inherited; a keyword (initial: normal). */
@@ -564,15 +564,15 @@ const WHITE_SPACE: CssPropertyDef<string, string> = defineProperty<string, strin
   tsType: "string",
 });
 
-/** `letter-spacing` — inherited; a `<length>` (initial: 0 normal). */
-const LETTER_SPACING: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `letter-spacing` — inherited; `normal` or a `<length>` (initial: 0 normal). */
+const LETTER_SPACING: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "letter-spacing",
   inherited: true,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr("normal"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 // ---- flexbox + grid item/container longhands ------------------------------
@@ -715,22 +715,23 @@ const GAP: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
 
 // ---- per-edge border-width longhands (reuse the length shape) -------------
 
-const BORDER_TOP_WIDTH = edgeLength("border-top-width");
-const BORDER_RIGHT_WIDTH = edgeLength("border-right-width");
-const BORDER_BOTTOM_WIDTH = edgeLength("border-bottom-width");
-const BORDER_LEFT_WIDTH = edgeLength("border-left-width");
+const LINE_WIDTH_KEYWORDS = ["thin", "medium", "thick"] as const;
+const BORDER_TOP_WIDTH = edgeLength("border-top-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_RIGHT_WIDTH = edgeLength("border-right-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_BOTTOM_WIDTH = edgeLength("border-bottom-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_LEFT_WIDTH = edgeLength("border-left-width", ...LINE_WIDTH_KEYWORDS);
 
 // ---- outline (a border-like ring; reuses border grammar shapes) -----------
 
 /** `outline-width` — not inherited; a `<length>` (initial: 0). */
-const OUTLINE_WIDTH: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+const OUTLINE_WIDTH: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "outline-width",
   inherited: false,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr(...LINE_WIDTH_KEYWORDS),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 /** `outline-style` — not inherited; a line-style keyword (initial: none). */
@@ -745,14 +746,14 @@ const OUTLINE_STYLE: CssPropertyDef<string, string> = defineProperty<string, str
 });
 
 /** `outline-color` — not inherited; a `<color>` (initial: black). */
-const OUTLINE_COLOR: CssPropertyDef<Color, Color> = defineProperty<Color, Color>({
+const OUTLINE_COLOR: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "outline-color",
   inherited: false,
   initial: BLACK,
-  syntax: color(),
+  syntax: colorOr("invert"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Color",
+  tsType: "Color | string",
 });
 
 /** `outline-offset` — not inherited; a `<length>` (initial: 0). */
@@ -773,7 +774,18 @@ const LIST_STYLE_TYPE: CssPropertyDef<string, string> = defineProperty<string, s
   name: "list-style-type",
   inherited: true,
   initial: "disc",
-  syntax: keyword("disc", "circle", "square", "decimal", "decimal-leading-zero", "lower-roman", "upper-roman", "lower-alpha", "upper-alpha", "none"),
+  syntax: keyword(
+    "disc", "circle", "square", "decimal", "decimal-leading-zero",
+    "lower-roman", "upper-roman", "lower-greek", "lower-alpha", "lower-latin",
+    "upper-alpha", "upper-latin", "armenian", "georgian", "lower-armenian",
+    "upper-armenian", "cjk-decimal", "cjk-earthly-branch", "cjk-heavenly-stem",
+    "cjk-ideographic", "ethiopic-numeric", "hebrew", "hiragana",
+    "hiragana-iroha", "japanese-formal", "japanese-informal", "katakana",
+    "katakana-iroha", "korean-hangul-formal", "korean-hanja-formal",
+    "korean-hanja-informal", "simp-chinese-formal", "simp-chinese-informal",
+    "trad-chinese-formal", "trad-chinese-informal", "disclosure-open",
+    "disclosure-closed", "none",
+  ),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -814,15 +826,15 @@ const TEXT_INDENT: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
   tsType: "Px",
 });
 
-/** `word-spacing` — inherited; a `<length>` (initial: 0 normal). */
-const WORD_SPACING: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `word-spacing` — inherited; `normal` or a `<length>` (initial: 0 normal). */
+const WORD_SPACING: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "word-spacing",
   inherited: true,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr("normal"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 /** `word-break` — inherited; a keyword (initial: normal). */
@@ -1553,6 +1565,10 @@ const FLOOD_OPACITY = numProp("flood-opacity", 1);
 const LIGHTING_COLOR = colorProp("lighting-color", { r: 255, g: 255, b: 255, a: 1 });
 const TEXT_ANCHOR = stringProp("text-anchor", "start", true);
 const DOMINANT_BASELINE = stringProp("dominant-baseline", "auto");
+// CSS Inline Layout / SVG baseline properties.
+const ALIGNMENT_BASELINE = stringProp("alignment-baseline", "baseline", true);
+const BASELINE_SHIFT = stringProp("baseline-shift", "0", true);
+const BASELINE_SOURCE = stringProp("baseline-source", "auto", true);
 const COLOR_INTERPOLATION = stringProp("color-interpolation", "srgb", true);
 const SHAPE_RENDERING = stringProp("shape-rendering", "auto", true);
 const VECTOR_EFFECT = stringProp("vector-effect", "none");
@@ -1891,6 +1907,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   FILL, STROKE, STROKE_WIDTH, FILL_OPACITY, STROKE_OPACITY, STROKE_LINECAP, STROKE_LINEJOIN,
   STROKE_MITERLIMIT, STROKE_DASHARRAY, STROKE_DASHOFFSET, PAINT_ORDER, FILL_RULE, CLIP_RULE,
   STOP_COLOR, STOP_OPACITY, FLOOD_COLOR, FLOOD_OPACITY, LIGHTING_COLOR, TEXT_ANCHOR, DOMINANT_BASELINE,
+  ALIGNMENT_BASELINE, BASELINE_SHIFT, BASELINE_SOURCE,
   COLOR_INTERPOLATION, SHAPE_RENDERING, VECTOR_EFFECT, MASK_TYPE, MARKER_START, MARKER_MID, MARKER_END,
   // Breadth expansion — batch 4: scroll per-edge longhands + extras.
   SCROLL_PADDING_TOP, SCROLL_PADDING_RIGHT, SCROLL_PADDING_BOTTOM, SCROLL_PADDING_LEFT,

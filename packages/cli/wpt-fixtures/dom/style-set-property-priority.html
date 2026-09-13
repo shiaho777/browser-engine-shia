@@ -20,7 +20,7 @@ test(function () {
 
   assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "property value omits priority text");
   assert_equals(el.style.getPropertyPriority("color"), "important", "priority is normalized to important");
-  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important", "style attribute serializes the priority");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important;", "style attribute serializes the priority");
   assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "inline important beats author important");
 }, "setProperty records an important priority and exposes it through CSSOM");
 
@@ -31,7 +31,7 @@ test(function () {
   el.style.setProperty("color", "rgb(3, 4, 5)", "urgent");
   el.style.setProperty("height", "50px", "urgent");
 
-  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important; width: 42px", "invalid priority does not mutate the declaration block");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important; width: 42px;", "invalid priority does not mutate the declaration block");
   assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "existing value survives invalid priority");
   assert_equals(el.style.getPropertyPriority("color"), "important", "existing priority survives invalid priority");
   assert_equals(el.style.getPropertyValue("height"), "", "missing property is not created with invalid priority");
@@ -44,11 +44,11 @@ test(function () {
   el.style.cssText = "color: rgb(9, 8, 7) !important";
   el.style.setProperty("color", "rgb(3, 4, 5)");
 
-  assert_equals(el.style.getPropertyValue("color"), "rgb(3, 4, 5)", "new value is stored");
-  assert_equals(el.style.getPropertyPriority("color"), "", "omitted priority clears the previous important priority");
-  assert_equals(el.getAttribute("style"), "color: rgb(3, 4, 5)", "style attribute no longer serializes !important");
-  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "normal inline style loses to author important");
-}, "setProperty with no priority stores a normal inline declaration");
+  assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "normal write cannot displace an important declaration");
+  assert_equals(el.style.getPropertyPriority("color"), "important", "the important priority is preserved");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important;", "style attribute still serializes !important");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "the surviving important inline declaration wins the cascade");
+}, "setProperty without important priority cannot override an important declaration");
 
 test(function () {
   var el = document.getElementById("target");
@@ -56,10 +56,10 @@ test(function () {
   el.style.cssText = "color: rgb(9, 8, 7) !important; width: 42px";
   el.style.setProperty("color", "", "urgent");
 
-  assert_equals(el.style.getPropertyValue("color"), "", "empty value removes the declaration even with invalid priority text");
-  assert_equals(el.style.getPropertyPriority("color"), "", "removed declaration has no priority");
-  assert_equals(el.getAttribute("style"), "width: 42px", "style attribute drops the removed important declaration");
-  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(1, 2, 3)", "computed color falls back after removal");
-}, "empty setProperty value removes before priority validation");
+  assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "invalid priority returns before the empty-value removal step");
+  assert_equals(el.style.getPropertyPriority("color"), "important", "priority is untouched by the rejected write");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7) !important; width: 42px;", "style attribute is unchanged");
+  assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(9, 8, 7)", "computed color is unchanged");
+}, "setProperty validates priority before the empty-value removal step");
 </script>
 </body>

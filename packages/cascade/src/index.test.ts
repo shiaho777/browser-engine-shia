@@ -356,8 +356,12 @@ void test("the output ComputedStyle is deep-frozen (Req 3.2)", () => {
 void test("an unmatched declaration is ignored; the margin shorthand expands (Req 11.1)", () => {
   const sheet = buildSheet([{ selector: "div", specificity: [0, 0, 1], declarations: [{ property: "margin", value: "1px 2px 3px 4px" }] }]);
   const style = cascade(DOM, [sheet], nodeId(1));
-  const expected: Edges<Px> = { top: px(1), right: px(2), bottom: px(3), left: px(4) };
-  assert.deepEqual(style.margin, expected);
+  // The shorthand expands to its four longhands — the `margin` quad field
+  // itself is only populated by a literal `margin` winner.
+  assert.deepEqual(style["marginTop"], px(1));
+  assert.deepEqual(style["marginRight"], px(2));
+  assert.deepEqual(style["marginBottom"], px(3));
+  assert.deepEqual(style["marginLeft"], px(4));
 });
 
 void test("a node absent from the DomTree resolves to the all-initial baseline", () => {

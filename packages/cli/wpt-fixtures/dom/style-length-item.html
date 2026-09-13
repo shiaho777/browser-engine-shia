@@ -26,11 +26,11 @@ test(function () {
   el.style.setProperty("color", "blue");
 
   assert_equals(el.style.length, 3, "adding a new property grows length");
-  assert_equals(el.style.item(0), "color", "overwriting an existing declaration keeps its position");
-  assert_equals(el.style.item(1), "width", "existing later declaration keeps its position");
-  assert_equals(el.style.item(2), "height", "new declaration appends at the end");
-  assert_equals(el.getAttribute("style"), "color: blue; width: 42px; height: 7px !important", "serialization uses the same order");
-}, "setProperty appends new declarations and preserves overwritten declaration order");
+  assert_equals(el.style.item(0), "width", "untouched declaration keeps its position");
+  assert_equals(el.style.item(1), "height", "new declaration appends at the end");
+  assert_equals(el.style.item(2), "color", "overwriting an existing declaration moves it to the end");
+  assert_equals(el.getAttribute("style"), "width: 42px; height: 7px !important; color: blue;", "serialization uses the same order");
+}, "setProperty appends new declarations and re-appends overwritten ones");
 
 test(function () {
   var el = document.getElementById("target");

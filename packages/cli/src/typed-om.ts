@@ -59,7 +59,7 @@ function tokenize(input: string): Tok[] {
     const num = NUM_RE.exec(s.slice(i));
     if (num !== null) {
       const raw = num[0];
-      let j = i + raw.length;
+      const j = i + raw.length;
       if (s[j] === "%") {
         toks.push({ t: "percent", v: Number(raw), raw: raw + "%" });
         i = j + 1;
@@ -345,7 +345,7 @@ function constructInternal<A extends unknown[], R>(
 ): R {
   function NewTarget(this: unknown) {}
   (NewTarget as { prototype: unknown }).prototype = ctor.prototype;
-  return Reflect.construct(ctor, args, NewTarget as never) as R;
+  return Reflect.construct(ctor, args, NewTarget as never);
 }
 
 export class CSSKeywordValue extends CSSStyleValue {
@@ -508,13 +508,13 @@ export class CSSNumericValue extends CSSStyleValue {
 
   static parse(cssText: unknown): CSSNumericValue {
     if (cssText === undefined) throw new TypeError("cssText argument is required");
-    return parseNumeric(String(cssText));
+    return parseNumeric(domStr(cssText));
   }
 }
 
 function validUnitOrThrow(unit: unknown): string {
   if (unit === undefined) throw new TypeError("unit argument is required");
-  const u = String(unit).toLowerCase();
+  const u = domStr(unit).toLowerCase();
   if (u === "number") return u;
   if (!VALID_UNITS.has(u)) throw new DOMException(`"${u}" is not a valid unit`, "SyntaxError");
   return u;
@@ -730,8 +730,8 @@ export class CSSUnitValue extends CSSNumericValue {
   constructor(value: unknown, unit: unknown) {
     super();
     const n = numVal(value);
-    const u = String(unit).toLowerCase();
-    if (!VALID_UNITS.has(u) && u !== "number") throw new TypeError(`invalid unit "${String(unit)}"`);
+    const u = domStr(unit).toLowerCase();
+    if (!VALID_UNITS.has(u) && u !== "number") throw new TypeError(`invalid unit "${domStr(unit)}"`);
     this.#value = n;
     this.#unit = u;
   }
@@ -757,7 +757,7 @@ export class CSSUnitValue extends CSSNumericValue {
   override toString(): string {
     if (this.#unit === "percent") return `${serNumber(this.#value)}%`;
     if (this.#unit === "number") return serNumber(this.#value);
-    return `${serNumber(this.#value)}${this.#unit}`;
+    return `${serNumber(this.#value)}${this.#unit.toString()}`;
   }
 }
 
@@ -826,7 +826,7 @@ function serSum(v: CSSMathSum): string {
     if (m instanceof CSSMathNegate) return ` - ${serMathMember(m.value, "product", 0)}`;
     // Negative literal terms serialize with `-` (`100% - 32px`).
     if (m instanceof CSSUnitValue && m.value < 0) {
-      return ` - ${new CSSUnitValue(-m.value, m.unit)}`;
+      return ` - ${new CSSUnitValue(-m.value, m.unit).toString()}`;
     }
     return ` + ${serMathMember(m, "sum", i)}`;
   }).join("");
@@ -1427,8 +1427,8 @@ export class CSSVariableReferenceValue {
 
   toString(): string {
     return this.#fallback === null
-      ? `var(${this.#variable})`
-      : `var(${this.#variable},${this.#fallback.toString()})`;
+      ? `var(${this.#variable.toString()})`
+      : `var(${this.#variable.toString()},${this.#fallback.toString()})`;
   }
 }
 
@@ -1468,8 +1468,8 @@ export class CSSUnparsedValue extends CSSStyleValue {
           if (typeof value !== "string" && !(value instanceof CSSVariableReferenceValue)) {
             throw new TypeError("CSSUnparsedValue members are strings or CSSVariableReferenceValue");
           }
-          if (i === target.members.length) target.members.push(value as UnparsedMember);
-          else target.members[i] = value as UnparsedMember;
+          if (i === target.members.length) target.members.push(value);
+          else target.members[i] = value;
           return true;
         }
         return Reflect.set(target, prop, value);
@@ -1594,7 +1594,7 @@ export class DOMMatrixReadOnly {
 
   constructor(init?: unknown) {
     let a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
-    let is2d = true;
+    const is2d = true;
     if (init instanceof DOMMatrixReadOnly) {
       this.m = Float64Array.from(init.m);
       this.#is2D = init.is2D;
@@ -2097,8 +2097,8 @@ export class CSSTranslate extends CSSTransformComponent {
   }
 
   override toString(): string {
-    if (this.is2D) return `translate(${this.#x}, ${this.#y})`;
-    return `translate3d(${this.#x}, ${this.#y}, ${this.#z})`;
+    if (this.is2D) return `translate(${this.#x.toString()}, ${this.#y.toString()})`;
+    return `translate3d(${this.#x.toString()}, ${this.#y.toString()}, ${this.#z.toString()})`;
   }
 }
 
@@ -2148,8 +2148,8 @@ export class CSSRotate extends CSSTransformComponent {
   }
 
   override toString(): string {
-    if (this.is2D) return `rotate(${this.#angle})`;
-    return `rotate3d(${this.#x}, ${this.#y}, ${this.#z}, ${this.#angle})`;
+    if (this.is2D) return `rotate(${this.#angle.toString()})`;
+    return `rotate3d(${this.#x.toString()}, ${this.#y.toString()}, ${this.#z.toString()}, ${this.#angle.toString()})`;
   }
 }
 
@@ -2181,8 +2181,8 @@ export class CSSScale extends CSSTransformComponent {
   }
 
   override toString(): string {
-    if (this.is2D) return `scale(${this.#x}, ${this.#y})`;
-    return `scale3d(${this.#x}, ${this.#y}, ${this.#z})`;
+    if (this.is2D) return `scale(${this.#x.toString()}, ${this.#y.toString()})`;
+    return `scale3d(${this.#x.toString()}, ${this.#y.toString()}, ${this.#z.toString()})`;
   }
 }
 
@@ -2223,7 +2223,7 @@ export class CSSSkew extends CSSTransformComponent {
   override toString(): string {
     // skew() with a zero y angle serializes as a single-argument function.
     const ayZero = this.#ay instanceof CSSUnitValue && this.#ay.to("deg").value === 0;
-    return ayZero ? `skew(${this.#ax})` : `skew(${this.#ax}, ${this.#ay})`;
+    return ayZero ? `skew(${this.#ax.toString()})` : `skew(${this.#ax.toString()}, ${this.#ay.toString()})`;
   }
 }
 
@@ -2253,7 +2253,7 @@ export class CSSSkewX extends CSSTransformComponent {
   }
 
   override toString(): string {
-    return `skewX(${this.#ax})`;
+    return `skewX(${this.#ax.toString()})`;
   }
 }
 
@@ -2283,7 +2283,7 @@ export class CSSSkewY extends CSSTransformComponent {
   }
 
   override toString(): string {
-    return `skewY(${this.#ay})`;
+    return `skewY(${this.#ay.toString()})`;
   }
 }
 
@@ -2323,7 +2323,7 @@ export class CSSPerspective extends CSSTransformComponent {
     if (l instanceof CSSUnitValue && l.value < 0) {
       return `perspective(calc(${l.value}${l.unit}))`;
     }
-    return `perspective(${l})`;
+    return `perspective(${l.toString()})`;
   }
 }
 
@@ -2820,7 +2820,7 @@ function checkDeclaration(prop: string, cssText: string): void {
     if (sig.length > 0 && sig.every((t) => t.t === "func")) {
       try {
         for (const t of sig) {
-          const f = t as Extract<Tok, { t: "func" }>;
+          const f = t;
           parseTransformComponent(f.name, f.body);
         }
         return;
@@ -2872,8 +2872,8 @@ export function isDeclarationValueValid(prop: string, cssText: string): boolean 
   if (property === undefined || cssText === undefined) {
     throw new TypeError("parse() requires a property name and cssText");
   }
-  const prop = String(property).trim().toLowerCase();
-  const css = String(cssText);
+  const prop = domStr(property).trim().toLowerCase();
+  const css = domStr(cssText);
   if (prop === "") throw new TypeError("empty property name");
   if (prop.startsWith("--")) {
     if (css.trim() === "") throw new TypeError("empty custom property value");
@@ -2893,8 +2893,8 @@ export function isDeclarationValueValid(prop: string, cssText: string): boolean 
   if (property === undefined || cssText === undefined) {
     throw new TypeError("parseAll() requires a property name and cssText");
   }
-  const prop = String(property).trim().toLowerCase();
-  const css = String(cssText);
+  const prop = domStr(property).trim().toLowerCase();
+  const css = domStr(cssText);
   if (prop === "") throw new TypeError("empty property name");
   if (prop.startsWith("--")) {
     if (css.trim() === "") throw new TypeError("empty custom property value");
@@ -3043,6 +3043,9 @@ function checkNumericFit(prop: string, v: unknown): void {
     }
   }
 }
+
+/** WebIDL DOMString coercion — String() on `unknown` guest values. */
+const domStr = (v: unknown): string => String(v);
 
 function serializeStyleValueArg(v: unknown): string {
   if (typeof v === "string") return v;
@@ -3309,7 +3312,7 @@ export class CSSColorValue extends CSSStyleValue {
 }
 
 function alphaSuffix(a: ColorChannel): string {
-  return a instanceof CSSUnitValue && a.unit === "percent" && a.value === 100 ? "" : ` / ${a}`;
+  return a instanceof CSSUnitValue && a.unit === "percent" && a.value === 100 ? "" : ` / ${a.toString()}`;
 }
 
 export class CSSRGB extends CSSColorValue {
@@ -3336,7 +3339,7 @@ export class CSSRGB extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `rgb(${this.#r} ${this.#g} ${this.#b}${alphaSuffix(this.#alpha)})`;
+    return `rgb(${this.#r.toString()} ${this.#g.toString()} ${this.#b.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3364,7 +3367,7 @@ export class CSSHSL extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `hsl(${this.#h} ${this.#s} ${this.#l}${alphaSuffix(this.#alpha)})`;
+    return `hsl(${this.#h.toString()} ${this.#s.toString()} ${this.#l.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3392,7 +3395,7 @@ export class CSSHWB extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `hwb(${this.#h} ${this.#w} ${this.#b}${alphaSuffix(this.#alpha)})`;
+    return `hwb(${this.#h.toString()} ${this.#w.toString()} ${this.#b.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3424,7 +3427,7 @@ export class CSSLab extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `lab(${this.#l} ${this.#a} ${this.#b}${alphaSuffix(this.#alpha)})`;
+    return `lab(${this.#l.toString()} ${this.#a.toString()} ${this.#b.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3452,7 +3455,7 @@ export class CSSOKLab extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `oklab(${this.#l} ${this.#a} ${this.#b}${alphaSuffix(this.#alpha)})`;
+    return `oklab(${this.#l.toString()} ${this.#a.toString()} ${this.#b.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3480,7 +3483,7 @@ export class CSSLCH extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `lch(${this.#l} ${this.#c} ${this.#h}${alphaSuffix(this.#alpha)})`;
+    return `lch(${this.#l.toString()} ${this.#c.toString()} ${this.#h.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3508,7 +3511,7 @@ export class CSSOKLCH extends CSSColorValue {
   set alpha(v: unknown) { this.#alpha = matchAlpha(v); }
 
   override toString(): string {
-    return `oklch(${this.#l} ${this.#c} ${this.#h}${alphaSuffix(this.#alpha)})`;
+    return `oklch(${this.#l.toString()} ${this.#c.toString()} ${this.#h.toString()}${alphaSuffix(this.#alpha)})`;
   }
 }
 
@@ -3547,7 +3550,7 @@ export class CSSColor extends CSSColorValue {
     this.#channels = list.map(matchNumberOrPercent);
     this.#alpha = alpha === undefined
       ? new CSSUnitValue(1, "number")
-      : matchNumberOrPercent(alpha) as CSSNumericValue | CSSKeywordValue;
+      : matchNumberOrPercent(alpha);
   }
 
   get colorSpace(): CSSKeywordValue { return this.#colorSpace; }
@@ -3561,11 +3564,11 @@ export class CSSColor extends CSSColorValue {
     this.#channels = list.map(matchNumberOrPercent);
   }
   get alpha(): CSSNumericValue | CSSKeywordValue { return this.#alpha; }
-  set alpha(v: unknown) { this.#alpha = matchNumberOrPercent(v) as CSSNumericValue | CSSKeywordValue; }
+  set alpha(v: unknown) { this.#alpha = matchNumberOrPercent(v); }
 
   override toString(): string {
     const a = this.#alpha;
-    const suffix = a instanceof CSSUnitValue && a.unit === "number" && a.value === 1 ? "" : ` / ${a}`;
+    const suffix = a instanceof CSSUnitValue && a.unit === "number" && a.value === 1 ? "" : ` / ${a.toString()}`;
     return `color(${this.#colorSpace.value} ${this.#channels.join(" ")}${suffix})`;
   }
 }
@@ -3622,7 +3625,7 @@ function chanTok(v: Tok, kind: "number" | "percent" | "angle"): CSSNumericValue 
 (CSSColorValue as unknown as Record<string, unknown>)["parse"] = function parse(
   cssText: unknown,
 ): CSSColorValue | CSSKeywordValue {
-  const text = String(cssText).trim();
+  const text = domStr(cssText).trim();
   const toks = significant(tokenize(text));
   if (toks.length === 1 && toks[0]!.t === "func") {
     const f = toks[0] as Extract<Tok, { t: "func" }>;
@@ -3717,7 +3720,7 @@ export function makePropertyRegistry(): PropertyRegistry {
       if (rawName === undefined || !/^--[\s\S]+$/.test(name) || name.startsWith("\\")) {
         throw new DOMException("invalid custom property name", "SyntaxError");
       }
-      const syntax = d["syntax"] === undefined ? "*" : String(d["syntax"]).trim();
+      const syntax = d["syntax"] === undefined ? "*" : domStr(d["syntax"]).trim();
       const syntaxOk =
         syntax === "*" ||
         (syntax !== "" &&
@@ -3740,7 +3743,7 @@ export function makePropertyRegistry(): PropertyRegistry {
         name,
         syntax,
         inherits,
-        initialValue: initial === undefined ? null : String(initial),
+        initialValue: initial === undefined ? null : domStr(initial),
       });
     },
     get(name: string): RegisteredProperty | undefined {
@@ -3864,7 +3867,7 @@ for (const [ctor, len] of IDL_CTOR_LENGTH) {
 // idlharness's missing-argument TypeError checks rely on).
 for (const ctor of Object.values(TYPED_OM_GLOBALS)) {
   const inherited = new Map<PropertyKey, PropertyDescriptor>();
-  let cur = Object.getPrototypeOf(ctor as object) as object | null;
+  let cur = Object.getPrototypeOf(ctor) as object | null;
   while (cur !== null && cur !== Function.prototype) {
     for (const key of [
       ...Object.getOwnPropertyNames(cur),
@@ -3877,7 +3880,7 @@ for (const ctor of Object.values(TYPED_OM_GLOBALS)) {
       const d = Object.getOwnPropertyDescriptor(cur, key);
       if (d !== undefined) inherited.set(key, d);
     }
-    cur = Object.getPrototypeOf(cur);
+    cur = Object.getPrototypeOf(cur) as object | null;
   }
   for (const [key, d] of inherited) {
     if (Object.prototype.hasOwnProperty.call(ctor as object, key)) continue;
@@ -3895,7 +3898,10 @@ for (const ctor of Object.values(TYPED_OM_GLOBALS)) {
 // Every member is ALSO wrapped with a WebIDL brand check — calling an
 // operation or touching an attribute on `this` that isn't an instance of the
 // interface throws TypeError (idlharness pokes members with this = {} / null).
-function brandCheckWrap(fn: (...a: never[]) => unknown, owner: object): Function {
+function brandCheckWrap(
+  fn: (...a: never[]) => unknown,
+  owner: object,
+): (this: unknown, ...args: unknown[]) => unknown {
   const wrapped = function (this: unknown, ...args: unknown[]): unknown {
     if (!(this instanceof (owner as never))) {
       throw new TypeError("Illegal invocation");
@@ -3920,10 +3926,12 @@ for (const [name, ctor] of Object.entries(TYPED_OM_GLOBALS)) {
       const d = Object.getOwnPropertyDescriptor(proto, key);
       if (d === undefined) continue;
       if (d.get !== undefined) {
-        d.get = brandCheckWrap(d.get as (...a: never[]) => unknown, owner) as () => unknown;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        d.get = brandCheckWrap(d.get as (...a: never[]) => unknown, owner);
       }
       if (d.set !== undefined) {
-        d.set = brandCheckWrap(d.set as (...a: never[]) => unknown, owner) as (v: unknown) => void;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        d.set = brandCheckWrap(d.set as (...a: never[]) => unknown, owner);
       }
       if (typeof d.value === "function" && key !== Symbol.toStringTag) {
         d.value = brandCheckWrap(d.value as (...a: never[]) => unknown, owner);
@@ -3936,11 +3944,11 @@ for (const [name, ctor] of Object.entries(TYPED_OM_GLOBALS)) {
     }
     proto = Object.getPrototypeOf(proto) as object | null;
   }
-  const ownProto = fn.prototype as object | undefined;
+  const ownProto = fn.prototype;
   if (ownProto !== undefined) {
     for (const key of [
-      ...Object.getOwnPropertyNames(ctor as object),
-      ...Object.getOwnPropertySymbols(ctor as object),
+      ...Object.getOwnPropertyNames(ctor),
+      ...Object.getOwnPropertySymbols(ctor),
     ]) {
       if (key === "prototype" || key === "length" || key === "name") continue;
       const d = Object.getOwnPropertyDescriptor(ctor, key);

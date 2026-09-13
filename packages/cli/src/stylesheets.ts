@@ -86,8 +86,9 @@ export function documentStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  linkEnabled?: (node: DomNode) => boolean,
 ): StyleSheet[] {
-  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media)];
+  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media, linkEnabled)];
 }
 
 /** Optional hook to load an external stylesheet by URL (M2 networking). */
@@ -102,6 +103,7 @@ export function collectStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  linkEnabled?: (node: DomNode) => boolean,
 ): StyleSheet[] {
   const sheets: StyleSheet[] = [];
   const root = dom.nodes.get(dom.root);
@@ -116,7 +118,7 @@ export function collectStylesheets(
     }
     if (node.kind === "element" && node.tag === "style") {
       sheets.push(media !== undefined ? parseCss(encode(styleText(dom, node)), media) : parseCss(encode(styleText(dom, node))));
-    } else if (isActiveStylesheetLink(node)) {
+    } else if (isActiveStylesheetLink(node, linkEnabled?.(node) === true)) {
       const bytes = loadLinkedSheet(node, loadExternal);
       if (bytes !== undefined) {
         const href = node.attrs?.get("href") ?? "";

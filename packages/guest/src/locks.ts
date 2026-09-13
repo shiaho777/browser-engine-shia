@@ -142,6 +142,7 @@ export class LockManager {
     if (signal !== null && signal.aborted) {
       // An already-aborted signal rejects with the signal's own reason —
       // a custom value or the default AbortError DOMException.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- abort reason is arbitrary
       return Promise.reject(signal.reason ?? abortError());
     }
 
@@ -153,6 +154,7 @@ export class LockManager {
           try {
             result = cb(null);
           } catch (e) {
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- spec rejects verbatim
             reject(e);
             return;
           }
@@ -168,6 +170,7 @@ export class LockManager {
             // request itself must win the freed slot, not the pending line.
             const idx = this.#held.indexOf(held);
             if (idx !== -1) this.#held.splice(idx, 1);
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- break reason is arbitrary
             reject(reason);
           },
         };
@@ -179,6 +182,7 @@ export class LockManager {
           result = cb(lock);
         } catch (e) {
           this.#dropHeld(held);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- spec rejects verbatim
           reject(e);
           return;
         }
@@ -190,6 +194,7 @@ export class LockManager {
             },
             (e) => {
               this.#dropHeld(held);
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- spec rejects verbatim
               reject(e);
             },
           );
@@ -209,6 +214,7 @@ export class LockManager {
         const idx = this.#pending.indexOf(pending);
         if (idx !== -1) {
           this.#pending.splice(idx, 1);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- abort reason is arbitrary
           reject(signal?.reason ?? abortError());
         }
       };

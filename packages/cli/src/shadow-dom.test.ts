@@ -116,9 +116,12 @@ void test("attachShadow is idempotent per host and multiple hosts compose", () =
 
 void test("shadow content participates in CASCADE (styles apply)", () => {
   const { session, error } = run(
-    '<style>b { color: red; height: 30px }</style><div id="host"></div>',
+    '<div id="host"></div>',
     [
       "var root = document.getElementById('host').attachShadow({mode:'open'});" +
+        "var s = document.createElement('style');" +
+        "s.textContent = 'b { color: red; height: 30px }';" +
+        "root.appendChild(s);" +
         "root.appendChild(document.createElement('b'));",
     ],
   );

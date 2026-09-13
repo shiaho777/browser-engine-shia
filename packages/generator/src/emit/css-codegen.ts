@@ -161,6 +161,11 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
       };
     case "color":
       return { expr: "parseColor(value)", primitive: "parseColor" };
+    case "color-or-keyword":
+      return {
+        expr: `parseColorOrKeyword(value, ${stringArrayLiteral(grammar.keywords)})`,
+        primitive: "parseColorOrKeyword",
+      };
     case "length":
       return { expr: "parseLength(value)", primitive: "parseLength" };
     case "length-or-keyword":
@@ -235,6 +240,7 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
   const usedPrimitives = new Set<string>();
   const fnBlocks: string[] = [];
   const tableRows: string[] = [];
+  const bareZeroPx: string[] = [];
 
   for (const property of properties) {
     const call = parserCallFor(property.syntax);
@@ -249,6 +255,9 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
       ].join("\n"),
     );
     tableRows.push(`  ${quote(property.name)}: ${fn},`);
+    if (property.syntax.kind === "length" || property.syntax.kind === "length-or-keyword") {
+      bareZeroPx.push(`  ${quote(property.name)},`);
+    }
   }
 
   usedPrimitives.add("ok");
@@ -276,6 +285,14 @@ ${tableRows.join("\n")}
 };
 
 /**
+ * Properties whose grammar is \`<length>\`-based: a bare \`0\` parses as a px
+ * length and serializes as \`0px\` (CSSOM specified-value serialization).
+ */
+export const LENGTH_BARE_ZERO_PX: ReadonlySet<string> = new Set([
+${bareZeroPx.join("\n")}
+]);
+
+/**
  * Parse the value of \`property\`. A known property returns a {@link ParseResult}
  * (\`ok\` value or \`reason\`); an unknown property is an unimplemented capability
  * and throws \`NotImplemented\` (Requirement 5.1).
@@ -284,7 +301,7 @@ export function parsePropertyValue(
   property: string,
   value: string,
 ): ParseResult<unknown> {
-  const parser = PROPERTY_PARSERS[property];
+  const parser = Object.hasOwn(PROPERTY_PARSERS, property) ? PROPERTY_PARSERS[property] : undefined;
   if (parser === undefined) {
     return notImplemented(\`css-property:\${property}\`, {
       category: "css-property",
@@ -306,7 +323,7 @@ export function parsePropertyValue(
   const expanded = expandShorthand(property, value);
   if (expanded !== null) {
     const allOk = expanded.every((d) => {
-      const p = PROPERTY_PARSERS[d.property];
+      const p = Object.hasOwn(PROPERTY_PARSERS, d.property) ? PROPERTY_PARSERS[d.property] : undefined;
       if (p === undefined) return false;
       const r = p(d.value);
       return r.ok;

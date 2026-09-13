@@ -17,8 +17,12 @@ test(function () {
   var el = document.getElementById("target");
   var cs = getComputedStyle(el);
 
-  cs.color = "rgb(9, 8, 7)";
-  cs["background-color"] = "rgb(7, 8, 9)";
+  assert_throws_dom("NoModificationAllowedError", function () {
+    cs.color = "rgb(9, 8, 7)";
+  }, "camelCase assignment throws on the read-only declaration");
+  assert_throws_dom("NoModificationAllowedError", function () {
+    cs["background-color"] = "rgb(7, 8, 9)";
+  }, "dashed assignment throws on the read-only declaration");
 
   assert_equals(cs.color, "rgb(1, 2, 3)", "camelCase assignment does not mutate the computed declaration object");
   assert_equals(cs["background-color"], "rgb(4, 5, 6)", "dashed assignment does not mutate the computed declaration object");
@@ -40,10 +44,10 @@ test(function () {
   var el = document.getElementById("target");
   var cs = getComputedStyle(el);
 
-  assert_throws_js(Error, function () {
+  assert_throws_dom("NoModificationAllowedError", function () {
     cs.setProperty("color", "rgb(9, 8, 7)");
   }, "setProperty on computed style throws");
-  assert_throws_js(Error, function () {
+  assert_throws_dom("NoModificationAllowedError", function () {
     cs.removeProperty("color");
   }, "removeProperty on computed style throws");
 

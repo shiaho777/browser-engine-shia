@@ -198,6 +198,9 @@ export class StorageEvent extends Event {
  * (`getItem`, `length`, …) stay reachable but are never enumerated. Symbols
  * bypass storage entirely and land as ordinary own properties.
  */
+/** WebIDL DOMString coercion for proxied writes (`storage[k] = v`). */
+const domString = (v: unknown): string => String(v);
+
 export function createStorageProxy(storage: StorageImpl): StorageImpl {
   // Symbols bypass storage entirely: they delegate to the real target as
   // ordinary own properties (so a non-configurable symbol defined via
@@ -221,17 +224,19 @@ export function createStorageProxy(storage: StorageImpl): StorageImpl {
     isKey(prop) && !onProtoChain(target, prop) ? target.getItem(prop) : null;
   const handler: ProxyHandler<StorageImpl> = {
     get(target, prop) {
-      if (typeof prop === "symbol") return Reflect.get(target, prop, target);
+      if (typeof prop === "symbol") return Reflect.get(target, prop, target) as unknown;
       const stored = storedValue(target, prop);
       if (stored !== null) return stored;
       // Private fields (#data/#order) reject `this` being the proxy: bind
       // methods and evaluate accessors against the real target.
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function"
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
     },
     set(target, prop, value) {
       if (typeof prop === "symbol") return Reflect.set(target, prop, value, target);
-      storage.setItem(prop, value);
+      storage.setItem(prop, domString(value));
       return true;
     },
     has(target, prop) {
@@ -247,7 +252,7 @@ export function createStorageProxy(storage: StorageImpl): StorageImpl {
     },
     defineProperty(target, prop, descriptor) {
       if (typeof prop === "symbol") return Reflect.defineProperty(target, prop, descriptor);
-      storage.setItem(prop, "value" in descriptor ? descriptor.value : "");
+      storage.setItem(prop, "value" in descriptor ? domString(descriptor.value) : "");
       return true;
     },
     ownKeys(target) {

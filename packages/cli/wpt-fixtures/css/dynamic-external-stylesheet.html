@@ -34,7 +34,7 @@ test(function () {
   dynamicLink.remove();
 
   var cs = getComputedStyle(document.getElementById("dynamic-target"));
-  assert_equals(cs.getPropertyValue("width"), "auto", "removing the link removes the external width declaration");
+  assert_equals(cs.getPropertyValue("width"), "784px", "removing the link removes the external width declaration");
   assert_equals(cs.getPropertyValue("background-color"), "rgba(0, 0, 0, 0)", "removed stylesheet no longer paints a background");
 }, "removing a dynamic stylesheet link removes its declarations");
 </script>

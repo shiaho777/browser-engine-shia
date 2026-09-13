@@ -526,7 +526,9 @@ export class MessageEvent extends Event {
     }
     this.initEvent(type, bubbles, cancelable);
     this.#data = data ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- DOMString coercion
     this.#origin = origin === undefined ? "" : String(origin);
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- DOMString coercion
     this.#lastEventId = lastEventId === undefined ? "" : String(lastEventId);
     this.#source = source ?? null;
     this.#ports = ports ?? [];

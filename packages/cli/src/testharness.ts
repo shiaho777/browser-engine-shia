@@ -18,6 +18,17 @@ export class WptAssertionError extends Error {
   }
 }
 
+/**
+ * Thrown by `assert_implements_optional` when a feature WPT marks OPTIONAL is
+ * missing — maps to the `PRECONDITION_FAILED` test status (not a failure).
+ */
+export class OptionalFeatureUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OptionalFeatureUnsupportedError";
+  }
+}
+
 /** WPT's `format_value`: a compact, debuggable rendering of any value. */
 export function formatValue(v: unknown): string {
   switch (typeof v) {
@@ -163,7 +174,7 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       let cur: object | null = o;
       let d: PropertyDescriptor | undefined;
       while (cur !== null && (d = Object.getOwnPropertyDescriptor(cur, String(name))) === undefined) {
-        cur = Object.getPrototypeOf(cur);
+        cur = Object.getPrototypeOf(cur) as object | null;
       }
       if (d === undefined) fail(`could not find a descriptor for property ${formatValue(name)}`, desc);
       const desc2 = d!;
@@ -232,6 +243,15 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
     },
     assert_unreached(desc?: unknown): void {
       fail("reached unreachable code", desc);
+    },
+    assert_implements(condition: unknown, desc?: unknown): void {
+      if (!condition) fail("assert_implements: expected truthy condition", desc);
+    },
+    assert_implements_optional(condition: unknown, desc?: unknown): void {
+      if (!condition) {
+        const label = typeof desc === "string" && desc !== "" ? `${desc}: ` : "";
+        throw new OptionalFeatureUnsupportedError(`${label}optional feature unsupported`);
+      }
     },
     // Async rejection assertions (testharness.js promise_rejects_* family):
     // the argument is a promise OR a function returning one; the returned

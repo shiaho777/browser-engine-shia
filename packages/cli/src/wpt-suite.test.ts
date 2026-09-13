@@ -284,9 +284,11 @@ void test("WPT: getComputedStyle reads the resolved cascade values (CSSOM)", asy
       }, "getComputedStyle returns resolved CSSOM strings");
 
       test(function () {
-        // Initial values resolve through the cascade (height defaults to auto).
+        // getComputedStyle returns the USED value for height/width (CSSOM):
+        // "auto" on a rendered element resolves to its laid-out px size,
+        // one 20px line of text gives a 20px used height.
         var cs = getComputedStyle(document.getElementById("el"));
-        assert_equals(cs.getPropertyValue("height"), "auto", "an unset length resolves to its initial");
+        assert_equals(cs.getPropertyValue("height"), "20px", "unset height resolves to the used px value");
       }, "getComputedStyle reflects initial values");
     </script>`;
   const report = await runWptHtml(html);

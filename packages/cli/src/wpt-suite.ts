@@ -25,7 +25,7 @@ import { MessageChannel, MessagePort, makeBroadcastChannelClass } from "@browser
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
-import { createAssertions, WptAssertionError } from "./testharness.js";
+import { createAssertions, OptionalFeatureUnsupportedError, WptAssertionError } from "./testharness.js";
 import {
   computedRole,
   accessibleName,
@@ -136,7 +136,9 @@ function buildAsyncHarness(): AsyncHarness {
   };
   const classify = (error: unknown): WptSubtest => ({
     name: "",
-    status: error instanceof WptAssertionError ? "FAIL" : "ERROR",
+    status: error instanceof OptionalFeatureUnsupportedError
+      ? "PRECONDITION_FAILED"
+      : error instanceof WptAssertionError ? "FAIL" : "ERROR",
     message: error instanceof Error ? error.message : String(error),
   });
 
@@ -376,7 +378,12 @@ function buildAsyncHarness(): AsyncHarness {
     test,
     async_test: asyncTest,
     promise_test: promiseTest,
-    setup: () => undefined,
+    // testharness `setup(fn)` runs before the first test; our harness runs
+    // scripts after the DOM is fully built, so invoking immediately preserves
+    // ordering (options-object forms are ignored).
+    setup: (f: unknown) => {
+      if (typeof f === "function") (f as () => void)();
+    },
     done: () => undefined,
     add_completion_callback: () => undefined,
     EventWatcher,
@@ -491,7 +498,12 @@ export async function runWptHtml(
     href: options.documentUrl ?? "wpt://doc",
     get origin() {
       try {
-        return new URL(String(this["href"])).origin;
+        const u = new URL(String(this["href"]));
+        // `wpt:` is a non-special scheme so URL.origin is "null" — but WPT
+        // tests compose `${location.origin}/...` into URLs, which needs a
+        // real (non-opaque) origin to round-trip.
+        if (u.protocol === "wpt:") return `wpt://${u.host === "" ? "wpt" : u.host}`;
+        return u.origin;
       } catch {
         return "null";
       }
@@ -760,7 +772,9 @@ export async function runWptHtml(
   // runInContext AFTER createContext — resolved lazily into RealmPromise.
   let RealmPromise: PromiseConstructor = Promise;
   const guestify = (p: Promise<unknown>): Promise<unknown> =>
-    new RealmPromise((res, rej) => p.then(res, rej));
+    new RealmPromise((res, rej) => {
+      p.then(res, rej);
+    });
   class GuestLockManager extends LockManager {
     override request(...args: Parameters<LockManager["request"]>): Promise<unknown> {
       return guestify(super.request(...args));
@@ -794,7 +808,10 @@ export async function runWptHtml(
   sandbox["MessageChannel"] = MessageChannel;
   sandbox["MessagePort"] = MessagePort;
   sandbox["BroadcastChannel"] = makeBroadcastChannelClass(
-    () => String(sandboxLocation["origin"] ?? ""),
+    () => {
+      const o = sandboxLocation["origin"];
+      return typeof o === "string" ? o : "";
+    },
   );
   sandbox["MessageEvent"] = MessageEvent;
   /** window.postMessage(data, "*"): self-delivery as a queued task. */
@@ -828,13 +845,13 @@ export async function runWptHtml(
     querySelectorAll: (selector) =>
       ((document as { querySelectorAll?: (s: string) => unknown }).querySelectorAll?.(selector) ?? []) as ArrayLike<A11yElement>,
     getComputedStyle: (el) => {
-      const g = (globals as Record<string, unknown>)["getComputedStyle"];
+      const g = (globals)["getComputedStyle"];
       if (typeof g !== "function") return { getPropertyValue: () => "" };
       const decl = (g as (e: unknown) => unknown)(el) as { getPropertyValue?: (n: string) => unknown };
       return {
         getPropertyValue: (n: string) => {
           const v = decl?.getPropertyValue?.(n);
-          return typeof v === "string" ? v : v === undefined ? "" : String(v);
+          return typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : "";
         },
       };
     },
@@ -932,7 +949,7 @@ export async function runWptHtml(
     // again to the *current* realm's intrinsics (the proto check alone would
     // skip them and assert against a stale realm).
     for (const key of Object.getOwnPropertyNames(sandbox)) {
-      const v = sandbox[key] as unknown;
+      const v = sandbox[key];
       try {
         if (typeof v === "function") {
           if (Object.getPrototypeOf(v) === Function.prototype || reparentedToRealm.has(v)) {
@@ -1009,7 +1026,9 @@ export async function runWptHtml(
   }
 
   const passed = harness.subtests.filter((t) => t.status === "PASS").length;
-  const failed = harness.subtests.length - passed;
+  // PRECONDITION_FAILED (assert_implements_optional) is a skip, not a failure —
+  // matching upstream testharness status semantics.
+  const failed = harness.subtests.filter((t) => t.status === "FAIL" || t.status === "ERROR").length;
   return collector === undefined
     ? { subtests: harness.subtests, passed, failed, harnessError }
     : traceError === undefined

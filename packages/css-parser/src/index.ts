@@ -641,7 +641,7 @@ function declarationSupported(prop: string, value: string): boolean {
     return !/!important/i.test(value);
   }
   const std = vendorPrefixToStandard(prop) ?? prop;
-  if (PROPERTY_PARSERS[std] === undefined) return false;
+  if (!Object.hasOwn(PROPERTY_PARSERS, std)) return false;
   const v = value.trim();
   if (v === "" || /!important/i.test(v)) return false;
   if (/\b(?:var|env|attr|toggle)\s*\(/i.test(v)) return true;

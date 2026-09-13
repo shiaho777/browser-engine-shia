@@ -78,6 +78,7 @@ function normalizeType(raw: unknown): string {
   // (null → "null", 5 → "5"), then any character outside printable ASCII
   // discards the type entirely.
   if (raw === undefined) return "";
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- DOMString coercion
   const str = String(raw);
   if (!/^[\x20-\x7e]*$/.test(str)) return "";
   return str.toLowerCase();

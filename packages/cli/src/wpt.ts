@@ -18,7 +18,7 @@ import type { StageTrace } from "./stage-trace.js";
 /** A single subtest's outcome, mirroring testharness statuses. */
 export interface WptSubtest {
   readonly name: string;
-  readonly status: "PASS" | "FAIL" | "ERROR";
+  readonly status: "PASS" | "FAIL" | "ERROR" | "PRECONDITION_FAILED";
   readonly message: string | null;
 }
 

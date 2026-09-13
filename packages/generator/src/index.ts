@@ -129,6 +129,7 @@ export type {
 // inheritance table, ComputedStyle field types, and DOM surface from here.
 export {
   PROPERTY_PARSERS,
+  LENGTH_BARE_ZERO_PX,
   parsePropertyValue,
   type PropertyValueParser,
 } from "./generated/css-parsing.js";

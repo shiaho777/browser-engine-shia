@@ -122,11 +122,18 @@ function expandBorder(value: string): readonly ExpandedDeclaration[] | null {
   }
 
   const out: ExpandedDeclaration[] = [];
+  // The shorthand sets ALL of its longhands — omitted components take their
+  // initial values (medium / none / currentcolor), and `border` also resets
+  // border-image (CSS Backgrounds §3).
+  const w = width ?? "medium";
+  const s = style ?? "none";
+  const c = colorVal ?? "currentcolor";
   for (const edge of ["top", "right", "bottom", "left"] as const) {
-    if (width !== null) out.push({ property: `border-${edge}-width`, value: width });
-    if (style !== null) out.push({ property: `border-${edge}-style`, value: style });
-    if (colorVal !== null) out.push({ property: `border-${edge}-color`, value: colorVal });
+    out.push({ property: `border-${edge}-width`, value: w });
+    out.push({ property: `border-${edge}-style`, value: s });
+    out.push({ property: `border-${edge}-color`, value: c });
   }
+  out.push({ property: "border-image", value: "none" });
   return out;
 }
 
@@ -161,10 +168,11 @@ function expandBorderEdge(edge: string): ShorthandExpander {
       }
     }
 
-    const out: ExpandedDeclaration[] = [];
-    if (width !== null) out.push({ property: `border-${edge}-width`, value: width });
-    if (style !== null) out.push({ property: `border-${edge}-style`, value: style });
-    if (colorVal !== null) out.push({ property: `border-${edge}-color`, value: colorVal });
+    const out: ExpandedDeclaration[] = [
+      { property: `border-${edge}-width`, value: width ?? "medium" },
+      { property: `border-${edge}-style`, value: style ?? "none" },
+      { property: `border-${edge}-color`, value: colorVal ?? "currentcolor" },
+    ];
     return out;
   };
 }
@@ -451,11 +459,13 @@ function expandTextDecoration(value: string): readonly ExpandedDeclaration[] | n
     }
     return null; // unrecognized token
   }
-  const out: ExpandedDeclaration[] = [];
-  if (line.length > 0) out.push({ property: "text-decoration-line", value: line.join(" ") });
-  if (style !== null) out.push({ property: "text-decoration-style", value: style });
-  if (color !== null) out.push({ property: "text-decoration-color", value: color });
-  return out.length > 0 ? out : null;
+  if (line.length === 0 && style === null && color === null) return null;
+  return [
+    { property: "text-decoration-line", value: line.length > 0 ? line.join(" ") : "none" },
+    { property: "text-decoration-style", value: style ?? "solid" },
+    { property: "text-decoration-color", value: color ?? "currentcolor" },
+    { property: "text-decoration-thickness", value: "auto" },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -520,9 +530,23 @@ function expandFont(value: string): readonly ExpandedDeclaration[] | null {
   const rest = toks.slice(i).join(" ");
   const sizeMatch = /^([^\s/]+)(?:\s*\/\s*(\S+))?\s+(.+)$/.exec(rest);
   if (sizeMatch === null) {
-    // System font keywords: keep as font-family (honest pass-through).
+    // System font keywords: keep as font-family (honest pass-through), and
+    // reset the font-variant/font-feature longhands the `font` shorthand
+    // covers but system fonts do not express (empty value = removal marker).
     if (toks.length === 1 && /^(system-ui|caption|icon|menu|message-box|small-caption|status-bar)$/i.test(toks[0]!)) {
-      return [{ property: "font-family", value: toks[0]! }];
+      const resets = [
+        "font-variant-caps", "font-variant-ligatures", "font-variant-alternates",
+        "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
+        "font-variant-emoji", "font-feature-settings", "font-variation-settings",
+      ].map((property) => ({ property, value: "" }));
+      // The `font` shorthand entry itself carries the system-font keyword
+      // (getPropertyValue('font') must round-trip it), `font-family` keeps the
+      // honest pass-through, and the variant longhands reset via markers.
+      return [
+        { property: "font", value: toks[0]! },
+        { property: "font-family", value: toks[0]! },
+        ...resets,
+      ];
     }
     return null;
   }
@@ -531,12 +555,15 @@ function expandFont(value: string): readonly ExpandedDeclaration[] | null {
   const family = sizeMatch[3]!.trim();
   if (family.length === 0) return null;
 
-  const out: ExpandedDeclaration[] = [];
-  if (style !== null && style !== "normal") out.push({ property: "font-style", value: style });
-  if (weight !== null && weight !== "normal") out.push({ property: "font-weight", value: weight });
-  out.push({ property: "font-size", value: size });
-  if (lineHeight !== null) out.push({ property: "line-height", value: lineHeight });
-  out.push({ property: "font-family", value: family });
+  // `font` sets all of its longhands; omitted components reset to `normal`.
+  const out: ExpandedDeclaration[] = [
+    { property: "font-style", value: style ?? "normal" },
+    { property: "font-weight", value: weight ?? "normal" },
+    { property: "font-stretch", value: "normal" },
+    { property: "font-size", value: size },
+    { property: "line-height", value: lineHeight ?? "normal" },
+    { property: "font-family", value: family },
+  ];
   return out;
 }
 
@@ -614,27 +641,45 @@ function isBackgroundColorToken(token: string): boolean {
  * (+ `background-image: none` for the `none` reset). Anything richer
  * returns `null` (caller drops it — same effective rendering as today).
  */
+/** Initial values for every `background` longhand (the shorthand resets all). */
+const BACKGROUND_DEFAULTS: readonly ExpandedDeclaration[] = [
+  { property: "background-image", value: "none" },
+  { property: "background-position", value: "0% 0%" },
+  { property: "background-size", value: "auto" },
+  { property: "background-repeat", value: "repeat" },
+  { property: "background-origin", value: "padding-box" },
+  { property: "background-clip", value: "border-box" },
+  { property: "background-attachment", value: "scroll" },
+  { property: "background-color", value: "transparent" },
+];
+
 function expandBackground(value: string): readonly ExpandedDeclaration[] | null {
   const v = value.trim();
   if (v === "") return null;
   if (v.toLowerCase() === "none") {
-    return [
-      { property: "background-color", value: "transparent" },
-      { property: "background-image", value: "none" },
-    ];
+    return [...BACKGROUND_DEFAULTS];
   }
   if (backgroundLayers(v).length !== 1) return null; // multi-layer: out of scope.
   const toks = backgroundTokens(v);
   if (toks.length === 1) {
     const tok = toks[0] as string;
-    if (isBackgroundColorToken(tok)) return [{ property: "background-color", value: tok }];
-    if (/^url\(.*\)$/i.test(tok)) return [{ property: "background-image", value: tok }];
-    // A lone var() reference cannot be classified here (custom properties
-    // resolve later, per-winner, in the cascade): pass it through as the
-    // color longhand so substitution still happens. If it resolves to a
-    // color the background paints; anything else fails longhand parsing
-    // and falls back exactly as an unrecognized value would.
-    if (/^var\(.*\)$/i.test(tok)) return [{ property: "background-color", value: tok }];
+    if (isBackgroundColorToken(tok)) {
+      return BACKGROUND_DEFAULTS.map((d) =>
+        d.property === "background-color" ? { property: d.property, value: tok } : d,
+      );
+    }
+    if (/^url\(.*\)$/i.test(tok)) {
+      return BACKGROUND_DEFAULTS.map((d) =>
+        d.property === "background-image" ? { property: d.property, value: tok } : d,
+      );
+    }
+    // Pending substitution (CSS Variables §2.3.1): a lone var()/env() cannot
+    // be classified into a subcomponent — the ENTIRE token stream lands
+    // verbatim on every covered longhand and stays pending until the cascade
+    // substitutes the custom property.
+    if (/^(?:var|env)\(.*\)$/i.test(tok)) {
+      return BACKGROUND_DEFAULTS.map((d) => ({ property: d.property, value: tok }));
+    }
   }
   return null;
 }
@@ -697,6 +742,65 @@ function expandTransition(value: string): ExpandedDeclaration[] | null {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * `font-variant` (CSS Fonts §6): `normal | none | [ <alternates> || <caps> ||
+ * <east-asian> || <emoji>? || <ligatures> || <numeric> || <position> ]`.
+ * Sets all seven longhands; `none` maps to `font-variant-ligatures: none`.
+ */
+const FONT_VARIANT_GROUPS: Readonly<Record<string, ReadonlySet<string>>> = {
+  "font-variant-ligatures": new Set([
+    "common-ligatures", "no-common-ligatures", "discretionary-ligatures",
+    "no-discretionary-ligatures", "historical-ligatures", "no-historical-ligatures",
+    "contextual", "no-contextual",
+  ]),
+  "font-variant-caps": new Set([
+    "small-caps", "all-small-caps", "petite-caps", "all-petite-caps",
+    "unicase", "titling-caps",
+  ]),
+  "font-variant-alternates": new Set(["historical-forms"]),
+  "font-variant-numeric": new Set([
+    "lining-nums", "oldstyle-nums", "proportional-nums", "tabular-nums",
+    "diagonal-fractions", "stacked-fractions", "ordinal", "slashed-zero",
+  ]),
+  "font-variant-east-asian": new Set([
+    "jis78", "jis83", "jis90", "jis04", "simplified", "traditional",
+    "full-width", "proportional-width", "ruby",
+  ]),
+  "font-variant-position": new Set(["sub", "super"]),
+  "font-variant-emoji": new Set(["text", "emoji", "unicode"]),
+};
+
+const FONT_VARIANT_LONGHANDS = Object.keys(FONT_VARIANT_GROUPS);
+
+function expandFontVariant(value: string): readonly ExpandedDeclaration[] | null {
+  const toks = tokens(value);
+  if (toks.length === 0) return null;
+  const lower = toks.map((t) => t.toLowerCase());
+  if (lower.length === 1 && lower[0] === "none") {
+    return FONT_VARIANT_LONGHANDS.map((p) => ({
+      property: p,
+      value: p === "font-variant-ligatures" ? "none" : "normal",
+    }));
+  }
+  const buckets = new Map<string, string[]>();
+  for (const tok of toks) {
+    const t = tok.toLowerCase();
+    if (t === "none") return null; // `none` cannot combine with other tokens.
+    if (t === "normal") continue; // `normal` marks slots left at initial.
+    const fnMatch = /^([a-z-]+)\(/.exec(t);
+    const group = fnMatch !== null
+      ? "font-variant-alternates"
+      : FONT_VARIANT_LONGHANDS.find((p) => FONT_VARIANT_GROUPS[p]!.has(t));
+    if (group === undefined) return null;
+    if (!buckets.has(group)) buckets.set(group, []);
+    buckets.get(group)!.push(fnMatch !== null ? tok : t);
+  }
+  return FONT_VARIANT_LONGHANDS.map((p) => ({
+    property: p,
+    value: (buckets.get(p) ?? ["normal"]).join(" "),
+  }));
+}
+
 // The shorthand→expander table.
 // ---------------------------------------------------------------------------
 
@@ -735,6 +839,7 @@ const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
   // value stays pending-substitution across every longhand.
   transition: expandTransition,
   font: expandFont,
+  "font-variant": expandFontVariant,
   "-webkit-line-clamp": (value: string) => [{ property: "line-clamp", value: value.trim().toLowerCase() === "none" ? "0" : value }],
 };
 
@@ -746,14 +851,14 @@ const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
  */
 /** True when `property` is a registered shorthand name. */
 export function isShorthandName(property: string): boolean {
-  return property in SHORTHAND_TABLE;
+  return Object.hasOwn(SHORTHAND_TABLE, property);
 }
 
 export function expandShorthand(
   property: string,
   value: string,
 ): readonly ExpandedDeclaration[] | null {
-  const expander = SHORTHAND_TABLE[property];
+  const expander = Object.hasOwn(SHORTHAND_TABLE, property) ? SHORTHAND_TABLE[property] : undefined;
   if (expander === undefined) {
     return null;
   }

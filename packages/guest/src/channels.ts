@@ -52,7 +52,7 @@ function normalizeTransfer(second: unknown): readonly MessagePort[] {
   if (second === undefined || second === null) return [];
   const list = Array.isArray(second)
     ? second
-    : typeof second === "object" && "transfer" in (second as object)
+    : typeof second === "object" && "transfer" in (second)
       ? (second as { transfer?: unknown }).transfer
       : undefined;
   if (!Array.isArray(list)) return [];
@@ -261,7 +261,7 @@ export function makeBroadcastChannelClass(originOf: () => string): typeof Broadc
     }
   }
 
-  return BroadcastChannelImpl as unknown as typeof BroadcastChannel;
+  return BroadcastChannelImpl;
 }
 
 /** Nominal type exposed for the factory's return signature. */

@@ -68,6 +68,12 @@ export interface LengthOrKeywordGrammar {
   readonly keywords: readonly string[];
 }
 
+/** Parse `value` as a `<color>` OR one of `keywords` (e.g. `outline-color: invert`). */
+export interface ColorOrKeywordGrammar {
+  readonly kind: "color-or-keyword";
+  readonly keywords: readonly string[];
+}
+
 /** Parse `value` as a 1-to-4 `<length>` quad expanded to four edges (`margin`). */
 export interface EdgesGrammar {
   readonly kind: "edges";
@@ -168,6 +174,7 @@ export interface CursorGrammar {
 export type ValueGrammar =
   | KeywordGrammar
   | ColorGrammar
+  | ColorOrKeywordGrammar
   | LengthGrammar
   | LengthOrKeywordGrammar
   | EdgesGrammar
@@ -191,6 +198,11 @@ export function keyword(...keywords: readonly string[]): KeywordGrammar {
 /** `color()` — the `<color>` grammar. */
 export function color(): ColorGrammar {
   return { kind: "color" };
+}
+
+/** `colorOr("invert")` — a `<color>` or one of the given keywords. */
+export function colorOr(...keywords: readonly string[]): ColorOrKeywordGrammar {
+  return { kind: "color-or-keyword", keywords };
 }
 
 /** `length()` — a single `<length>` grammar. */

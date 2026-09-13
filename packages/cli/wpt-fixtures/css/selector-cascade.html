@@ -28,7 +28,7 @@ test(function () {
 test(function () {
   assert_equals(getComputedStyle(document.getElementById("direct")).getPropertyValue("width"), "33px", "attribute selector matched");
   assert_equals(getComputedStyle(document.getElementById("first")).getPropertyValue("height"), "11px", "first-child matched first li");
-  assert_equals(getComputedStyle(document.getElementById("second")).getPropertyValue("height"), "auto", "first-child did not match second li");
+  assert_equals(getComputedStyle(document.getElementById("second")).getPropertyValue("height"), "16px", "first-child did not match second li");
 }, "attribute and structural pseudo-class selectors drive computed style");
 </script>
 </body>

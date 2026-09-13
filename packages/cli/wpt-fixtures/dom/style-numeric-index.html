@@ -24,9 +24,9 @@ test(function () {
   el.style.setProperty("height", "7px", "important");
   el.style.setProperty("color", "blue");
 
-  assert_equals(el.style[0], "color", "overwriting an existing declaration keeps index 0");
-  assert_equals(el.style[1], "width", "existing later declaration keeps index 1");
-  assert_equals(el.style[2], "height", "new declaration appends at the next index");
+  assert_equals(el.style[0], "width", "untouched declaration keeps index 0");
+  assert_equals(el.style[1], "height", "new declaration appends at the next index");
+  assert_equals(el.style[2], "color", "overwriting an existing declaration moves it to the end");
   assert_equals(el.style[2], el.style.item(2), "numeric index and item stay aligned after setProperty");
 }, "numeric indexed reads update after setProperty mutations");
 

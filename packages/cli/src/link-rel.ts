@@ -22,14 +22,14 @@ const SCREEN_MEDIA_ENVIRONMENT: MediaEnvironment = Object.freeze({
 });
 
 /** Whether a `<link>` element is an active stylesheet link. */
-export function isActiveStylesheetLink(link: DomNode): boolean {
+export function isActiveStylesheetLink(link: DomNode, explicitlyEnabled = false): boolean {
   if (link.kind !== "element" || link.tag !== "link") {
     return false;
   }
   const tokens = relTokens(link.attrs);
   return (
     tokens.has("stylesheet") &&
-    !tokens.has("alternate") &&
+    (explicitlyEnabled || !tokens.has("alternate")) &&
     link.attrs?.has("disabled") !== true &&
     mediaMatches(link.attrs?.get("media"), SCREEN_MEDIA_ENVIRONMENT)
   );

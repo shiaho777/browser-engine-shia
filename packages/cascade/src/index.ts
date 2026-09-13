@@ -214,8 +214,29 @@ export function cascadeWithRuleIndex(
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
   interaction?: InteractionState,
+  shadow?: ShadowCascadeContext,
 ): ComputedStyle {
-  return cascadeWithIndex(dom, index, node, viewport, layerOrder, cache, interaction);
+  return cascadeWithIndex(dom, index, node, viewport, layerOrder, cache, interaction, shadow);
+}
+
+/**
+ * Shadow-DOM host styling channel (CSS Scoping §4): when `node` is a shadow
+ * HOST, `:host`-subject rules from its shadow scope also apply — at the LOWEST
+ * cascade precedence (outer-tree declarations always beat `:host` rules).
+ */
+export interface ShadowCascadeContext {
+  /** The shadow-root id when `node` hosts a shadow tree, else null. */
+  readonly hostRootOf: (node: NodeId) => NodeId | null;
+  /** The host element id for a shadow root, else null. */
+  readonly hostOf: (rootId: NodeId) => NodeId | null;
+  /** The sheets applicable inside a shadow root's scope. */
+  readonly sheetsOf: (rootId: NodeId) => readonly StyleSheet[];
+  /**
+   * A node's computed style in its OWN tree scope — used when inheritance hops
+   * the shadow boundary (the host lives in the outer scope, whose rule index
+   * differs from the shadow child's).
+   */
+  readonly computedOf?: (node: NodeId) => ComputedStyle;
 }
 
 function cascadeWithIndex(
@@ -226,18 +247,22 @@ function cascadeWithIndex(
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
   interaction?: InteractionState,
+  shadow?: ShadowCascadeContext,
 ): ComputedStyle {
   if (cache !== undefined) {
     const hit = cache.get(node);
     if (hit !== undefined) return hit;
   }
   const domNode = dom.nodes.get(node);
-  const parentStyle = resolveParentStyle(dom, index, domNode, viewport, layerOrder, cache, interaction);
+  const parentStyle = resolveParentStyle(dom, index, domNode, viewport, layerOrder, cache, interaction, shadow);
 
   // 1) Collect the declarations of every rule matching this node, in document
   //    order (a stable per-declaration sequence drives the source-order
-  //    tie-break across all sheets — design.md §8.1).
-  const winners = selectWinners(dom, index, node, domNode, layerOrder, interaction);
+  //    tie-break across all sheets — design.md §8.1). `hostRules` carries the
+  //    `:host`-subject rules of the node's own shadow scope (CSS Scoping §4).
+  const hostScope = shadow !== undefined ? collectHostRules(dom, node, shadow, interaction) : null;
+  const hostRules = hostScope?.matches ?? [];
+  const winners = selectWinners(dom, index, node, domNode, layerOrder, interaction, hostRules);
 
   // ---- F2: STYLE SHARING lookup --------------------------------------------
   // Two elements with the same tag + classes + matched-rule sequence + the
@@ -257,7 +282,14 @@ function cascadeWithIndex(
     // same rules with different inline styles compute different results, so it
     // MUST be in the share key (the class-only key would wrongly share them).
     const inlineStyle = element.attrs?.get("style") ?? "";
-    shareKey = `${element.tag ?? ""}|${classes.join(" ")}|${ruleSeq}|${inlineStyle}|${interaction !== undefined ? "i" : "n"}`;
+    // `:host` matches are part of the cascade input but live OUTSIDE the rule
+    // index — without them in the key, a shadow host would share styles with a
+    // same-signature non-host element (or with a host matching different
+    // `:host(...)` conditions).
+    const hostKey = hostScope === null || hostScope.rootId === null
+      ? ""
+      : `|h${hostScope.rootId}:${hostRules.map((h) => h.id).join("+")}`;
+    shareKey = `${element.tag ?? ""}|${classes.join(" ")}|${ruleSeq}|${inlineStyle}|${interaction !== undefined ? "i" : "n"}${hostKey}`;
     const shareMap = styleShareCache.get(index);
     if (shareMap !== undefined) {
       const shared = shareMap.get(shareKey);
@@ -270,6 +302,32 @@ function cascadeWithIndex(
     styleShareMisses += 1;
   }
 
+  const frozen = finishCompute(winners, parentStyle, viewport);
+  if (cache !== undefined) cache.set(node, frozen);
+
+  // F2: store into the sharing cache (the NEXT element with this signature
+  // reuses this frozen style object).
+  if (canShare && shareKey !== "") {
+    let shareMap = styleShareCache.get(index);
+    if (shareMap === undefined) {
+      shareMap = new Map();
+      styleShareCache.set(index, shareMap);
+    }
+    shareMap.set(shareKey, { parentKey: parentShareKey(parentStyle), style: frozen });
+  }
+  return frozen;
+}
+/**
+ * `winners`+`parentStyle` → frozen ComputedStyle — the second half of the
+ * cascade shared by {@link cascadeWithIndex} (element styles) and
+ * {@link cascadePseudo} (pseudo-element styles): custom-property merge, the
+ * font-size pre-pass, and the per-property declared→computed loop.
+ */
+function finishCompute(
+  winners: ReadonlyMap<string, Candidate>,
+  parentStyle: ComputedStyle,
+  viewport: Viewport,
+): ComputedStyle {
   // Collect custom properties (--foo) for var() substitution. Custom properties
   // inherit, so merge the parent's resolved custom properties with this node's
   // own declarations.
@@ -406,21 +464,109 @@ function cascadeWithIndex(
       : prop.initial; //           non-inherited, undeclared → initial (Req 11.4)
   }
 
-  const frozen = deepFreeze(result as unknown as ComputedStyle);
-  if (cache !== undefined) cache.set(node, frozen);
-
-  // F2: store into the sharing cache (the NEXT element with this signature
-  // reuses this frozen style object).
-  if (canShare && shareKey !== "") {
-    let shareMap = styleShareCache.get(index);
-    if (shareMap === undefined) {
-      shareMap = new Map();
-      styleShareCache.set(index, shareMap);
-    }
-    shareMap.set(shareKey, { parentKey: parentShareKey(parentStyle), style: frozen });
-  }
-  return frozen;
+  return deepFreeze(result as unknown as ComputedStyle);
 }
+
+/**
+ * Pseudo-element computed style — `getComputedStyle(el, "::before")` (CSSOM
+ * §6.1). Pseudo-elements are not DOM nodes: their declarations come from rules
+ * whose selector's LAST compound carries a matching `::name`/`:name` suffix and
+ * whose element-part selector matches the originating node. The pseudo's own
+ * declarations cascade among themselves (origin → importance → specificity →
+ * source order); every other property inherits from the ELEMENT's computed
+ * style — the originating element is the pseudo's inheritance parent.
+ */
+export function cascadePseudo(
+  dom: DomTree,
+  sheets: readonly StyleSheet[],
+  node: NodeId,
+  pseudo: string,
+  viewport: Viewport = DEFAULT_VIEWPORT,
+  origins?: readonly CascadeOrigin[],
+  layerOrder?: readonly (readonly string[])[],
+  interaction?: InteractionState,
+): ComputedStyle {
+  let index = indexCache.get(sheets);
+  if (index === undefined) {
+    index = buildRuleIndex(sheets, origins, layerOrder);
+    indexCache.set(sheets, index);
+  }
+  const parentStyle = cascadeWithIndex(dom, index, node, viewport, layerOrder, new Map(), interaction);
+  const winners = new Map<string, Candidate>();
+  const lower = pseudo.toLowerCase();
+  let seq = 0;
+  for (let s = 0; s < sheets.length; s += 1) {
+    const sheet = sheets[s];
+    if (sheet === undefined) continue;
+    const origin = origins?.[s] ?? "author";
+    for (const rule of sheet.rules) {
+      let matched = false;
+      for (const sel of rule.selector) {
+        const t = sel.text.replace(/\s+$/, "");
+        const m = /(::?)([a-zA-Z][\w-]*)$/.exec(t);
+        if (m === null || (m[2] as string).toLowerCase() !== lower) continue;
+        const elemText = t.slice(0, m.index).trimEnd() || "*";
+        const probe = { ...rule, selector: [{ text: elemText }] } as unknown as StyleRule;
+        if (ruleMatches(probe, dom, node, interaction)) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
+      for (const decl of expandDeclarations(rule.declarations)) {
+        const candidate: Candidate = {
+          value: decl.value,
+          important: decl.important,
+          origin,
+          layer: rule.layer,
+          // A pseudo-element contributes one "type" slot to specificity
+          // (Selectors 4 §17) — relative order among pseudo rules is preserved.
+          specificity: [rule.specificity[0], rule.specificity[1], rule.specificity[2] + 1],
+          seq: seq++,
+        };
+        const current = winners.get(decl.property);
+        if (current === undefined || beats(candidate, current, layerOrder ?? [])) {
+          winners.set(decl.property, candidate);
+        }
+      }
+    }
+  }
+  const style = finishCompute(winners, parentStyle, viewport);
+  // CSS Display 3 §2.7 blockification: a pseudo-element box inside a flex/grid
+  // container (or one that is floated / absolutely positioned) has its
+  // inline-level display blockified. `contents`/`none` survive untouched.
+  const rec = style as unknown as Record<string, unknown>;
+  const display = rec["display"];
+  const position = rec["position"];
+  const float = rec["float"];
+  const parentDisplay = (parentStyle as unknown as Record<string, unknown>)["display"];
+  const needsBlockify =
+    parentDisplay === "flex" || parentDisplay === "inline-flex" ||
+    parentDisplay === "grid" || parentDisplay === "inline-grid" ||
+    position === "absolute" || position === "fixed" ||
+    float === "left" || float === "right";
+  const BLOCKIFY: Readonly<Record<string, string>> = {
+    "inline": "block",
+    "inline-block": "block",
+    "inline-flex": "flex",
+    "inline-grid": "grid",
+    "inline-table": "table",
+    "table-row-group": "table",
+    "table-header-group": "table",
+    "table-footer-group": "table",
+    "table-row": "table",
+    "table-cell": "table",
+    "table-caption": "table",
+    "table-column-group": "table",
+    "table-column": "table",
+    "list-item": "block",
+  };
+  if (!needsBlockify || typeof display !== "string") return style;
+  const next = BLOCKIFY[display];
+  if (next === undefined) return style;
+  return deepFreeze({ ...rec, display: next }) as unknown as ComputedStyle;
+}
+
 
 /**
  * Substitute `var()` references in a property value string. Returns `null` if
@@ -595,11 +741,30 @@ function resolveParentStyle(
   layerOrder?: readonly (readonly string[])[],
   cache?: Map<NodeId, ComputedStyle>,
   interaction?: InteractionState,
+  shadow?: ShadowCascadeContext,
 ): ComputedStyle {
   if (domNode === undefined || domNode.parent === null) {
     return INITIAL_STYLE;
   }
-  return cascadeWithIndex(dom, index, domNode.parent, viewport, layerOrder, cache, interaction);
+  // Flat-tree inheritance (CSS Scoping §3.4): a shadow child's inheriting
+  // parent is the shadow HOST, not the shadow-root node.
+  let parent = domNode.parent;
+  const parentNode = dom.nodes.get(parent);
+  // Document boundary: children of an iframe's nested document root inherit
+  // from NOTHING (they're a new document's tree, not the iframe element's).
+  if (parentNode?.kind === "element" && parentNode.tag === "#iframe-document") {
+    return INITIAL_STYLE;
+  }
+  if (parentNode?.kind === "element" && parentNode.tag === "#shadow-root") {
+    const host = shadow?.hostOf(parent) ?? null;
+    if (host === null) return INITIAL_STYLE;
+    // The host lives in the OUTER scope — its rules aren't in this index —
+    // so its computed style must come through the query layer, not a
+    // same-index recursion.
+    if (shadow?.computedOf !== undefined) return shadow.computedOf(host);
+    parent = host;
+  }
+  return cascadeWithIndex(dom, index, parent, viewport, layerOrder, cache, interaction, shadow);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,8 +775,8 @@ function resolveParentStyle(
 interface Candidate {
   readonly value: string;
   readonly important: boolean;
-  /** The cascade origin of this declaration (ua/user/author/inline). */
-  readonly origin: CascadeOrigin | "inline";
+  /** The cascade origin of this declaration (ua/user/author/inline/shadow). */
+  readonly origin: CascadeOrigin | "inline" | "shadow";
   /** The cascade layer path this declaration belongs to (`undefined` = unlayered). */
   readonly layer?: readonly string[] | undefined;
   readonly specificity: Specificity;
@@ -771,6 +936,7 @@ function selectWinners(
   domNode: DomNode | undefined,
   layerOrder?: readonly (readonly string[])[],
   interaction?: InteractionState,
+  hostRules: readonly { rule: StyleRule; id: string }[] = [],
 ): ReadonlyMap<string, Candidate> {
   const winners = new Map<string, Candidate>();
   if (domNode === undefined || domNode.kind !== "element") {
@@ -815,7 +981,79 @@ function selectWinners(
     }
   }
 
+  // `:host` rules from the node's OWN shadow scope (CSS Scoping §4): the host
+  // element is in the DOCUMENT scope but its shadow tree's `:host` rules still
+  // target it — always at the lowest precedence (outer tree wins).
+  for (const hm of hostRules) {
+    for (const decl of expandDeclarations(hm.rule.declarations)) {
+      const candidate: Candidate = {
+        value: decl.value,
+        important: decl.important,
+        origin: "shadow",
+        layer: hm.rule.layer,
+        specificity: hm.rule.specificity,
+        seq: seq++,
+      };
+      const current = winners.get(decl.property);
+      if (current === undefined || beats(candidate, current, layerOrder ?? [])) {
+        winners.set(decl.property, candidate);
+      }
+    }
+  }
+
   return winners;
+}
+
+/**
+ * The `:host`-subject rules of a node's own shadow scope that match it. Returns
+ * the shadow root id plus the matched rules tagged with a stable position id —
+ * the id list feeds the style-sharing key so two hosts under different shadow
+ * trees (or matching different `:host(...)` conditions) never share a style.
+ */
+export function collectHostRules(
+  dom: DomTree,
+  node: NodeId,
+  shadow: ShadowCascadeContext,
+  interaction?: InteractionState,
+): { rootId: NodeId | null; matches: readonly { rule: StyleRule; id: string }[] } {
+  const rootId = shadow.hostRootOf(node);
+  if (rootId === null) return { rootId: null, matches: [] };
+  const matches: { rule: StyleRule; id: string }[] = [];
+  const sheets = shadow.sheetsOf(rootId);
+  for (let si = 0; si < sheets.length; si++) {
+    const rules = sheets[si]!.rules;
+    for (let ri = 0; ri < rules.length; ri++) {
+      const rule = rules[ri]!;
+      for (const sel of rule.selector) {
+        const t = sel.text.trim();
+        const m = /:host(?:\(([^()]*)\))?\s*$/.exec(t);
+        if (m === null) continue;
+        const before = t.slice(0, m.index);
+        // `:host` must be in the SUBJECT compound — a combinator before it
+        // means the selector targets a deeper element, not the host.
+        if (/[\s>+~]/.test(before) || before.endsWith(",")) continue;
+        const arg = (m[1] ?? "").trim();
+        const constraint = `${before}${arg}` !== "" ? `${before}${arg}` : "*";
+        const probe = {
+          selector: [{ text: constraint }],
+          declarations: [],
+          specificity: rule.specificity,
+          order: 0,
+        } as unknown as StyleRule;
+        if (ruleMatches(probe, dom, node, interaction)) {
+          // The declaration text is part of the identity: `replaceSync` swaps
+          // rule contents in place, so position alone would alias old/new
+          // declarations in the style-sharing cache.
+          const fp = rule.declarations
+            .map((d) => `${d.property}:${d.value}${d.important ? "!" : ""}`)
+            .join(";");
+          matches.push({ rule, id: `${si}.${ri}(${fp})` });
+          break;
+        }
+      }
+    }
+  }
+  return { rootId, matches };
 }
 
 /**
@@ -835,9 +1073,13 @@ function selectWinners(
  * author important, unlike normal where author beats UA. Inline always wins
  * within its importance class.
  */
-function cascadeRank(origin: CascadeOrigin | "inline", important: boolean): number {
+function cascadeRank(origin: CascadeOrigin | "inline" | "shadow", important: boolean): number {
+  // "shadow" = `:host` rules applied from an element's OWN shadow scope: they
+  // rank below every outer-tree declaration (CSS Scoping §4.1 — the document
+  // always wins over the shadow tree when styling the host).
   if (important) {
     switch (origin) {
+      case "shadow": return -1;
       case "author": return 4;
       case "user": return 5;
       case "ua": return 6;
@@ -845,6 +1087,7 @@ function cascadeRank(origin: CascadeOrigin | "inline", important: boolean): numb
     }
   }
   switch (origin) {
+    case "shadow": return -1;
     case "ua": return 0;
     case "user": return 1;
     case "author": return 2;

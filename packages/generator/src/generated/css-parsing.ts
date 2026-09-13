@@ -5,7 +5,7 @@
  *
  * Regenerate with `npm run generate --workspace @browser-engine/generator`.
  */
-import { ok, parseColor, parseCursor, parseDisplay, parseEdgesLength, parseInteger, parseIntegerOrKeyword, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTimes, parseTransform } from "../value-runtime.js";
+import { ok, parseColor, parseColorOrKeyword, parseCursor, parseDisplay, parseEdgesLength, parseInteger, parseIntegerOrKeyword, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTimes, parseTransform } from "../value-runtime.js";
 import type { ParseResult } from "../value-runtime.js";
 import { expandShorthand } from "../shorthand-expansion.js";
 import { notImplemented } from "@browser-engine/ir";
@@ -45,7 +45,7 @@ export function parseBackgroundColorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `font-size` value. */
 export function parseFontSizeValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large", "smaller", "larger"]);
 }
 
 /** Parse a `position` value. */
@@ -100,7 +100,7 @@ export function parseTransformValue(value: string): ParseResult<unknown> {
 
 /** Parse a `z-index` value. */
 export function parseZIndexValue(value: string): ParseResult<unknown> {
-  return parseInteger(value, {});
+  return parseIntegerOrKeyword(value, ["auto"], {});
 }
 
 /** Parse a `padding` value. */
@@ -230,7 +230,7 @@ export function parseFontFamilyValue(value: string): ParseResult<unknown> {
 
 /** Parse a `font-weight` value. */
 export function parseFontWeightValue(value: string): ParseResult<unknown> {
-  return parseInteger(value, { min: 1, max: 1000 });
+  return parseIntegerOrKeyword(value, ["normal", "bold", "bolder", "lighter"], { min: 1, max: 1000 });
 }
 
 /** Parse a `font-style` value. */
@@ -265,7 +265,7 @@ export function parseWhiteSpaceValue(value: string): ParseResult<unknown> {
 
 /** Parse a `letter-spacing` value. */
 export function parseLetterSpacingValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["normal"]);
 }
 
 /** Parse a `flex-wrap` value. */
@@ -325,27 +325,27 @@ export function parseGapValue(value: string): ParseResult<unknown> {
 
 /** Parse a `border-top-width` value. */
 export function parseBorderTopWidthValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["thin", "medium", "thick"]);
 }
 
 /** Parse a `border-right-width` value. */
 export function parseBorderRightWidthValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["thin", "medium", "thick"]);
 }
 
 /** Parse a `border-bottom-width` value. */
 export function parseBorderBottomWidthValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["thin", "medium", "thick"]);
 }
 
 /** Parse a `border-left-width` value. */
 export function parseBorderLeftWidthValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["thin", "medium", "thick"]);
 }
 
 /** Parse a `outline-width` value. */
 export function parseOutlineWidthValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["thin", "medium", "thick"]);
 }
 
 /** Parse a `outline-style` value. */
@@ -355,7 +355,7 @@ export function parseOutlineStyleValue(value: string): ParseResult<unknown> {
 
 /** Parse a `outline-color` value. */
 export function parseOutlineColorValue(value: string): ParseResult<unknown> {
-  return parseColor(value);
+  return parseColorOrKeyword(value, ["invert"]);
 }
 
 /** Parse a `outline-offset` value. */
@@ -365,7 +365,7 @@ export function parseOutlineOffsetValue(value: string): ParseResult<unknown> {
 
 /** Parse a `list-style-type` value. */
 export function parseListStyleTypeValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["disc", "circle", "square", "decimal", "decimal-leading-zero", "lower-roman", "upper-roman", "lower-alpha", "upper-alpha", "none"]);
+  return parseKeyword(value, ["disc", "circle", "square", "decimal", "decimal-leading-zero", "lower-roman", "upper-roman", "lower-greek", "lower-alpha", "lower-latin", "upper-alpha", "upper-latin", "armenian", "georgian", "lower-armenian", "upper-armenian", "cjk-decimal", "cjk-earthly-branch", "cjk-heavenly-stem", "cjk-ideographic", "ethiopic-numeric", "hebrew", "hiragana", "hiragana-iroha", "japanese-formal", "japanese-informal", "katakana", "katakana-iroha", "korean-hangul-formal", "korean-hanja-formal", "korean-hanja-informal", "simp-chinese-formal", "simp-chinese-informal", "trad-chinese-formal", "trad-chinese-informal", "disclosure-open", "disclosure-closed", "none"]);
 }
 
 /** Parse a `list-style-position` value. */
@@ -385,7 +385,7 @@ export function parseTextIndentValue(value: string): ParseResult<unknown> {
 
 /** Parse a `word-spacing` value. */
 export function parseWordSpacingValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["normal"]);
 }
 
 /** Parse a `word-break` value. */
@@ -1285,6 +1285,21 @@ export function parseTextAnchorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `dominant-baseline` value. */
 export function parseDominantBaselineValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `alignment-baseline` value. */
+export function parseAlignmentBaselineValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `baseline-shift` value. */
+export function parseBaselineShiftValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `baseline-source` value. */
+export function parseBaselineSourceValue(value: string): ParseResult<unknown> {
   return parseString(value);
 }
 
@@ -2505,6 +2520,9 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "lighting-color": parseLightingColorValue,
   "text-anchor": parseTextAnchorValue,
   "dominant-baseline": parseDominantBaselineValue,
+  "alignment-baseline": parseAlignmentBaselineValue,
+  "baseline-shift": parseBaselineShiftValue,
+  "baseline-source": parseBaselineSourceValue,
   "color-interpolation": parseColorInterpolationValue,
   "shape-rendering": parseShapeRenderingValue,
   "vector-effect": parseVectorEffectValue,
@@ -2700,6 +2718,114 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
 };
 
 /**
+ * Properties whose grammar is `<length>`-based: a bare `0` parses as a px
+ * length and serializes as `0px` (CSSOM specified-value serialization).
+ */
+export const LENGTH_BARE_ZERO_PX: ReadonlySet<string> = new Set([
+  "width",
+  "height",
+  "font-size",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "min-width",
+  "min-height",
+  "max-width",
+  "max-height",
+  "border-radius",
+  "letter-spacing",
+  "flex-basis",
+  "gap",
+  "border-top-width",
+  "border-right-width",
+  "border-bottom-width",
+  "border-left-width",
+  "outline-width",
+  "outline-offset",
+  "text-indent",
+  "word-spacing",
+  "border-spacing",
+  "column-gap",
+  "row-gap",
+  "border-top-left-radius",
+  "border-top-right-radius",
+  "border-bottom-right-radius",
+  "border-bottom-left-radius",
+  "perspective",
+  "text-decoration-thickness",
+  "text-underline-offset",
+  "margin-block-start",
+  "margin-block-end",
+  "margin-inline-start",
+  "margin-inline-end",
+  "padding-block-start",
+  "padding-block-end",
+  "padding-inline-start",
+  "padding-inline-end",
+  "inset-block-start",
+  "inset-block-end",
+  "inset-inline-start",
+  "inset-inline-end",
+  "block-size",
+  "inline-size",
+  "min-block-size",
+  "min-inline-size",
+  "max-block-size",
+  "max-inline-size",
+  "border-block-start-width",
+  "border-block-end-width",
+  "border-inline-start-width",
+  "border-inline-end-width",
+  "border-start-start-radius",
+  "border-start-end-radius",
+  "border-end-start-radius",
+  "border-end-end-radius",
+  "column-width",
+  "column-rule-width",
+  "stroke-width",
+  "stroke-dashoffset",
+  "scroll-padding-top",
+  "scroll-padding-right",
+  "scroll-padding-bottom",
+  "scroll-padding-left",
+  "scroll-margin-top",
+  "scroll-margin-right",
+  "scroll-margin-bottom",
+  "scroll-margin-left",
+  "offset-distance",
+  "shape-margin",
+  "background-position-x",
+  "background-position-y",
+  "column-height",
+  "cx",
+  "cy",
+  "mask-size",
+  "overflow-clip-margin",
+  "overflow-clip-margin-block",
+  "overflow-clip-margin-bottom",
+  "overflow-clip-margin-inline",
+  "overflow-clip-margin-left",
+  "overflow-clip-margin-right",
+  "overflow-clip-margin-top",
+  "r",
+  "rx",
+  "ry",
+  "scroll-margin",
+  "scroll-margin-inline",
+  "scroll-padding",
+  "scroll-padding-inline",
+]);
+
+/**
  * Parse the value of `property`. A known property returns a {@link ParseResult}
  * (`ok` value or `reason`); an unknown property is an unimplemented capability
  * and throws `NotImplemented` (Requirement 5.1).
@@ -2708,7 +2834,7 @@ export function parsePropertyValue(
   property: string,
   value: string,
 ): ParseResult<unknown> {
-  const parser = PROPERTY_PARSERS[property];
+  const parser = Object.hasOwn(PROPERTY_PARSERS, property) ? PROPERTY_PARSERS[property] : undefined;
   if (parser === undefined) {
     return notImplemented(`css-property:${property}`, {
       category: "css-property",
@@ -2730,7 +2856,7 @@ export function parsePropertyValue(
   const expanded = expandShorthand(property, value);
   if (expanded !== null) {
     const allOk = expanded.every((d) => {
-      const p = PROPERTY_PARSERS[d.property];
+      const p = Object.hasOwn(PROPERTY_PARSERS, d.property) ? PROPERTY_PARSERS[d.property] : undefined;
       if (p === undefined) return false;
       const r = p(d.value);
       return r.ok;
