@@ -68,6 +68,8 @@ export {
   WheelEvent,
   CompositionEvent,
   MessageEvent,
+  AnimationEvent,
+  TransitionEvent,
   EventTarget,
   type EventInit,
   type MouseEventInit,

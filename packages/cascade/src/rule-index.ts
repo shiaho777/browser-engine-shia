@@ -935,6 +935,16 @@ function parseComplexSelectorCached(text: string): ComplexSelector | null {
   return parsed;
 }
 
+/**
+ * Public validity probe for `CSS.supports("selector(…)")` and friends: does
+ * the text parse as a complex selector our matcher can run? A comma list is
+ * NOT a valid `selector()` argument (CSS Conditional takes a single complex
+ * selector), so the whole text must parse as one complex selector.
+ */
+export function selectorParses(text: string): boolean {
+  return parseComplexSelector(text) !== null;
+}
+
 function parseComplexSelector(text: string): ComplexSelector | null {
   const items = tokenizeComplex(text);
   if (items === null) {

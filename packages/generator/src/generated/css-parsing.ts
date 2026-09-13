@@ -5,8 +5,9 @@
  *
  * Regenerate with `npm run generate --workspace @browser-engine/generator`.
  */
-import { parseColor, parseEdgesLength, parseInteger, parseIntegerOrKeyword, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTransform } from "../value-runtime.js";
+import { ok, parseColor, parseCursor, parseDisplay, parseEdgesLength, parseInteger, parseIntegerOrKeyword, parseKeyword, parseLength, parseLengthOrKeyword, parseNumber, parseString, parseTimes, parseTransform } from "../value-runtime.js";
 import type { ParseResult } from "../value-runtime.js";
+import { expandShorthand } from "../shorthand-expansion.js";
 import { notImplemented } from "@browser-engine/ir";
 
 /** A parser from a raw declaration value string to a typed parse result. */
@@ -19,7 +20,7 @@ export function parseColorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `display` value. */
 export function parseDisplayValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "table-row", "table-row-group", "table-cell", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex"]);
+  return parseDisplay(value);
 }
 
 /** Parse a `width` value. */
@@ -109,22 +110,22 @@ export function parsePaddingValue(value: string): ParseResult<unknown> {
 
 /** Parse a `margin-top` value. */
 export function parseMarginTopValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-right` value. */
 export function parseMarginRightValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-bottom` value. */
 export function parseMarginBottomValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-left` value. */
 export function parseMarginLeftValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `padding-top` value. */
@@ -219,7 +220,7 @@ export function parseOverflowValue(value: string): ParseResult<unknown> {
 
 /** Parse a `cursor` value. */
 export function parseCursorValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["auto", "default", "pointer", "text", "move", "not-allowed", "grab", "grabbing", "wait", "help", "crosshair"]);
+  return parseCursor(value);
 }
 
 /** Parse a `font-family` value. */
@@ -639,12 +640,12 @@ export function parseTransitionPropertyValue(value: string): ParseResult<unknown
 
 /** Parse a `transition-duration` value. */
 export function parseTransitionDurationValue(value: string): ParseResult<unknown> {
-  return parseNumber(value, { min: 0 });
+  return parseTimes(value, { min: 0 });
 }
 
 /** Parse a `transition-delay` value. */
 export function parseTransitionDelayValue(value: string): ParseResult<unknown> {
-  return parseNumber(value, {});
+  return parseTimes(value, {});
 }
 
 /** Parse a `transition-timing-function` value. */
@@ -659,12 +660,12 @@ export function parseAnimationNameValue(value: string): ParseResult<unknown> {
 
 /** Parse a `animation-duration` value. */
 export function parseAnimationDurationValue(value: string): ParseResult<unknown> {
-  return parseNumber(value, { min: 0 });
+  return parseTimes(value, { min: 0 });
 }
 
 /** Parse a `animation-delay` value. */
 export function parseAnimationDelayValue(value: string): ParseResult<unknown> {
-  return parseNumber(value, {});
+  return parseTimes(value, {});
 }
 
 /** Parse a `animation-timing-function` value. */
@@ -2714,5 +2715,27 @@ export function parsePropertyValue(
       detail: "no parser is generated for this property (not in the data table)",
     });
   }
-  return parser(value);
+  const wide = value.trim().toLowerCase();
+  if (
+    wide === "initial" || wide === "inherit" || wide === "unset"
+    || wide === "revert" || wide === "revert-layer"
+  ) {
+    return ok(wide);
+  }
+  const first = parser(value);
+  if (first.ok) return first;
+  // A shorthand's grammar may be narrower than the union of its longhands'
+  // (e.g. margin:auto — the edges grammar is lengths-only). The spec-correct
+  // check is expansion: the shorthand is valid iff every expanded longhand is.
+  const expanded = expandShorthand(property, value);
+  if (expanded !== null) {
+    const allOk = expanded.every((d) => {
+      const p = PROPERTY_PARSERS[d.property];
+      if (p === undefined) return false;
+      const r = p(d.value);
+      return r.ok;
+    });
+    if (allOk) return ok(value);
+  }
+  return first;
 }

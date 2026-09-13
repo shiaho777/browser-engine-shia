@@ -38,9 +38,14 @@ import {
   makeGeneratedContentResolver,
   type GeneratedContentResolver,
 } from "./generated-content.js";
+import { makeCssNamespace } from "./css-namespace.js";
+import { TYPED_OM_GLOBALS } from "./typed-om.js";
+import { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches } from "@browser-engine/css-parser";
+import type { NodeId } from "@browser-engine/ir";
 import {
   AbortController,
   AbortSignal,
+  AnimationEvent,
   CompositionEvent,
   CustomEvent,
   DOMException,
@@ -57,6 +62,7 @@ import {
   StorageEvent,
   StorageImpl,
   StorageManagerImpl,
+  TransitionEvent,
   UIEvent,
   WheelEvent,
   createStorageProxy,
@@ -95,13 +101,19 @@ export interface WptSuiteOptions {
 export type ResourceResolver = (src: string) => string | undefined;
 const encodeResource = (s: string): Uint8Array => new TextEncoder().encode(s);
 
+// Host objects already reparented into some guest realm — re-reparented on
+// every run so each file's fresh realm sees its own intrinsics.
+const reparentedToRealm = new WeakSet<object>();
+
 /** Resource paths that OUR harness supplies, so a real include of them is a no-op. */
 function isHarnessResource(src: string): boolean {
   // Only skip what we actually provide (our testharness + the testharnessreport
-  // + testdriver + idlharness shims). `/common/` utility scripts are NOT ours —
-  // they must load from the checkout (e.g. subset-tests-by-key.js defines the
-  // `subsetTestByKey` the URL tests call).
-  return /testharness(report)?\.js|testdriver|idlharness/.test(src);
+  // + testdriver shims). `/common/` utility scripts are NOT ours — they must
+  // load from the checkout (e.g. subset-tests-by-key.js defines the
+  // `subsetTestByKey` the URL tests call). idlharness.js and WebIDLParser.js
+  // also load from the checkout — our `fetch` resolves their `/interfaces/*.idl`
+  // requests against the same checkout.
+  return /testharness(report)?\.js|testdriver/.test(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +159,8 @@ function buildAsyncHarness(): AsyncHarness {
   /** Promises returned by cleanup functions — awaited before the file's
    *  final settle and (for promise_test) before the next test starts. */
   const cleanupPromises: Promise<unknown>[] = [];
+  /** testharness `add_cleanup` — file-scope cleanups run at settle. */
+  const fileCleanups: Array<() => unknown> = [];
   const makeTools = (finish: (status: WptSubtest["status"], message: string | null) => void): TestTools => {
     // Cleanup functions run once, when the test settles (real testharness
     // semantics — without them, tests that mutate the document pollute every
@@ -297,6 +311,66 @@ function buildAsyncHarness(): AsyncHarness {
     );
   };
 
+  /**
+   * testharness.js `EventWatcher`: promise-based DOM event ordering checks.
+   * `wait_for(types)` resolves when the expected sequence has fired; a stray
+   * or out-of-order event fails the test via step_func.
+   */
+  class EventWatcher {
+    readonly #handler: (evt: { type: string }) => void;
+    #waiting: { types: string[]; resolve: (v: unknown) => void } | null = null;
+    #recorded: unknown[] | null = null;
+
+    constructor(
+      testTools: TestTools,
+      watchedNode: { addEventListener(t: string, f: unknown, c?: boolean): void; removeEventListener(t: string, f: unknown): void },
+      eventTypes: string | readonly string[],
+      timeoutPromise?: () => Promise<unknown>,
+    ) {
+      const types = typeof eventTypes === "string" ? [eventTypes] : [...eventTypes];
+      const tools = testTools;
+      this.#handler = tools.step_func((evt: { type: string }) => {
+        if (this.#waiting === null) {
+          throw new WptAssertionError(`Not expecting event, but got ${evt.type} event`);
+        }
+        if (evt.type !== this.#waiting.types[0]) {
+          throw new WptAssertionError(
+            `Expected ${this.#waiting.types[0]} event, but got ${evt.type} event instead`,
+          );
+        }
+        if (this.#recorded !== null) this.#recorded.push(evt);
+        if (this.#waiting.types.length > 1) {
+          this.#waiting.types.shift();
+          return;
+        }
+        const resolve = this.#waiting.resolve;
+        this.#waiting = null;
+        const result = this.#recorded ?? evt;
+        this.#recorded = null;
+        resolve(result);
+      });
+      for (const t of types) watchedNode.addEventListener(t, this.#handler, false);
+      const node = watchedNode;
+      const handler = this.#handler;
+      const stop = (): void => {
+        for (const t of types) node.removeEventListener(t, handler);
+      };
+      this.stop_watching = stop;
+      tools.add_cleanup?.(stop);
+      void timeoutPromise;
+    }
+
+    stop_watching: () => void = () => {};
+
+    wait_for(types: string | readonly string[], options?: { record?: string }): Promise<unknown> {
+      const list = typeof types === "string" ? [types] : [...types];
+      if (options?.record === "all") this.#recorded = [];
+      return new Promise((resolve) => {
+        this.#waiting = { types: list, resolve };
+      });
+    }
+  }
+
   const globals: Record<string, unknown> = {
     ...createAssertions(),
     test,
@@ -305,6 +379,12 @@ function buildAsyncHarness(): AsyncHarness {
     setup: () => undefined,
     done: () => undefined,
     add_completion_callback: () => undefined,
+    EventWatcher,
+    // File-level cleanup (testharness `add_cleanup`) — runs once when the
+    // file's tests all settle.
+    add_cleanup: (f: unknown) => {
+      if (typeof f === "function") fileCleanups.push(f as () => unknown);
+    },
     step_timeout: (f: unknown, ms: unknown) =>
       typeof f === "function" ? setTimeout(f as () => void, Number(ms) || 0) : 0,
     setTimeout: (f: unknown, ms: unknown) =>
@@ -316,11 +396,24 @@ function buildAsyncHarness(): AsyncHarness {
   };
 
   const settle = async (timeoutMs: number): Promise<void> => {
-    if (pending.length === 0) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)));
-    await Promise.race([Promise.allSettled(pending), timeout]);
-    if (timer !== undefined) clearTimeout(timer);
+    if (pending.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)));
+      await Promise.race([Promise.allSettled(pending), timeout]);
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    // testharness add_cleanup — file-scope cleanups run after every test.
+    const list = fileCleanups.splice(0);
+    for (const cleanup of list) {
+      try {
+        const r = cleanup();
+        if (r !== null && typeof r === "object" && typeof (r as { then?: unknown }).then === "function") {
+          await (r as Promise<unknown>);
+        }
+      } catch {
+        // File cleanups must not mask results.
+      }
+    }
   };
 
   return { globals, subtests, settle };
@@ -417,6 +510,113 @@ export async function runWptHtml(
   sandbox["self"] = sandbox;
   sandbox["globalThis"] = sandbox;
   sandbox["window"] = sandbox;
+  // The CSS namespace: supports()/escape() run the engine's real supports
+  // evaluator and serializer — no stubbed false. Unit factories and
+  // registerProperty come from the Typed OM module (per-document registry).
+  // WebIDL: interface objects and namespaces on the global are {writable,
+  // configurable, NON-enumerable} — plain assignment would make them
+  // enumerable and fail idlharness' global-property checks.
+  const installGlobal = (name: string, value: unknown): void => {
+    Object.defineProperty(sandbox, name, {
+      value, writable: true, enumerable: false, configurable: true,
+    });
+  };
+  installGlobal("CSS", makeCssNamespace());
+  for (const [name, ctor] of Object.entries(TYPED_OM_GLOBALS)) {
+    installGlobal(name, ctor);
+  }
+  // matchMedia → MediaQueryList over the harness media environment.
+  sandbox["matchMedia"] = (query: unknown) => {
+    const media = String(query);
+    const mql: Record<string, unknown> = {
+      media,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    };
+    Object.defineProperty(mql, "matches", {
+      get: () => mediaQueryListMatches(media, DEFAULT_MEDIA_ENVIRONMENT),
+      enumerable: true,
+    });
+    return mql;
+  };
+  // ---- Window named access (HTML §7.2.4) --------------------------------
+  // `window.foo` resolves elements whose `id` is `foo` (any element) or whose
+  // `name` is `foo` on the nameable tags. The value is a LIVE lookup — a
+  // getter per registered name — and names register eagerly at parse plus on
+  // every later id/name mutation or subtree insertion (the session's
+  // mutation seam, the same one MutationObserver rides).
+  const NAMEABLE_TAGS = new Set([
+    "a", "applet", "area", "embed", "form", "frame", "frameset", "iframe", "img", "object",
+  ]);
+  interface NamedElement {
+    getAttribute(name: string): string | null;
+    readonly localName: string;
+    readonly children: ArrayLike<NamedElement>;
+  }
+  const namedElements = (name: string): NamedElement[] => {
+    const out: NamedElement[] = [];
+    const walk = (el: NamedElement): void => {
+      if (el.getAttribute("id") === name || (NAMEABLE_TAGS.has(el.localName) && el.getAttribute("name") === name)) {
+        out.push(el);
+      }
+      const kids = el.children;
+      for (let i = 0; i < kids.length; i += 1) walk(kids[i] as NamedElement);
+    };
+    const root = (document as { documentElement?: NamedElement }).documentElement;
+    if (root !== undefined && root !== null) walk(root);
+    return out;
+  };
+  const namedWindowValue = (name: string): unknown => {
+    const els = namedElements(name);
+    if (els.length === 0) return undefined;
+    if (els.length === 1) return els[0];
+    // Multiple matches → a collection (HTMLCollection shape).
+    const col: Record<string | number, unknown> = { length: els.length, item: (i: number) => els[i] ?? null };
+    for (let i = 0; i < els.length; i += 1) col[i] = els[i];
+    return col;
+  };
+  const registerNamed = (name: string): void => {
+    if (name === "") return;
+    // Real globals (own or inherited) always win over named access.
+    if (name in sandbox || Object.getOwnPropertyDescriptor(sandbox, name) !== undefined) return;
+    Object.defineProperty(sandbox, name, {
+      configurable: true,
+      enumerable: true,
+      get: () => namedWindowValue(name),
+      // Assignment shadows: define an own data property (WebIDL window [[Set]]).
+      set: (v: unknown) => {
+        Object.defineProperty(sandbox, name, { value: v, writable: true, enumerable: true, configurable: true });
+      },
+    });
+  };
+  const registerNamedFromNode = (nodeId: NodeId): void => {
+    const node = session.dom.nodes.get(nodeId);
+    if (node?.kind !== "element") return;
+    const idAttr = node.attrs?.get("id");
+    if (idAttr !== undefined && idAttr !== "") registerNamed(idAttr);
+    if (node.tag !== undefined && NAMEABLE_TAGS.has(node.tag)) {
+      const nameAttr = node.attrs?.get("name");
+      if (nameAttr !== undefined && nameAttr !== "") registerNamed(nameAttr);
+    }
+  };
+  // Initial scan of the parsed document.
+  for (const node of session.dom.nodes.values()) registerNamedFromNode(node.id);
+  // Later: attribute writes (id/name) and subtree insertions.
+  session.addMutationListener((m) => {
+    if (m.kind === "attributes" && (m.attributeName === "id" || m.attributeName === "name")) {
+      registerNamedFromNode(m.target);
+    } else if (m.kind === "childList" && m.added !== undefined) {
+      const scan = (id: NodeId): void => {
+        registerNamedFromNode(id);
+        for (const kid of session.dom.nodes.get(id)?.children ?? []) scan(kid);
+      };
+      for (const id of m.added) scan(id);
+    }
+  });
   // Real event-platform constructors: tests build targets and synthetic events
   // directly (`new EventTarget()`, `new Event("x")`), and abortable listener
   // options need the abort surface (DOM §3.2). The sandbox itself is the
@@ -425,6 +625,9 @@ export async function runWptHtml(
   sandbox["EventTarget"] = EventTarget;
   sandbox["Event"] = Event;
   sandbox["CustomEvent"] = CustomEvent;
+  // `Window` marks the global's interface for idlharness' exposed_in() check —
+  // `'Window' in self` is how it detects a Window global.
+  sandbox["Window"] = class Window {};
   sandbox["UIEvent"] = UIEvent;
   sandbox["MouseEvent"] = MouseEvent;
   sandbox["KeyboardEvent"] = KeyboardEvent;
@@ -446,12 +649,48 @@ export async function runWptHtml(
   sandbox["WritableStreamDefaultController"] = WritableStreamDefaultController;
   sandbox["TransformStreamDefaultController"] = TransformStreamDefaultController;
   sandbox["DOMException"] = DOMException;
+  // idlharness/testharness catch `instanceof AssertionError` — our asserts
+  // throw WptAssertionError, so the name must resolve inside the guest.
+  sandbox["AssertionError"] = WptAssertionError;
   // WHATWG URL: the engine reuses the platform parser (Node's URL is a
   // spec-compliant WHATWG URL implementation); WPT url/* tests exercise it.
   sandbox["URL"] = URL;
   sandbox["URLSearchParams"] = URLSearchParams;
   sandbox["WheelEvent"] = WheelEvent;
   sandbox["CompositionEvent"] = CompositionEvent;
+  sandbox["AnimationEvent"] = AnimationEvent;
+  sandbox["TransitionEvent"] = TransitionEvent;
+  // Frame clock: requestAnimationFrame schedules on the macrotask queue —
+  // the runner's model of "before the next repaint" (16ms frame).
+  sandbox["requestAnimationFrame"] = (cb: unknown) =>
+    setTimeout(() => {
+      if (typeof cb === "function") (cb as (t: number) => void)(performance.now());
+    }, 16);
+  sandbox["cancelAnimationFrame"] = (id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>);
+  // Window-level scroll storage (elements carry their own scrollTop/Left).
+  let windowScrollX = 0;
+  let windowScrollY = 0;
+  const windowScrollTo = (xOrOptions?: unknown, y?: unknown): void => {
+    const opts = typeof xOrOptions === "object" && xOrOptions !== null
+      ? xOrOptions as { left?: unknown; top?: unknown }
+      : { left: xOrOptions, top: y };
+    if (opts.left !== undefined) windowScrollX = Math.max(0, Number(opts.left) || 0);
+    if (opts.top !== undefined) windowScrollY = Math.max(0, Number(opts.top) || 0);
+  };
+  sandbox["scrollTo"] = windowScrollTo;
+  sandbox["scroll"] = windowScrollTo;
+  sandbox["scrollBy"] = (xOrOptions?: unknown, y?: unknown): void => {
+    const opts = typeof xOrOptions === "object" && xOrOptions !== null
+      ? xOrOptions as { left?: unknown; top?: unknown }
+      : { left: xOrOptions, top: y };
+    windowScrollTo(windowScrollX + (Number(opts.left) || 0), windowScrollY + (Number(opts.top) || 0));
+  };
+  Object.defineProperties(sandbox, {
+    scrollX: { get: () => windowScrollX, enumerable: true, configurable: true },
+    pageXOffset: { get: () => windowScrollX, enumerable: true, configurable: true },
+    scrollY: { get: () => windowScrollY, enumerable: true, configurable: true },
+    pageYOffset: { get: () => windowScrollY, enumerable: true, configurable: true },
+  });
   sandbox["performance"] = { now: () => performance.now(), timeOrigin: 0 };
   const windowTarget = new EventTarget();
   sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
@@ -677,6 +916,74 @@ export async function runWptHtml(
   // locks/messaging promises must be guest-realm Promises for WPT identity
   // assertions like `Promise.resolve(p) === p`.
   RealmPromise = vm.runInContext("Promise", sandbox) as PromiseConstructor;
+  // WebIDL realm checks (idlharness asserts e.g.
+  // `Object.getPrototypeOf(interfaceObject) === Function.prototype` inside the
+  // guest). Host-defined globals carry host intrinsics — reparent root
+  // prototypes onto the realm's own Function.prototype/Object.prototype.
+  // Subclass links (ctor.__proto__ = parent ctor, proto.__proto__ = parent
+  // proto) are left untouched since they already match the IDL chain.
+  {
+    const intrinsics = vm.runInContext(
+      "({ fn: Function.prototype, obj: Object.prototype })",
+      sandbox,
+    ) as { fn: object; obj: object };
+    // Globals are host objects shared across test files, and each file gets a
+    // fresh realm — objects reparented for an earlier file must be reparented
+    // again to the *current* realm's intrinsics (the proto check alone would
+    // skip them and assert against a stale realm).
+    for (const key of Object.getOwnPropertyNames(sandbox)) {
+      const v = sandbox[key] as unknown;
+      try {
+        if (typeof v === "function") {
+          if (Object.getPrototypeOf(v) === Function.prototype || reparentedToRealm.has(v)) {
+            Object.setPrototypeOf(v, intrinsics.fn);
+            reparentedToRealm.add(v);
+          }
+          const p = (v as { prototype?: unknown }).prototype;
+          if (
+            p !== null && typeof p === "object" &&
+            (Object.getPrototypeOf(p) === Object.prototype || reparentedToRealm.has(p))
+          ) {
+            Object.setPrototypeOf(p, intrinsics.obj);
+            reparentedToRealm.add(p);
+          }
+        } else if (
+          v !== null &&
+          typeof v === "object" &&
+          (Object.getPrototypeOf(v) === Object.prototype || reparentedToRealm.has(v))
+        ) {
+          Object.setPrototypeOf(v, intrinsics.obj);
+          reparentedToRealm.add(v);
+        }
+      } catch {
+        // Proxies or invariants may refuse reparenting — leave as is.
+      }
+    }
+    // WebIDL indexed iterables: entries/keys/values/forEach/@@iterator on the
+    // prototype are literally the realm's own Array.prototype functions.
+    const arrProto = vm.runInContext("Array.prototype", sandbox) as Record<
+      PropertyKey,
+      unknown
+    >;
+    for (const name of ["CSSUnparsedValue", "CSSTransformValue", "CSSNumericArray"]) {
+      const proto = (sandbox[name] as { prototype?: object } | undefined)?.prototype;
+      if (proto === undefined) continue;
+      for (const m of ["entries", "keys", "values", "forEach"]) {
+        Object.defineProperty(proto, m, {
+          value: arrProto[m],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      Object.defineProperty(proto, Symbol.iterator, {
+        value: arrProto[Symbol.iterator],
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  }
   guestContext = sandbox;
   try {
     for (const script of extractScripts(html)) {

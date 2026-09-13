@@ -3,6 +3,7 @@ import { webcrypto } from "node:crypto";
 
 import type { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { makeCssNamespace } from "./css-namespace.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
 import { makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
 import type { GuestBrowserFetch } from "./event-loop.js";
@@ -354,10 +355,7 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
       querySelectorAll: () => [],
     });
   };
-  sandbox["CSS"] = {
-    supports: () => false,
-    escape: (s: unknown) => String(s),
-  };
+  sandbox["CSS"] = makeCssNamespace();
   if (sandbox["TextEncoder"] === undefined) sandbox["TextEncoder"] = TextEncoder;
   if (sandbox["TextDecoder"] === undefined) sandbox["TextDecoder"] = TextDecoder;
   if (sandbox["URL"] === undefined) sandbox["URL"] = URL;

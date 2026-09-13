@@ -492,6 +492,16 @@ export class FineSession {
     this.#mutationListener = listener;
   }
 
+  /** Add a second consumer to the mutation seam without replacing the
+   *  existing one (used by window named-access registration). */
+  addMutationListener(listener: (mutation: FineMutation) => void): void {
+    const previous = this.#mutationListener;
+    this.#mutationListener = (m) => {
+      listener(m);
+      previous?.(m);
+    };
+  }
+
   /**
    * D4 — set the document's INTERACTION STATE (`:hover` / `:active` /
    * `:focus`). Setting a NEW state object re-seeds the kernel input, which

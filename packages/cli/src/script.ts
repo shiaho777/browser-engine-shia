@@ -23,10 +23,10 @@ import vm from "node:vm";
 import { URL as HostURL } from "node:url";
 
 import type { DomNode, DomTree, NodeId, StyleRule } from "@browser-engine/ir";
-import { CSS_PROPERTIES, parsePropertyValue } from "@browser-engine/generator";
+import { CSS_PROPERTIES, parsePropertyValue, expandShorthand } from "@browser-engine/generator";
 import type { CssPropertyDef } from "@browser-engine/generator";
 import { getBoundingClientRect as boundingRect } from "@browser-engine/layout";
-import { ruleMatches, parseEasing, sampleEasing, interpolateValue } from "@browser-engine/cascade";
+import { ruleMatches, parseEasing, sampleEasing, interpolateValue, customPropertiesOf } from "@browser-engine/cascade";
 import type { Easing } from "@browser-engine/cascade";
 import {
   coerceGuestString,
@@ -37,6 +37,12 @@ import {
 
 import { parseHtml } from "@browser-engine/html-parser";
 import { FineSession } from "./fine.js";
+import {
+  isDeclarationValueValid,
+  makeStylePropertyMap,
+  makeStylePropertyMapReadOnly,
+  type StyleMapBacking,
+} from "./typed-om.js";
 import {
   MutationObserverController,
   type ObserverOptions,
@@ -193,25 +199,101 @@ function sampleTrack(track: PropTrack, f: number): unknown {
 /** Serialize a ComputedStyle value to its CSSOM string form (by declared tsType). */
 function serializeComputed(tsType: string, value: unknown): string {
   if (value === undefined || value === null) return "";
+  // Keyword-valued colors (currentcolor, system colors) compute to the keyword.
+  if (tsType === "Color" && typeof value === "string") return value;
   if (tsType === "Color" && typeof value === "object") {
     const c = value as { r: number; g: number; b: number; a: number };
     return c.a >= 1 ? `rgb(${c.r}, ${c.g}, ${c.b})` : `rgba(${c.r}, ${c.g}, ${c.b}, ${c.a})`;
   }
   if (tsType === "Px" && typeof value === "number") return `${value}px`;
+  // Unresolved specified lengths (percentages, units resolveOne can't ground)
+  // surface as `{kind:"specified-length"}` — serialize back to unit text so
+  // computed styles keep `50%` instead of dropping to "".
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === "specified-length" &&
+    typeof (value as { value?: unknown }).value === "number"
+  ) {
+    const sl = value as { value: number; unit: string };
+    return `${sl.value}${sl.unit}`;
+  }
   if (tsType === "Edges<Px>" && typeof value === "object") {
-    const e = value as { top: number; right: number; bottom: number; left: number };
-    return `${e.top}px ${e.right}px ${e.bottom}px ${e.left}px`;
+    const e = value as { top: unknown; right: unknown; bottom: unknown; left: unknown };
+    const edge = (v: unknown): string =>
+      typeof v === "number"
+        ? `${v}px`
+        : typeof v === "object" && v !== null && (v as { kind?: unknown }).kind === "specified-length"
+          ? `${(v as { value: number }).value}${(v as { unit: string }).unit}`
+          : typeof v === "string"
+            ? v
+            : "0px";
+    return `${edge(e.top)} ${edge(e.right)} ${edge(e.bottom)} ${edge(e.left)}`;
   }
   if (tsType === "LengthOrAuto" || tsType === "LengthSizing") {
     return typeof value === "number" ? `${value}px` : typeof value === "string" ? value : "";
   }
+  // `line-height` (the only `string | number` field): numbers are resolved px
+  // lengths; unitless multipliers are stored as numeric strings.
+  if (tsType === "string | number") {
+    return typeof value === "number" ? `${value}px` : typeof value === "string" ? value : "";
+  }
+  // `<time>#` lists (transition-*, animation-*) store seconds[].
+  if (tsType === "readonly number[]" && Array.isArray(value)) {
+    return value.map((n) => `${n}s`).join(", ");
+  }
   if (tsType === "TransformValue") {
-    return Array.isArray(value) ? `matrix(${value.join(", ")})` : typeof value === "string" ? value : "";
+    if (Array.isArray(value)) return `matrix(${value.join(", ")})`;
+    if (typeof value === "string") return value;
+    if (typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "unresolved") {
+      return (value as { text: string }).text;
+    }
+    return "";
   }
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
 }
+
+/**
+ * Shorthand serialization from computed longhands (CSSOM resolved value). The
+ * shorthand stub fields only hold `none` — real serializations compose the
+ * longhand set.
+ */
+function collapseEdges(t: string, r: string, b: string, l: string): string {
+  if (t === r && r === b && b === l) return t;
+  if (r === l) return t === b ? `${t} ${r}` : `${t} ${r} ${b}`;
+  return `${t} ${r} ${b} ${l}`;
+}
+
+/**
+ * Resolve relative length units inside a computed `transform` serialization —
+ * computed transform values carry absolute lengths (em→px against the
+ * element's font size, viewport units against the harness 800×600 viewport).
+ * Percentages stay unresolved (they need the reference box at used-value time).
+ */
+function resolveTransformUnits(text: string, fontPx: number): string {
+  const factors: Record<string, number> = {
+    em: fontPx, rem: fontPx, ex: fontPx * 0.5, ch: fontPx * 0.5,
+    cap: fontPx * 0.7, ic: fontPx, lh: fontPx * 1.2, rlh: fontPx * 1.2,
+    vw: 8, vh: 6, vmin: 6, vmax: 8,
+  };
+  return text.replace(
+    /(-?\d*\.?\d+(?:[eE][+-]?\d+)?)(em|rem|vw|vh|vmin|vmax|ex|ch|cap|ic|lh|rlh)\b/g,
+    (_m, n: string, u: string) => `${Number(n) * factors[u]!}px`,
+  );
+}
+
+const SHORTHAND_COMPUTED: Record<string, (get: (longhand: string) => string) => string> = {
+  background: (get) =>
+    `${get("background-color")} ${get("background-image")} ${get("background-repeat")} ` +
+    `${get("background-attachment")} ${get("background-position")} / ${get("background-size")} ` +
+    `${get("background-origin")} ${get("background-clip")}`,
+  margin: (get) =>
+    collapseEdges(get("margin-top"), get("margin-right"), get("margin-bottom"), get("margin-left")),
+  padding: (get) =>
+    collapseEdges(get("padding-top"), get("padding-right"), get("padding-bottom"), get("padding-left")),
+};
 
 /** The result of running a script: how many DOM mutations it performed. */
 export interface ScriptResult {
@@ -435,6 +517,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     startTime: number | null;
     finished: boolean;
     cancelled: boolean;
+    paused?: boolean;
+    /** The guest-facing Animation handle `animate()` returned. */
+    handle?: object;
     /** Inline values for the animated properties at start (to revert non-filling). */
     readonly prior: Map<string, string | undefined>;
   }
@@ -1507,6 +1592,51 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         }
         return shouldHave;
       },
+      // Namespaced attributes (SVG/xlink): the attribute table stores the
+      // qualified name verbatim ("xlink:title"), so NS reads resolve by
+      // matching the localName suffix of a qualified name.
+      setAttributeNS(_ns: unknown, qualifiedName: unknown, value: unknown): void {
+        session.setAttribute(nodeId, String(qualifiedName), String(value));
+        mutations += 1;
+      },
+      getAttributeNS(_ns: unknown, localName: unknown): string | null {
+        const attrs = session.dom.nodes.get(nodeId)?.attrs;
+        if (attrs === undefined) return null;
+        const local = String(localName);
+        const direct = attrs.get(local);
+        if (direct !== undefined) return direct;
+        for (const [key, val] of attrs) {
+          if (key.endsWith(`:${local}`)) return val;
+        }
+        return null;
+      },
+      hasAttributeNS(_ns: unknown, localName: unknown): boolean {
+        const attrs = session.dom.nodes.get(nodeId)?.attrs;
+        if (attrs === undefined) return false;
+        const local = String(localName);
+        if (attrs.has(local)) return true;
+        for (const key of attrs.keys()) {
+          if (key.endsWith(`:${local}`)) return true;
+        }
+        return false;
+      },
+      removeAttributeNS(_ns: unknown, localName: unknown): void {
+        const attrs = session.dom.nodes.get(nodeId)?.attrs;
+        if (attrs === undefined) return;
+        const local = String(localName);
+        if (attrs.has(local)) {
+          session.removeAttribute(nodeId, local);
+          mutations += 1;
+          return;
+        }
+        for (const key of attrs.keys()) {
+          if (key.endsWith(`:${local}`)) {
+            session.removeAttribute(nodeId, key);
+            mutations += 1;
+            return;
+          }
+        }
+      },
       get tagName(): string {
         return (session.dom.nodes.get(nodeId)?.tag ?? "").toUpperCase();
       },
@@ -1658,6 +1788,20 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       get style(): object {
         return makeStyleDeclarationCached(nodeId);
+      },
+      // Typed OM: `attributeStyleMap` is the mutable StylePropertyMap view of
+      // the same inline declaration `style` exposes — both read through to the
+      // style attribute, so they stay in sync automatically.
+      get attributeStyleMap(): object {
+        return attributeStyleMapForNode(nodeId);
+      },
+      computedStyleMap(): object {
+        return computedStyleMapForNode(nodeId);
+      },
+      set style(value: unknown) {
+        // `el.style = "…"` assigns the style attribute's cssText wholesale.
+        session.setAttribute(nodeId, "style", coerceGuestString(value));
+        mutations += 1;
       },
       get textContent(): string {
         return textContentOf(session.dom, nodeId);
@@ -2055,13 +2199,42 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return Math.round(rectFromTree(resolveLayoutTree(), nodeId).height);
       },
       get scrollTop(): number {
-        return 0;
+        return scrollOffsets.get(nodeId)?.top ?? 0;
       },
-      set scrollTop(_v: unknown) {},
+      set scrollTop(v: unknown) {
+        const o = scrollOffsets.get(nodeId) ?? { left: 0, top: 0 };
+        o.top = Math.max(0, Number(v) || 0);
+        scrollOffsets.set(nodeId, o);
+      },
       get scrollLeft(): number {
-        return 0;
+        return scrollOffsets.get(nodeId)?.left ?? 0;
       },
-      set scrollLeft(_v: unknown) {},
+      set scrollLeft(v: unknown) {
+        const o = scrollOffsets.get(nodeId) ?? { left: 0, top: 0 };
+        o.left = Math.max(0, Number(v) || 0);
+        scrollOffsets.set(nodeId, o);
+      },
+      scrollTo(xOrOptions?: unknown, y?: unknown): void {
+        const opts = typeof xOrOptions === "object" && xOrOptions !== null
+          ? xOrOptions as { left?: unknown; top?: unknown }
+          : { left: xOrOptions, top: y };
+        const o = scrollOffsets.get(nodeId) ?? { left: 0, top: 0 };
+        if (opts.top !== undefined) o.top = Math.max(0, Number(opts.top) || 0);
+        if (opts.left !== undefined) o.left = Math.max(0, Number(opts.left) || 0);
+        scrollOffsets.set(nodeId, o);
+      },
+      scroll(xOrOptions?: unknown, y?: unknown): void {
+        const me = this as { scrollTo: (a?: unknown, b?: unknown) => void };
+        me.scrollTo(xOrOptions, y);
+      },
+      scrollBy(xOrOptions?: unknown, y?: unknown): void {
+        const cur = scrollOffsets.get(nodeId) ?? { left: 0, top: 0 };
+        const opts = typeof xOrOptions === "object" && xOrOptions !== null
+          ? xOrOptions as { left?: unknown; top?: unknown }
+          : { left: xOrOptions, top: y };
+        const me = this as { scrollTo: (a?: unknown, b?: unknown) => void };
+        me.scrollTo(cur.left + (Number(opts.left) || 0), cur.top + (Number(opts.top) || 0));
+      },
       getContext(type: unknown, _opts?: unknown): object | null {
         const tag = session.dom.nodes.get(nodeId)?.tag ?? "";
         if (tag !== "canvas") return null;
@@ -2140,17 +2313,61 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           prior: new Map(effect.tracks.map((t) => [t.cssName, parseInline(nodeId).get(t.cssName)])),
         };
         animations.push(anim);
-        return {
+        const handle = {
           cancel(): void {
             anim.cancelled = true;
           },
           finish(): void {
             anim.finished = true;
           },
+          play(): void {
+            anim.startTime ??= 0;
+          },
+          pause(): void {
+            anim.paused = true;
+          },
+          get currentTime(): number {
+            return anim.startTime ?? 0;
+          },
+          get playbackRate(): number {
+            return 1;
+          },
           get playState(): string {
             return anim.cancelled ? "idle" : anim.finished ? "finished" : anim.startTime === null ? "pending" : "running";
           },
+          get effect(): AnimationEffect {
+            return anim.effect;
+          },
         };
+        anim.handle = handle;
+        return handle;
+      },
+      /** `getAnimations()` — this element's live animation handles (Web
+       *  Animations §Animatable). */
+      getAnimations(): object[] {
+        return animations
+          .filter((a) => a.nodeId === nodeId && !a.cancelled && !a.finished)
+          .map((a) => a.handle as object);
+      },
+      /** `focus()` — make this element the document's active element and
+       *  dispatch focus/focusin (UI Events §focus). */
+      focus(): void {
+        if (focusedNodeId === nodeId) return;
+        const prev = focusedNodeId;
+        focusedNodeId = nodeId;
+        if (prev !== null) {
+          dispatch(prev, makeEvent("blur"));
+          dispatch(prev, makeEvent("focusout"));
+        }
+        dispatch(nodeId, makeEvent("focus"));
+        dispatch(nodeId, makeEvent("focusin"));
+      },
+      /** `blur()` — move focus back to nothing (→ body per activeElement). */
+      blur(): void {
+        if (focusedNodeId !== nodeId) return;
+        focusedNodeId = null;
+        dispatch(nodeId, makeEvent("blur"));
+        dispatch(nodeId, makeEvent("focusout"));
       },
     };
     idOf.set(wrapper, nodeId);
@@ -2170,6 +2387,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     setProperty(prop: unknown, value?: unknown, priority?: unknown): void;
     removeProperty(prop: unknown): string;
     cssText: string;
+    _rawDeclValue(prop: unknown): string | undefined;
   }
 
   const makeStyleDeclarationCached = (nodeId: NodeId): object => {
@@ -2180,10 +2398,15 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return created;
   };
 
-  const makeStyleDeclaration = (nodeId: NodeId): object => {
+  /**
+   * A CSSStyleDeclaration over a get/set text pair — the same declaration-block
+   * machinery serves an element's inline `style` attribute and a style rule's
+   * `{ … }` body (CSSStyleRule.style / .styleMap).
+   */
+  const makeDeclarationBacked = (getText: () => string, setText: (text: string) => void): object => {
     const parse = (): Map<string, StyleDeclarationEntry> => {
       const map = new Map<string, StyleDeclarationEntry>();
-      for (const decl of (session.dom.nodes.get(nodeId)?.attrs?.get("style") ?? "").split(";")) {
+      for (const decl of getText().split(";")) {
         const idx = decl.indexOf(":");
         if (idx <= 0) continue;
         const name = decl.slice(0, idx).trim();
@@ -2194,17 +2417,34 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           priority = "important";
           value = value.slice(0, important.index).trim();
         }
-        if (name !== "" && value !== "") map.set(name, { value, priority });
+        if (name === "" || value === "") continue;
+        // Invalid declarations drop out (CSS error recovery): a later invalid
+        // declaration leaves the earlier valid one standing, so SKIP rather
+        // than clear. Custom properties and var()-bearing values accept any
+        // token stream.
+        if (
+          !name.startsWith("--") &&
+          !/\b(?:var|env)\(/.test(value) &&
+          !expandShorthand(name, value) &&
+          !isDeclarationValueValid(name, value)
+        ) {
+          continue;
+        }
+        map.set(name, { value, priority });
       }
       return map;
     };
+    // Values containing var()/env() references are stored verbatim for the
+    // Typed OM views (whitespace is significant inside CSSUnparsedValue);
+    // the CSSOM getters still return the normalized form.
+    const rawOverrides = new Map<string, string>();
     const serialize = (map: Map<string, StyleDeclarationEntry>): string =>
+      // CSSOM serializes each declaration with a trailing semicolon.
       [...map]
-        .map(([k, decl]) => `${k}: ${decl.value}${decl.priority === "important" ? " !important" : ""}`)
-        .join("; ");
+        .map(([k, decl]) => `${k}: ${decl.value}${decl.priority === "important" ? " !important" : ""};`)
+        .join(" ");
     const commit = (map: Map<string, StyleDeclarationEntry>): void => {
-      session.setAttribute(nodeId, "style", serialize(map));
-      mutations += 1;
+      setText(serialize(map));
     };
     const declaredAliases = (map: Map<string, StyleDeclarationEntry>): string[] => {
       const keys: string[] = [];
@@ -2232,7 +2472,20 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return [...parse().keys()][n] ?? "";
       },
       getPropertyValue(prop: unknown): string {
-        return parse().get(String(prop))?.value ?? "";
+        const map = parse();
+        const name = String(prop);
+        const direct = map.get(name)?.value;
+        if (direct !== undefined) return direct;
+        // Longhands read through a declared shorthand (`margin` covers
+        // `margin-top`) — the shorthand's expansion decides the value.
+        for (const [entryName, entry] of map) {
+          if (entryName === name) continue;
+          const expanded = expandShorthand(entryName, entry.value);
+          if (expanded === null) continue;
+          const hit = expanded.find((d) => d.property === name);
+          if (hit !== undefined) return hit.value;
+        }
+        return "";
       },
       getPropertyPriority(prop: unknown): string {
         return parse().get(String(prop))?.priority ?? "";
@@ -2248,22 +2501,65 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         }
         const priorityText = priority === undefined ? "" : cssomString(priority);
         if (priorityText !== "" && priorityText.toLowerCase() !== "important") return;
+        // CSSOM setProperty ignores invalid values — the previous valid
+        // declaration must stand (it is not replaced by the bad text).
+        if (
+          !name.startsWith("--") &&
+          !/\b(?:var|env)\(/.test(text) &&
+          !expandShorthand(name, text) &&
+          !isDeclarationValueValid(name, text)
+        ) {
+          return;
+        }
         map.set(name, { value: text, priority: priorityText === "" ? "" : "important" });
+        if (/\b(?:var|env)\(/.test(text)) rawOverrides.set(name, text);
+        else rawOverrides.delete(name);
         commit(map);
       },
       removeProperty(prop: unknown): string {
         const map = parse();
-        const oldValue = map.get(String(prop))?.value ?? "";
-        map.delete(String(prop));
+        const name = String(prop);
+        const oldValue = map.get(name)?.value
+          ?? (() => {
+            // A longhand may be declared through a covering shorthand — the
+            // removal result reads through the expansion.
+            for (const [entryName, entry] of map) {
+              const expanded = expandShorthand(entryName, entry.value);
+              const hit = expanded?.find((d) => d.property === name);
+              if (hit !== undefined) return hit.value;
+            }
+            return "";
+          })();
+        map.delete(name);
+        rawOverrides.delete(name);
+        // Removing a longhand removes the shorthand declared over it and
+        // rewrites the remaining edges as their own longhand declarations.
+        for (const [entryName, entry] of map) {
+          const expanded = expandShorthand(entryName, entry.value);
+          if (expanded === null) continue;
+          if (expanded.some((d) => d.property === name)) {
+            map.delete(entryName);
+            rawOverrides.delete(entryName);
+            for (const d of expanded) {
+              if (d.property !== name && !map.has(d.property)) {
+                map.set(d.property, { value: d.value, priority: entry.priority });
+              }
+            }
+          }
+        }
         commit(map);
         return oldValue;
       },
+      /** Typed OM seam: the verbatim (untrimmed) value stored by set(). */
+      _rawDeclValue(prop: unknown): string | undefined {
+        return rawOverrides.get(String(prop));
+      },
       get cssText(): string {
-        return session.dom.nodes.get(nodeId)?.attrs?.get("style") ?? "";
+        return getText();
       },
       set cssText(value: unknown) {
-        session.setAttribute(nodeId, "style", String(value));
-        mutations += 1;
+        rawOverrides.clear();
+        setText(String(value));
       },
     };
     const ownKeys = (target: StyleDeclarationObject): Array<string | symbol> => {
@@ -2322,6 +2618,94 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     });
   };
 
+  const makeStyleDeclaration = (nodeId: NodeId): object =>
+    makeDeclarationBacked(
+      () => session.dom.nodes.get(nodeId)?.attrs?.get("style") ?? "",
+      (text) => {
+        session.setAttribute(nodeId, "style", text);
+        mutations += 1;
+      },
+    );
+
+  /** Typed OM backing over a CSSStyleDeclaration — shared by the inline
+   * `attributeStyleMap` and the declared `CSSStyleRule.styleMap`. */
+  const styleMapBackingForDecl = (decl: StyleDeclarationObject): StyleMapBacking => ({
+    entries: () => {
+      const out: Array<[string, string]> = [];
+      for (let i = 0; i < decl.length; i += 1) {
+        const name = decl.item(i);
+        if (name !== "") out.push([name, decl.getPropertyValue(name)]);
+      }
+      return out;
+    },
+    get: (prop) => {
+      const v = decl.getPropertyValue(prop);
+      if (v === "") return null;
+      return decl._rawDeclValue(prop) ?? v;
+    },
+    set: (prop, text) => {
+      decl.setProperty(prop, text);
+    },
+    remove: (prop) => decl.removeProperty(prop),
+  });
+
+  /** Typed OM `attributeStyleMap` — [SameObject]: the map is cached on the
+   * (already per-node cached) declaration object. */
+  const attributeStyleMapForNode = (id: NodeId): object => {
+    const decl = makeStyleDeclarationCached(id) as StyleDeclarationObject & {
+      _typedMap?: object;
+    };
+    if (decl._typedMap === undefined) {
+      decl._typedMap = makeStylePropertyMap(styleMapBackingForDecl(decl));
+    }
+    return decl._typedMap;
+  };
+
+  /** Typed OM `computedStyleMap()` — [SameObject] per element. */
+  const computedStyleMapCache = new Map<NodeId, object>();
+  const computedStyleMapForNode = (id: NodeId): object => {
+    const cached = computedStyleMapCache.get(id);
+    if (cached !== undefined) return cached;
+    const gcs = getComputedStyle(makeElementCached(id)) as {
+      length: number;
+      item(i: number): string;
+      getPropertyValue(name: string, resolved?: boolean): string;
+    };
+    const backing: StyleMapBacking = {
+      entries: () => {
+        const out: Array<[string, string]> = [];
+        for (let i = 0; i < gcs.length; i += 1) {
+          const name = gcs.item(i);
+          const v = gcs.getPropertyValue(name, false);
+          if (name !== "" && v !== "") out.push([name, v]);
+        }
+        // Computed StylePropertyMap order: standard properties sorted
+        // code-unit-ascending with non-dashed names first, then custom
+        // properties in code-unit order (WPT iterable.tentative).
+        const cmp = (a: string, b: string): number =>
+          a.startsWith("-") === b.startsWith("-") ? (a < b ? -1 : a > b ? 1 : 0)
+            : a.startsWith("-") ? 1 : -1;
+        const standard = out.filter(([n]) => !n.startsWith("--")).sort((x, y) => cmp(x[0], y[0]));
+        const customs = out.filter(([n]) => n.startsWith("--")).sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+        return [...standard, ...customs];
+      },
+      get: (prop) => {
+        const v = gcs.getPropertyValue(prop, false);
+        return v === "" ? null : v;
+      },
+      set: () => {
+        throw new Error("computedStyleMap is read-only");
+      },
+      remove: () => {
+        throw new Error("computedStyleMap is read-only");
+      },
+      computed: true,
+    };
+    const map = makeStylePropertyMapReadOnly(backing);
+    computedStyleMapCache.set(id, map);
+    return map;
+  };
+
   /**
    * CSSStyleSheet for a style/link element (CSSOM §6): ownerNode + a live
    * cssRules list initialized from the element's style text, insertRule/
@@ -2333,6 +2717,16 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
    * speed/nonce paths.
    */
   const styleSheetCache = new Map<NodeId, object>();
+  /** Split `selector { body }` into its parts (undefined for @-rules). */
+  const splitRule = (cssText: string): { selector: string; body: string } | undefined => {
+    const open = cssText.indexOf("{");
+    const close = cssText.lastIndexOf("}");
+    if (open < 0 || close < open) return undefined;
+    const prelude = cssText.slice(0, open).trim();
+    if (prelude.startsWith("@")) return undefined;
+    return { selector: prelude, body: cssText.slice(open + 1, close) };
+  };
+
   const makeStyleSheetObject = (nodeId: NodeId): object => {
     const cached = styleSheetCache.get(nodeId);
     if (cached !== undefined) return cached;
@@ -2371,7 +2765,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (text !== "") session.appendChild(nodeId, session.createTextNode(text));
       mutations += 1;
     };
-    type StyleRuleEntry = { cssText: string };
+    interface StyleRuleEntry {
+      cssText: string;
+      ruleObject?: object;
+    }
     let rules: StyleRuleEntry[] = [];
     let rulesFromText = "";
     const ensureRulesParsed = (): void => {
@@ -2406,13 +2803,79 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       rewriteStyleText(rules.map((r) => r.cssText).join("\n"));
       rulesFromText = rules.map((r) => r.cssText).join("\n");
     };
+    const makeRuleObject = (entry: StyleRuleEntry): object => {
+      if (entry.ruleObject !== undefined) return entry.ruleObject;
+      const parts = splitRule(entry.cssText);
+      if (parts === undefined) {
+        const rule: Record<string, unknown> = { _entry: entry, _type: 0 };
+        Object.setPrototypeOf(rule, CSSRuleCtor.prototype as object);
+        entry.ruleObject = rule;
+        return rule;
+      }
+      // The declaration block is a live view: edits via style/styleMap rewrite
+      // the rule's cssText, which rewrites the element's text — the stylesheet
+      // pipeline re-parses and the cascade picks it up on the next render.
+      const decl = makeDeclarationBacked(
+        () => splitRule(entry.cssText)?.body ?? "",
+        (text) => {
+          const cur = splitRule(entry.cssText);
+          entry.cssText = `${cur?.selector ?? parts.selector} { ${text} }`;
+          rebuildText();
+        },
+      ) as StyleDeclarationObject;
+      // WebIDL attributes live on CSSStyleRule.prototype — the instance only
+      // carries internal slots (_entry/_decl/_sheet/_type).
+      const rule: Record<string, unknown> = {
+        _entry: entry,
+        _decl: decl,
+        _sheet: sheet,
+        _type: 1,
+      };
+      Object.setPrototypeOf(rule, CSSStyleRuleCtor.prototype as object);
+      entry.ruleObject = rule;
+      return rule;
+    };
     const sheet: Record<string, unknown> = {
       get ownerNode(): object {
         return makeElementCached(nodeId);
       },
-      get cssRules(): object[] {
-        ensureRulesParsed();
-        return rules.map((r) => ({ cssText: r.cssText }));
+      // CSSOM: cssRules is a LIVE CSSRuleList — `sheet.cssRules[sheet.insertRule(x)]`
+      // evaluates the list BEFORE insertRule runs, so indexing must read lazily.
+      get cssRules(): object {
+        const list = new Proxy([] as object[], {
+          get(_target, prop): unknown {
+            ensureRulesParsed();
+            if (prop === "length") return rules.length;
+            if (typeof prop === "string" && /^\d+$/.test(prop)) {
+              const i = Number(prop);
+              return i < rules.length ? makeRuleObject(rules[i]!) : undefined;
+            }
+            if (prop === Symbol.iterator) {
+              return function* (): IterableIterator<object> {
+                for (let i = 0; i < rules.length; i += 1) yield makeRuleObject(rules[i]!);
+              };
+            }
+            // Array.prototype methods read length+indices through the proxy.
+            const v = Reflect.get(Array.prototype, prop);
+            return typeof v === "function" ? v : v;
+          },
+          has(_target, prop): boolean {
+            ensureRulesParsed();
+            return (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length)
+              || Reflect.has(Array.prototype, prop);
+          },
+          getOwnPropertyDescriptor(_target, prop): PropertyDescriptor | undefined {
+            ensureRulesParsed();
+            if (typeof prop === "string" && /^\d+$/.test(prop) && Number(prop) < rules.length) {
+              return { value: makeRuleObject(rules[Number(prop)]!), writable: false, enumerable: true, configurable: true };
+            }
+            if (prop === "length") {
+              return { value: rules.length, writable: true, enumerable: false, configurable: false };
+            }
+            return undefined;
+          },
+        });
+        return list;
       },
       get rules(): object[] {
         return sheet["cssRules"] as object[];
@@ -3066,6 +3529,117 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     throw new Error("Illegal constructor");
   }
   Object.setPrototypeOf(SVGElementCtor.prototype as object, ElementCtor.prototype as object);
+  function MathMLElementCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  Object.setPrototypeOf(MathMLElementCtor.prototype as object, ElementCtor.prototype as object);
+
+  // CSSOM rule interfaces — members live on the prototypes per WebIDL.
+  function CSSRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSGroupingRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  function CSSStyleRuleCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  Object.setPrototypeOf(CSSGroupingRuleCtor, CSSRuleCtor);
+  Object.setPrototypeOf(CSSGroupingRuleCtor.prototype as object, CSSRuleCtor.prototype as object);
+  Object.setPrototypeOf(CSSStyleRuleCtor, CSSGroupingRuleCtor);
+  Object.setPrototypeOf(CSSStyleRuleCtor.prototype as object, CSSGroupingRuleCtor.prototype as object);
+  // WebIDL: attribute getters brand-check `this` (reading the attribute on
+  // the prototype object itself throws TypeError) and carry the name
+  // `get <attr>`.
+  const ruleAccessor = (
+    attr: string,
+    slot: string,
+    get: (o: Record<string, unknown>, v: unknown) => unknown,
+  ): PropertyDescriptor => {
+    const getter = function (this: Record<string, unknown>): unknown {
+      const v = this[slot];
+      if (v === undefined) throw new TypeError("Illegal invocation");
+      return get(this, v);
+    };
+    Object.defineProperty(getter, "name", { value: `get ${attr}` });
+    return { get: getter as () => unknown, enumerable: true, configurable: true };
+  };
+  Object.defineProperties(CSSRuleCtor.prototype as object, {
+    type: ruleAccessor("type", "_type", (_o, v) => v),
+    cssText: ruleAccessor(
+      "cssText",
+      "_entry",
+      (_o, v) => (v as { cssText: string }).cssText,
+    ),
+    parentRule: ruleAccessor("parentRule", "_entry", () => null),
+    parentStyleSheet: ruleAccessor("parentStyleSheet", "_sheet", (_o, v) => v),
+  });
+  Object.defineProperties(CSSGroupingRuleCtor.prototype as object, {
+    cssRules: ruleAccessor("cssRules", "_entry", () => []),
+    insertRule: {
+      value: function insertRule(cssText: unknown, index?: unknown): number {
+        void cssText;
+        void index;
+        throw new Error("insertRule is not supported on this rule");
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    deleteRule: {
+      value: function deleteRule(index: unknown): void {
+        void index;
+        throw new Error("deleteRule is not supported on this rule");
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(CSSStyleRuleCtor.prototype as object, {
+    selectorText: ruleAccessor(
+      "selectorText",
+      "_entry",
+      (_o, v) => splitRule((v as { cssText: string }).cssText)?.selector ?? "",
+    ),
+    style: ruleAccessor("style", "_decl", (_o, v) => v),
+    // Typed OM: [SameObject] StylePropertyMap — cached on the rule.
+    styleMap: ruleAccessor("styleMap", "_decl", (o, v) => {
+      const self = o as { _styleMap?: object };
+      if (self._styleMap === undefined) {
+        self._styleMap = makeStylePropertyMap(styleMapBackingForDecl(v as StyleDeclarationObject));
+      }
+      return self._styleMap;
+    }),
+  });
+
+  // Typed OM partials: Element.computedStyleMap(), and the
+  // ElementCSSInlineStyle mixin's attributeStyleMap on the host interfaces.
+  const elementId = (o: unknown): NodeId => {
+    const id = idFromWrapper(o);
+    if (id === undefined) throw new TypeError("Illegal invocation");
+    return id;
+  };
+  Object.defineProperty(ElementCtor.prototype as object, "computedStyleMap", {
+    value: function computedStyleMap(this: unknown): object {
+      return computedStyleMapForNode(elementId(this));
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const attributeStyleMapGet = function attributeStyleMap(this: unknown): object {
+    return attributeStyleMapForNode(elementId(this));
+  };
+  Object.defineProperty(attributeStyleMapGet, "name", { value: "get attributeStyleMap" });
+  for (const ctor of [HTMLElementCtor, SVGElementCtor, MathMLElementCtor]) {
+    Object.defineProperty(ctor.prototype as object, "attributeStyleMap", {
+      get: attributeStyleMapGet,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
   function DocumentCtor(): never {
     throw new Error("Illegal constructor");
   }
@@ -3077,7 +3651,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 
   /** `window.getComputedStyle(el)` — a read-only CSSOM declaration over the
    * node's resolved {@link ComputedStyle} (the cascade product). */
-  const computedPropertyNames = CSS_PROPERTIES.map((p) => p.name);
+  // `getComputedStyle` enumerates only properties that can produce a computed
+  // value — `all`/`font` are shorthand stubs (initial `""`, no computed field)
+  // and must not appear in the enumeration (matching real CSSOM behavior,
+  // and keeping `[...getComputedStyle(el)]` consistent with computedStyleMap).
+  const computedPropertyNames = CSS_PROPERTIES.filter((p) => p.initial !== "").map((p) => p.name);
   let gcsMutEpoch = -1;
   const gcsProxyCache = new Map<NodeId, object>();
   const gcsValueCache = new Map<NodeId, Record<string, unknown>>();
@@ -3163,6 +3741,9 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           setProperty: (): void => {},
           removeProperty: (): string => "",
           cssText: "",
+          *[Symbol.iterator](): IterableIterator<string> {
+            for (const n of computedPropertyNames) yield n;
+          },
         };
         fastGcsShared = new Proxy(decl, {
           get(target, prop, receiver): unknown {
@@ -3202,14 +3783,32 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (hit !== undefined) return hit;
     }
 
+    const customNames = (): string[] => {
+      const raw = ensureRaw();
+      return raw === null ? [] : [...(customPropertiesOf(raw)?.keys() ?? [])];
+    };
     const item = (index: unknown): string => {
       const n = Number(index);
       if (!Number.isInteger(n) || n < 0) return "";
-      return computedPropertyNames[n] ?? "";
+      if (n < computedPropertyNames.length) return computedPropertyNames[n] ?? "";
+      return customNames()[n - computedPropertyNames.length] ?? "";
+    };
+
+    // A previously-returned proxy must see fresh values after DOM mutations —
+    // the epoch check lives in the read path, not only at getComputedStyle
+    // call time (a computedStyleMap captured earlier reads through it too).
+    const syncEpoch = (): void => {
+      if (gcsMutEpoch !== mutations) {
+        gcsMutEpoch = mutations;
+        gcsProxyCache.clear();
+        gcsValueCache.clear();
+        gcsSerializedCache.clear();
+      }
     };
 
     const ensureRaw = (): Record<string, unknown> | null => {
       if (id === undefined) return null;
+      syncEpoch();
       let raw = gcsValueCache.get(id);
       if (raw !== undefined) return raw;
       gCsCascade += 1;
@@ -3220,6 +3819,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 
     const fieldString = (field: string, tsType: string): string => {
       if (id === undefined) return "";
+      syncEpoch();
       let ser = gcsSerializedCache.get(id);
       if (ser === undefined) {
         ser = new Map();
@@ -3229,21 +3829,54 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       if (cached !== undefined) return cached;
       const raw = ensureRaw();
       if (raw === null) return "";
-      const out = serializeComputed(tsType, raw[field]);
+      let out = serializeComputed(tsType, raw[field]);
+      if (field === "transform" && out !== "" && out !== "none") {
+        const fs = typeof raw["fontSize"] === "number" ? raw["fontSize"] : 16;
+        out = resolveTransformUnits(out, fs);
+      }
       ser.set(field, out);
       return out;
     };
 
-    const resolveCssName = (cssName: string): string => {
+    const resolveCssName = (cssName: string, resolved = true): string => {
+      if (cssName.startsWith("--")) {
+        const raw = ensureRaw();
+        return raw === null ? "" : (customPropertiesOf(raw)?.get(cssName) ?? "");
+      }
+      const shorthandSer = SHORTHAND_COMPUTED[cssName]?.((n) => resolveCssName(n, resolved));
+      if (shorthandSer !== undefined) return shorthandSer;
       const meta = CSS_NAME_TO_META.get(cssName);
       if (meta === undefined) return "";
+      // CSSOM resolved values: `width`/`height` on an element with a box are
+      // the USED content-box size (px), not the computed (possibly %/auto)
+      // value. `computedStyleMap` keeps the unresolved computed value — only
+      // the CSSStyleDeclaration path resolves through layout here.
+      if (resolved && (cssName === "width" || cssName === "height")) {
+        const tree = resolveLayoutTree();
+        if (tree !== null && id !== undefined) {
+          for (const frag of tree.fragments.values()) {
+            if (frag.node === id) {
+              const box = frag.box.contentBox;
+              const px = Number(cssName === "width" ? box.width : box.height);
+              return `${px}px`;
+            }
+          }
+        }
+      }
       return fieldString(meta.field, meta.tsType);
     };
 
     const decl: Record<string, unknown> = {
-      length: computedPropertyNames.length,
+      get length(): number {
+        return computedPropertyNames.length + customNames().length;
+      },
       item,
-      getPropertyValue: (name: unknown): string => resolveCssName(String(name)),
+      // The optional `resolved` flag is an internal hook for computedStyleMap:
+      // Typed OM's computed map exposes the UNRESOLVED computed value (e.g.
+      // `50%`), while CSSOM's getComputedStyle exposes resolved used values
+      // (`25px`). Extra params are invisible to property enumeration.
+      getPropertyValue: (name: unknown, resolved?: unknown): string =>
+        resolveCssName(String(name), resolved !== false),
       getPropertyPriority: (): string => "",
       setProperty: (): never => {
         throw new Error("getComputedStyle declarations are read-only");
@@ -3252,6 +3885,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         throw new Error("getComputedStyle declarations are read-only");
       },
       cssText: "",
+      // CSSStyleDeclaration enumerates its longhand property names (plus any
+      // custom properties) when spread/iterated.
+      *[Symbol.iterator](): IterableIterator<string> {
+        const total = computedPropertyNames.length + customNames().length;
+        for (let i = 0; i < total; i += 1) yield item(i);
+      },
     };
 
     const ownKeys = (): Array<string | symbol> => {
@@ -3319,6 +3958,48 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   }
 
   const documentListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+
+  /** The focused element (HTML §6.5 — document.activeElement target). */
+  let focusedNodeId: NodeId | null = null;
+
+  /** Per-element scroll offset storage (scrollLeft/scrollTop). */
+  const scrollOffsets = new Map<NodeId, { left: number; top: number }>();
+
+  /**
+   * Fragments under (x, y) in paint order (deepest/last first match wins in
+   * callers). Derived from the layout fragment tree — geometry's single
+   * source of truth.
+   */
+  const fragmentsAt = (x: number, y: number): NodeId[] => {
+    let tree;
+    try {
+      tree = session.layoutTree();
+    } catch {
+      return [];
+    }
+    const hits: Array<{ node: NodeId; depth: number; order: number }> = [];
+    let order = 0;
+    for (const frag of tree.fragments.values()) {
+      order += 1;
+      const b = frag.box.borderBox;
+      const bx = Number(b.x); const by = Number(b.y);
+      const bw = Number(b.width); const bh = Number(b.height);
+      if (x >= bx && x < bx + bw && y >= by && y < by + bh) {
+        let depth = 0;
+        let cur: NodeId | null = frag.node;
+        while (cur !== null && session.dom.nodes.get(cur) !== undefined) {
+          depth += 1;
+          cur = session.dom.nodes.get(cur)?.parent ?? null;
+        }
+        hits.push({ node: frag.node, depth, order });
+      }
+    }
+    // Paint order approximation: deeper boxes above shallower, ties → later
+    // in fragment order. Reverse so index 0 = topmost.
+    hits.sort((a, b) => (b.depth - a.depth) || (b.order - a.order));
+    return hits.map((h) => h.node);
+  };
+
   const document = {
     get nodeType(): number {
       return 9;
@@ -3458,6 +4139,36 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     get currentScript(): object | null {
       const id = options.currentScriptBox?.current ?? null;
       return id !== null ? makeElementCached(id) : null;
+    },
+    // ---- Focus (UI Events §focus) -----------------------------------------
+    // The focused element lives in a slot; focus() sets it and dispatches
+    // focus/focusin (blur/focusout on the previous). `activeElement` reads it.
+    get activeElement(): object | null {
+      if (focusedNodeId === null) {
+        const body = (document as { body?: object | null }).body;
+        return body ?? null;
+      }
+      const n = session.dom.nodes.get(focusedNodeId);
+      if (n === undefined || n.kind !== "element" || !isConnectedToDocument(session.dom, focusedNodeId)) {
+        return (document as { body?: object | null }).body ?? null;
+      }
+      return makeElementCached(focusedNodeId);
+    },
+    get hasFocus(): () => boolean {
+      return () => focusedNodeId !== null;
+    },
+    /**
+     * `document.elementFromPoint(x, y)` — hit-test the layout fragment tree:
+     * the deepest box whose border box contains the point wins (ties → later
+     * tree order ≈ paint order). Geometry's single source of truth does the
+     * work; no separate hit-test bookkeeping.
+     */
+    elementFromPoint(x: unknown, y: unknown): object | null {
+      const hits = fragmentsAt(Number(x), Number(y));
+      return hits.length === 0 ? null : makeElementCached(hits[0] as NodeId);
+    },
+    elementsFromPoint(x: unknown, y: unknown): object[] {
+      return fragmentsAt(Number(x), Number(y)).map((id) => makeElementCached(id) as object);
     },
     get cookie(): string {
       return cookieJar;
@@ -3923,6 +4634,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     NodeList: NodeListCtor,
     MutationObserver: MutationObserverCtor,
     SVGElement: SVGElementCtor,
+    MathMLElement: MathMLElementCtor,
+    CSSRule: CSSRuleCtor,
+    CSSGroupingRule: CSSGroupingRuleCtor,
+    CSSStyleRule: CSSStyleRuleCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
     getComputedStyle,

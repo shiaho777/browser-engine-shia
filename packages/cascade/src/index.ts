@@ -59,7 +59,7 @@ import type {
   Specificity,
   StyleSheet,
 } from "@browser-engine/ir";
-import { CSS_PROPERTIES, PROPERTY_PARSERS, isSpecifiedLength, isSpecifiedCalc, expandDeclarations } from "@browser-engine/generator";
+import { CSS_PROPERTIES, PROPERTY_PARSERS, isSpecifiedLength, isSpecifiedCalc, expandDeclarations, parseLength } from "@browser-engine/generator";
 import type { ComputeCtx, SpecifiedLength, SpecifiedCalc, CalcNode } from "@browser-engine/generator";
 
 import { buildRuleIndex, collectCandidates, classListOf, ruleMatches, type InteractionState } from "./rule-index.js";
@@ -76,6 +76,11 @@ import type { CustomPropertyMap } from "./var-substitution.js";
  */
 const CUSTOM_PROPS: unique symbol = Symbol("__custom__");
 
+/** Read a node's resolved custom properties (`--*` → substituted text). */
+export function customPropertiesOf(style: unknown): CustomPropertyMap | undefined {
+  return (style as Record<symbol, unknown> | null | undefined)?.[CUSTOM_PROPS] as CustomPropertyMap | undefined;
+}
+
 export const PACKAGE_NAME = "@browser-engine/cascade" as const;
 
 // Re-export the index-backed selector matcher (design.md §8.3): the cascade's
@@ -89,6 +94,7 @@ export {
   matchRulesByScan,
   candidateRulesFor,
   ruleMatches,
+  selectorParses,
 } from "./rule-index.js";
 export type { RuleIndex, IndexedRule, SupportedPseudoClass, CascadeOrigin, InteractionState } from "./rule-index.js";
 
@@ -348,6 +354,47 @@ function cascadeWithIndex(
           result[prop.field] = fontSizePx;
           continue;
         }
+        // `line-height` is a free-form grammar that accepts <number>, <length>,
+        // and <percentage> beside `normal` (CSS 2.1 §10.8). Normalize the
+        // numeric forms here so the computed value carries real units: bare
+        // numbers stay numbers, %/em resolve against the element's OWN font
+        // size (unlike every other property, line-height % uses the computed
+        // font-size of the element itself).
+        if (prop.name === "line-height" && typeof specified.value === "string") {
+          const v = specified.value.trim().toLowerCase();
+          if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(v)) {
+            result[prop.field] = v;
+            continue;
+          }
+          // Lengths, percentages and calc() resolve to px against the
+          // element's OWN font-size; a pure-number calc() keeps <number>
+          // semantics (`calc(2 + 3)` computes to `5`, not `5px`).
+          const pl = parseLength(v);
+          if (pl.ok) {
+            const lv = pl.value;
+            if (v.startsWith("calc(") && !/[a-z%]/i.test(v.slice(5, -1))) {
+              // Dimensionless calc → <number> result.
+              const n = typeof lv === "number" ? lv
+                : isSpecifiedCalc(lv) ? resolveCalc(lv, fontSizePx, remBasis, viewport, fontSizePx) : 0;
+              result[prop.field] = String(typeof n === "number" ? n : 0);
+              continue;
+            }
+            if (typeof lv === "number") {
+              result[prop.field] = lv;
+              continue;
+            }
+            if (isSpecifiedLength(lv)) {
+              if (lv.unit === "%") {
+                result[prop.field] = px((fontSizePx * lv.value) / 100);
+                continue;
+              }
+              result[prop.field] = resolveOne(lv, fontSizePx, remBasis, viewport);
+              continue;
+            }
+            result[prop.field] = resolveCalc(lv, fontSizePx, remBasis, viewport, fontSizePx);
+            continue;
+          }
+        }
         const emBasis = prop.name === "font-size" ? parentFontSizePx : fontSizePx;
         const resolved = resolveLengths(specified.value, emBasis, remBasis, viewport);
         result[prop.field] = prop.computeValue(resolved, parentStyle, ctx);
@@ -446,36 +493,78 @@ function resolveOne(len: SpecifiedLength, emBasis: number, remBasis: number, vie
 }
 
 /**
- * Resolve a {@link SpecifiedCalc} (a `calc()` AST) to `px` by evaluating each
- * leaf length against the em/rem/viewport context, then folding the arithmetic.
- * Division by zero yields 0 (defensive — the spec says the declaration is
- * invalid, but we already validated at parse time; a runtime zero divisor from
- * a calc like `100px / (1 - 1)` is clamped to avoid NaN).
+ * Resolve a {@link SpecifiedCalc} (a `calc()` AST) against the em/rem/viewport
+ * context, then fold the arithmetic. Evaluation tracks THREE channels —
+ * dimensionless `num`, absolute `px`, and unresolved `pct` — so percentages
+ * survive to the computed value (CSS Values 4: `calc(0% + 0%)` computes to
+ * `0%`, not `0px`). A mixed px+% result serializes back to a `calc()` string
+ * for the Typed OM to reify. Division by zero yields 0 (defensive — the spec
+ * says the declaration is invalid, but we already validated at parse time).
  */
-function resolveCalc(calc: SpecifiedCalc, emBasis: number, remBasis: number, viewport: Viewport): Px {
-  const evalNode = (node: CalcNode): number => {
+function resolveCalc(
+  calc: SpecifiedCalc,
+  emBasis: number,
+  remBasis: number,
+  viewport: Viewport,
+  pctBasis?: number,
+): Px | SpecifiedLength | string {
+  // `pct` is nullable: null = no percentage anywhere, 0 is a REAL zero-percent
+  // (presence matters — `calc(0% + 0%)` computes to `0%`, not `0px`). When
+  // `pctBasis` is provided (line-height resolves % against its own font-size),
+  // percentages resolve to px instead of surviving.
+  type Ev = { num: number; px: number; pct: number | null };
+  const scalar = (e: Ev): boolean => e.px === 0 && e.pct === null;
+  const scale = (e: Ev, f: number): Ev => ({ num: e.num * f, px: e.px * f, pct: e.pct === null ? null : e.pct * f });
+  const combine = (a: number | null, b: number | null, s: 1 | -1): number | null =>
+    a === null ? (b === null ? null : s * b) : b === null ? a : a + s * b;
+  const evalNode = (node: CalcNode): Ev => {
     switch (node.type) {
       case "px":
-        return node.value;
+        return { num: 0, px: node.value, pct: null };
       case "num":
-        return node.value;
+        return { num: node.value, px: 0, pct: null };
       case "len": {
+        if (node.unit === "%" && pctBasis !== undefined) {
+          return { num: 0, px: (node.value * pctBasis) / 100, pct: null };
+        }
         const r = resolveOne({ kind: "specified-length", value: node.value, unit: node.unit }, emBasis, remBasis, viewport);
-        return typeof r === "number" ? r : 0;
+        if (typeof r === "number") return { num: 0, px: r, pct: null };
+        if (r !== undefined && r.unit === "%") return { num: 0, px: 0, pct: r.value };
+        return { num: 0, px: 0, pct: null };
       }
       case "add":
-        return evalNode(node.left) + evalNode(node.right);
-      case "sub":
-        return evalNode(node.left) - evalNode(node.right);
-      case "mul":
-        return evalNode(node.left) * evalNode(node.right);
+      case "sub": {
+        const a = evalNode(node.left);
+        const b = evalNode(node.right);
+        const s = node.type === "add" ? 1 : -1;
+        return { num: a.num + s * b.num, px: a.px + s * b.px, pct: combine(a.pct, b.pct, s) };
+      }
+      case "mul": {
+        const a = evalNode(node.left);
+        const b = evalNode(node.right);
+        if (scalar(a)) return scale(b, a.num);
+        if (scalar(b)) return scale(a, b.num);
+        return { num: 0, px: 0, pct: null };
+      }
       case "div": {
-        const r = evalNode(node.right);
-        return r === 0 ? 0 : evalNode(node.left) / r;
+        const a = evalNode(node.left);
+        const b = evalNode(node.right);
+        if (b.num === 0) return { num: 0, px: 0, pct: null };
+        if (scalar(a)) return { num: a.num / b.num, px: 0, pct: null };
+        if (scalar(b)) return scale(a, 1 / b.num);
+        return { num: 0, px: 0, pct: null };
       }
     }
   };
-  return px(evalNode(calc.ast));
+  const ev = evalNode(calc.ast);
+  if (ev.pct !== null && ev.px === 0 && ev.num === 0) {
+    return { kind: "specified-length", value: ev.pct, unit: "%" };
+  }
+  if (ev.pct !== null) {
+    const pctPart = ev.pct >= 0 ? `+ ${ev.pct}%` : `- ${-ev.pct}%`;
+    return `calc(${ev.px + ev.num}px ${pctPart})`;
+  }
+  return px(ev.px + ev.num);
 }
 
 // ---------------------------------------------------------------------------
@@ -834,7 +923,14 @@ function inlineDeclarations(style: string): Declaration[] {
       value = value.slice(0, bang.index).trim();
       if (value.length === 0) continue;
     }
-    if (!parseSpecified(property, value).ok) continue;
+    // Custom properties accept ANY token stream verbatim — no grammar check.
+    // var()/env()-bearing values are substitution-pending: the token stream
+    // is valid until substituted at computed-value time.
+    if (
+      !property.startsWith("--") &&
+      !/\b(?:var|env)\(/.test(value) &&
+      !parseSpecified(property, value).ok
+    ) continue;
     decls.push({ property, value, important });
   }
   return decls;

@@ -63,12 +63,23 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       if (sameValue(actual, expected)) fail(`got disallowed value ${formatValue(actual)}`, desc);
     },
     assert_array_equals(actual: unknown, expected: unknown, desc?: unknown): void {
-      const a = actual as unknown[];
-      const e = expected as unknown[];
-      if (!Array.isArray(a) || !Array.isArray(e)) fail("not an array", desc);
+      const a = actual as ArrayLike<unknown>;
+      const e = expected as ArrayLike<unknown>;
+      if (typeof a?.length !== "number" || typeof e?.length !== "number") fail("not an array", desc);
       if (a.length !== e.length) fail(`lengths differ: ${a.length} vs ${e.length}`, desc);
       for (let i = 0; i < e.length; i += 1) {
         if (!sameValue(a[i], e[i])) fail(`element ${i}: ${formatValue(a[i])} != ${formatValue(e[i])}`, desc);
+      }
+    },
+    assert_array_approx_equals(actual: unknown, expected: unknown, epsilon: unknown, desc?: unknown): void {
+      const a = actual as ArrayLike<unknown>;
+      const e = expected as ArrayLike<unknown>;
+      if (typeof a?.length !== "number" || typeof e?.length !== "number") fail("not an array", desc);
+      if (a.length !== e.length) fail(`lengths differ: ${a.length} vs ${e.length}`, desc);
+      for (let i = 0; i < e.length; i += 1) {
+        if (Math.abs(Number(a[i]) - Number(e[i])) > Number(epsilon)) {
+          fail(`element ${i}: ${formatValue(a[i])} not within ${formatValue(epsilon)} of ${formatValue(e[i])}`, desc);
+        }
       }
     },
     assert_in_array(actual: unknown, expected: unknown, desc?: unknown): void {
@@ -115,15 +126,51 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       }
     },
     assert_regexp_match(actual: unknown, re: unknown, desc?: unknown): void {
-      if (!(re instanceof RegExp) || !re.test(String(actual))) fail(`${formatValue(actual)} did not match`, desc);
+      // `re` is a guest-realm RegExp — `instanceof RegExp` fails cross-realm.
+      const test = (re as { test?: unknown }).test;
+      if (typeof test !== "function" || !(test as (s: string) => boolean).call(re, String(actual))) {
+        fail(`${formatValue(actual)} did not match`, desc);
+      }
     },
     assert_class_string(obj: unknown, expected: unknown, desc?: unknown): void {
       const cls = Object.prototype.toString.call(obj).slice(8, -1);
       if (cls !== expected) fail(`class "${cls}" != "${String(expected)}"`, desc);
     },
     assert_own_property(obj: unknown, name: unknown, desc?: unknown): void {
-      if (typeof obj !== "object" || obj === null || !Object.prototype.hasOwnProperty.call(obj, String(name))) {
+      const isObj = (typeof obj === "object" && obj !== null) || typeof obj === "function";
+      if (!isObj || !Object.prototype.hasOwnProperty.call(obj, String(name))) {
         fail(`missing own property ${formatValue(name)}`, desc);
+      }
+    },
+    // property_name must be reachable through the prototype chain but NOT an
+    // own property (testharness `assert_inherits` / `assert_idl_attribute`).
+    assert_inherits(obj: unknown, name: unknown, desc?: unknown): void {
+      const isObj = (typeof obj === "object" && obj !== null) || typeof obj === "function";
+      if (!isObj) fail("provided value is not an object", desc);
+      if (Object.prototype.hasOwnProperty.call(obj, String(name))) {
+        fail(`property ${formatValue(name)} found on object expected in prototype chain`, desc);
+      }
+      if (!(String(name) in (obj as object))) {
+        fail(`property ${formatValue(name)} not found in prototype chain`, desc);
+      }
+    },
+    assert_idl_attribute(obj: unknown, name: unknown, desc?: unknown): void {
+      asserts.assert_inherits(obj, name, desc);
+    },
+    assert_readonly(obj: unknown, name: unknown, desc?: unknown): void {
+      const o = obj as object;
+      if (!(String(name) in o)) fail(`property ${formatValue(name)} not found`, desc);
+      let cur: object | null = o;
+      let d: PropertyDescriptor | undefined;
+      while (cur !== null && (d = Object.getOwnPropertyDescriptor(cur, String(name))) === undefined) {
+        cur = Object.getPrototypeOf(cur);
+      }
+      if (d === undefined) fail(`could not find a descriptor for property ${formatValue(name)}`, desc);
+      const desc2 = d!;
+      if (Object.prototype.hasOwnProperty.call(desc2, "value")) {
+        if (desc2.writable !== false) fail(`descriptor [[Writable]] expected false got ${String(desc2.writable)}`, desc);
+      } else if (desc2.set !== undefined) {
+        fail(`property ${formatValue(name)} is an accessor with a setter`, desc);
       }
     },
     assert_throws_js(ctor: unknown, func: unknown, desc?: unknown): void {
@@ -243,7 +290,8 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       fail("expected a QuotaExceededError rejection", desc);
     },
     assert_not_own_property(obj: unknown, name: unknown, desc?: unknown): void {
-      if (typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, String(name))) {
+      const isObj = (typeof obj === "object" && obj !== null) || typeof obj === "function";
+      if (isObj && Object.prototype.hasOwnProperty.call(obj, String(name))) {
         fail(`unexpected own property ${formatValue(name)}`, desc);
       }
     },

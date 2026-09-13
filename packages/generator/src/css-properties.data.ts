@@ -21,7 +21,7 @@ import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { FlexDirection, FloatValue, PositionValue } from "@browser-engine/ir";
 import { defineProperty, type CssPropertyDef } from "./css-property-def.js";
 import { LADYBIRD_PROPERTIES } from "./generated/ladybird-properties.data.js";
-import { color, edges, integer, keyword, length, lengthOr, number, string as stringValue, transform } from "./value-grammar.js";
+import { color, cursor, display as displayGrammar, edges, integer, keyword, length, lengthOr, number, string as stringValue, times, transform } from "./value-grammar.js";
 import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar.js";
 
 // ---- shared initial-value constants ---------------------------------------
@@ -29,43 +29,6 @@ import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar
 const BLACK: Color = { r: 0, g: 0, b: 0, a: 1 };
 const TRANSPARENT: Color = { r: 0, g: 0, b: 0, a: 0 };
 const ZERO_EDGES: Edges<Px> = { top: px(0), right: px(0), bottom: px(0), left: px(0) };
-
-/**
- * The display outer/inner keywords accepted by the parser. Beyond the typed
- * {@link DisplayValue} union, this includes the legacy/vendor display values
- * (`-webkit-box`, `inline-flex`, etc.) so they PARSE instead of being silently
- * dropped — the layout engine normalizes them to a supported branch in
- * {@link readDisplay}. The list is typed `string[]` (not `DisplayValue[]`)
- * precisely to admit those extra keywords.
- */
-const DISPLAY_KEYWORDS: readonly string[] = [
-  "block",
-  "inline",
-  "inline-block",
-  "flex",
-  "grid",
-  "table",
-  "none",
-  // Inline-level variants: parsed and normalized to their block-level counterpart's
-  // layout internally (the inline *outer* role awaits a real inline formatting context).
-  "inline-flex",
-  "inline-grid",
-  "inline-table",
-  "list-item",
-  // Table-internal structural values (css-tables-3). They parse and cascade;
-  // the layout tree builder (not the layout dispatcher) consumes them to wrap
-  // misplaced content into anonymous tables/rows/cells.
-  "table-row",
-  "table-row-group",
-  "table-cell",
-  // Legacy / vendor-prefixed flexbox values: every modern browser maps these to
-  // standard flex, so we accept them at parse time and normalize to "flex".
-  "-webkit-box",
-  "-webkit-inline-box",
-  "-ms-flexbox",
-  "-ms-inline-flexbox",
-  "-webkit-inline-flex",
-];
 
 // ---- the rows --------------------------------------------------------------
 
@@ -92,7 +55,7 @@ const DISPLAY: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "display",
   inherited: false,
   initial: "inline",
-  syntax: keyword(...DISPLAY_KEYWORDS),
+  syntax: displayGrammar(),
   computeValue: (specified) => specified,
   animationType: "discrete",
   tsType: "string",
@@ -335,22 +298,23 @@ const PADDING: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edges<Px>, 
 });
 
 /** Build a per-edge `<length>` longhand row (margin-top, padding-left, …). */
-function edgeLength(name: string): CssPropertyDef<Px, Px> {
-  return defineProperty<Px, Px>({
+function edgeLength(name: string, ...keywords: readonly string[]): CssPropertyDef<unknown, unknown> {
+  return defineProperty<unknown, unknown>({
     name,
     inherited: false,
     initial: px(0),
-    syntax: length(),
+    syntax: keywords.length > 0 ? lengthOr(...keywords) : length(),
     computeValue: (s) => s,
     animationType: "by-computed-value",
-    tsType: "Px",
+    tsType: keywords.length > 0 ? "LengthOrAuto" : "Px",
   });
 }
 
-const MARGIN_TOP = edgeLength("margin-top");
-const MARGIN_RIGHT = edgeLength("margin-right");
-const MARGIN_BOTTOM = edgeLength("margin-bottom");
-const MARGIN_LEFT = edgeLength("margin-left");
+// Margin longhands take `auto` in addition to <length>/<percentage>.
+const MARGIN_TOP = edgeLength("margin-top", "auto");
+const MARGIN_RIGHT = edgeLength("margin-right", "auto");
+const MARGIN_BOTTOM = edgeLength("margin-bottom", "auto");
+const MARGIN_LEFT = edgeLength("margin-left", "auto");
 const PADDING_TOP = edgeLength("padding-top");
 const PADDING_RIGHT = edgeLength("padding-right");
 const PADDING_BOTTOM = edgeLength("padding-bottom");
@@ -493,12 +457,16 @@ const OVERFLOW: CssPropertyDef<string, string> = defineProperty<string, string>(
   tsType: "string",
 });
 
-/** `cursor` — inherited; a keyword subset (initial: auto). */
+/**
+ * `cursor` — inherited; keywords plus the `[<url> [<number>{2}]?]# <keyword>`
+ * image list (css-ui-4). Stored as normalized text — image lists have no
+ * narrower representation.
+ */
 const CURSOR: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "cursor",
   inherited: true,
   initial: "auto",
-  syntax: keyword("auto", "default", "pointer", "text", "move", "not-allowed", "grab", "grabbing", "wait", "help", "crosshair"),
+  syntax: cursor(),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -539,16 +507,17 @@ const FONT_STYLE: CssPropertyDef<string, string> = defineProperty<string, string
   tsType: "string",
 });
 
-/** `line-height` — inherited free-form string (initial "normal"). Layout reads
- * unitless multipliers, px lengths, and "normal". */
-const LINE_HEIGHT: CssPropertyDef<string, string> = defineProperty<string, string>({
+/** `line-height` — inherited free-form (initial "normal"). The cascade stores
+ * unitless multipliers as numeric STRINGS and resolved lengths as px NUMBERS
+ * (`<length>`/`<percentage>` resolve against the element's own font-size). */
+const LINE_HEIGHT: CssPropertyDef<string, string | number> = defineProperty<string, string | number>({
   name: "line-height",
   inherited: true,
   initial: "normal",
   syntax: stringValue(),
   computeValue: (s) => s,
   animationType: "discrete",
-  tsType: "string",
+  tsType: "string | number",
 });
 
 /** `text-align` — inherited; a keyword (initial: start). */
@@ -1242,47 +1211,47 @@ const ANIMATION_FILL_MODE = stringProp("animation-fill-mode", "none");
 const ANIMATION_PLAY_STATE = stringProp("animation-play-state", "running");
 
 /** `transition-duration` — not inherited; seconds as a `<number>` (initial: 0). */
-const TRANSITION_DURATION: CssPropertyDef<number, number> = defineProperty<number, number>({
+const TRANSITION_DURATION: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "transition-duration",
   inherited: false,
-  initial: 0,
-  syntax: number({ min: 0 }),
+  initial: [0],
+  syntax: times({ min: 0 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `transition-delay` — not inherited; seconds as a `<number>` (initial: 0). */
-const TRANSITION_DELAY: CssPropertyDef<number, number> = defineProperty<number, number>({
+const TRANSITION_DELAY: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "transition-delay",
   inherited: false,
-  initial: 0,
-  syntax: number(),
+  initial: [0],
+  syntax: times({}),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-duration` — not inherited; seconds as a `<number>` (initial: 0). */
-const ANIMATION_DURATION: CssPropertyDef<number, number> = defineProperty<number, number>({
+const ANIMATION_DURATION: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "animation-duration",
   inherited: false,
-  initial: 0,
-  syntax: number({ min: 0 }),
+  initial: [0],
+  syntax: times({ min: 0 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-delay` — not inherited; seconds as a `<number>` (initial: 0). */
-const ANIMATION_DELAY: CssPropertyDef<number, number> = defineProperty<number, number>({
+const ANIMATION_DELAY: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "animation-delay",
   inherited: false,
-  initial: 0,
-  syntax: number(),
+  initial: [0],
+  syntax: times({}),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-iteration-count` — not inherited; a `<number>` ≥ 0 (initial: 1). */

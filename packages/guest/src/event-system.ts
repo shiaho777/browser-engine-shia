@@ -432,6 +432,58 @@ export interface CompositionEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
+// AnimationEvent / TransitionEvent (CSS Animations 2 / CSS Transitions 2)
+// ---------------------------------------------------------------------------
+
+/** AnimationEvent (CSS Animations 2 §4.2): animationstart/iteration/end/cancel. */
+export class AnimationEvent extends Event {
+  readonly #animationName: string;
+  readonly #elapsedTime: number;
+  readonly #pseudoElement: string;
+
+  constructor(type: string, init: AnimationEventInit & EventInit = {}) {
+    super(type, init);
+    this.#animationName = init?.animationName ?? "";
+    this.#elapsedTime = init?.elapsedTime ?? 0;
+    this.#pseudoElement = init?.pseudoElement ?? "";
+  }
+
+  get animationName(): string { return this.#animationName; }
+  get elapsedTime(): number { return this.#elapsedTime; }
+  get pseudoElement(): string { return this.#pseudoElement; }
+}
+
+export interface AnimationEventInit extends EventInit {
+  animationName?: string;
+  elapsedTime?: number;
+  pseudoElement?: string;
+}
+
+/** TransitionEvent (CSS Transitions 2 §6.1): transitionrun/start/end/cancel. */
+export class TransitionEvent extends Event {
+  readonly #propertyName: string;
+  readonly #elapsedTime: number;
+  readonly #pseudoElement: string;
+
+  constructor(type: string, init: TransitionEventInit & EventInit = {}) {
+    super(type, init);
+    this.#propertyName = init?.propertyName ?? "";
+    this.#elapsedTime = init?.elapsedTime ?? 0;
+    this.#pseudoElement = init?.pseudoElement ?? "";
+  }
+
+  get propertyName(): string { return this.#propertyName; }
+  get elapsedTime(): number { return this.#elapsedTime; }
+  get pseudoElement(): string { return this.#pseudoElement; }
+}
+
+export interface TransitionEventInit extends EventInit {
+  propertyName?: string;
+  elapsedTime?: number;
+  pseudoElement?: string;
+}
+
+// ---------------------------------------------------------------------------
 // MessageEvent
 // ---------------------------------------------------------------------------
 

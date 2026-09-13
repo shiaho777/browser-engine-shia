@@ -639,12 +639,73 @@ function expandBackground(value: string): readonly ExpandedDeclaration[] | null 
   return null;
 }
 
+/** `transition` shorthand (CSS Transitions §2): order-free single items. */
+function expandTransition(value: string): ExpandedDeclaration[] | null {
+  const v = value.trim();
+  if (v === "") return null;
+  const LONGHANDS = [
+    "transition-property",
+    "transition-duration",
+    "transition-timing-function",
+    "transition-delay",
+  ] as const;
+  // Pending substitution: the var() token stream lands on every longhand.
+  if (/\b(?:var|env)\(/.test(v)) {
+    return LONGHANDS.map((property) => ({ property, value: v }));
+  }
+  const items = v.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (items.length === 0) return null;
+  const properties: string[] = [];
+  const durations: string[] = [];
+  const timings: string[] = [];
+  const delays: string[] = [];
+  const TIMING_KEYWORDS = new Set([
+    "ease", "linear", "ease-in", "ease-out", "ease-in-out", "step-start", "step-end",
+  ]);
+  for (const item of items) {
+    if (item === "none") continue;
+    let property: string | undefined;
+    let duration: string | undefined;
+    let timing: string | undefined;
+    let delay: string | undefined;
+    for (const tok of item.split(/\s+/)) {
+      const t = tok.toLowerCase();
+      if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:ms|s)$/.test(t)) {
+        if (duration === undefined) duration = tok;
+        else if (delay === undefined) delay = tok;
+        else return null;
+      } else if (TIMING_KEYWORDS.has(t) || /^(?:steps|cubic-bezier|linear)\(/.test(t)) {
+        if (timing !== undefined) return null;
+        timing = tok;
+      } else if (property === undefined) {
+        property = tok;
+      } else {
+        return null;
+      }
+    }
+    properties.push(property ?? "all");
+    durations.push(duration ?? "0s");
+    timings.push(timing ?? "ease");
+    delays.push(delay ?? "0s");
+  }
+  return [
+    { property: "transition-property", value: properties.join(", ") },
+    { property: "transition-duration", value: durations.join(", ") },
+    { property: "transition-timing-function", value: timings.join(", ") },
+    { property: "transition-delay", value: delays.join(", ") },
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // The shorthand→expander table.
 // ---------------------------------------------------------------------------
 
 const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
   background: expandBackground,
+  // Box quads (CSS Box Model §): `margin`/`padding` expand to their four
+  // physical longhands — the cascade then resolves longhand-vs-longhand.
+  margin: (value) => expandQuad(value, ["margin-top", "margin-right", "margin-bottom", "margin-left"]),
+  padding: (value) => expandQuad(value, ["padding-top", "padding-right", "padding-bottom", "padding-left"]),
   border: expandBorder,
   "border-top": expandBorderEdge("top"),
   "border-right": expandBorderEdge("right"),
@@ -669,6 +730,10 @@ const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
   "place-content": makePlaceExpander("align-content", "justify-content"),
   "place-self": makePlaceExpander("align-self", "justify-self"),
   "text-decoration": expandTextDecoration,
+  // `transition`: <single-transition># where each item is
+  // `<property>? <duration>? <easing>? <delay>?` in any order. A var()/env()
+  // value stays pending-substitution across every longhand.
+  transition: expandTransition,
   font: expandFont,
   "-webkit-line-clamp": (value: string) => [{ property: "line-clamp", value: value.trim().toLowerCase() === "none" ? "0" : value }],
 };
@@ -679,6 +744,11 @@ const SHORTHAND_TABLE: Readonly<Record<string, ShorthandExpander>> = {
  * shorthand value cannot be parsed (the caller treats it as no declaration,
  * matching the CSS parser's invalid-value-recovery behavior).
  */
+/** True when `property` is a registered shorthand name. */
+export function isShorthandName(property: string): boolean {
+  return property in SHORTHAND_TABLE;
+}
+
 export function expandShorthand(
   property: string,
   value: string,

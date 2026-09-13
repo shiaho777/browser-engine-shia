@@ -85,12 +85,14 @@ export {
   parseLengthOrKeyword,
   parseNumber,
   parseString,
+  parseTime,
+  parseTimes,
   parseTransform,
 } from "./value-runtime.js";
 export type { CalcNode, ParseResult, SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";
 
 // ---- CSS shorthand expansion (ROADMAP Phase 2) ----------------------------
-export { expandShorthand, expandDeclarations } from "./shorthand-expansion.js";
+export { expandShorthand, expandDeclarations, isShorthandName } from "./shorthand-expansion.js";
 export type { ExpandedDeclaration, ShorthandExpander } from "./shorthand-expansion.js";
 
 // ---- the emitters (the "code generation" half) ----------------------------

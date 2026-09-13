@@ -185,10 +185,24 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
         expr: `parseNumber(value, ${boundsLiteral(grammar.min, grammar.max)})`,
         primitive: "parseNumber",
       };
+    case "time":
+      return {
+        expr: `parseTime(value, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseTime",
+      };
+    case "times":
+      return {
+        expr: `parseTimes(value, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseTimes",
+      };
     case "transform":
       return { expr: "parseTransform(value)", primitive: "parseTransform" };
     case "string":
       return { expr: "parseString(value)", primitive: "parseString" };
+    case "display":
+      return { expr: "parseDisplay(value)", primitive: "parseDisplay" };
+    case "cursor":
+      return { expr: "parseCursor(value)", primitive: "parseCursor" };
     default: {
       const never: never = grammar;
       throw new Error(`unknown value grammar: ${JSON.stringify(never)}`);
@@ -237,6 +251,7 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
     tableRows.push(`  ${quote(property.name)}: ${fn},`);
   }
 
+  usedPrimitives.add("ok");
   const runtimeImport = importLines(
     "../value-runtime.js",
     [...usedPrimitives].sort(),
@@ -247,6 +262,7 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
     "CSS value parsers — one per property's declarative grammar (Requirement 6.2).",
   )}
 ${runtimeImport}
+import { expandShorthand } from "../shorthand-expansion.js";
 import { notImplemented } from "@browser-engine/ir";
 
 /** A parser from a raw declaration value string to a typed parse result. */
@@ -275,7 +291,29 @@ export function parsePropertyValue(
       detail: "no parser is generated for this property (not in the data table)",
     });
   }
-  return parser(value);
+  const wide = value.trim().toLowerCase();
+  if (
+    wide === "initial" || wide === "inherit" || wide === "unset"
+    || wide === "revert" || wide === "revert-layer"
+  ) {
+    return ok(wide);
+  }
+  const first = parser(value);
+  if (first.ok) return first;
+  // A shorthand's grammar may be narrower than the union of its longhands'
+  // (e.g. margin:auto — the edges grammar is lengths-only). The spec-correct
+  // check is expansion: the shorthand is valid iff every expanded longhand is.
+  const expanded = expandShorthand(property, value);
+  if (expanded !== null) {
+    const allOk = expanded.every((d) => {
+      const p = PROPERTY_PARSERS[d.property];
+      if (p === undefined) return false;
+      const r = p(d.value);
+      return r.ok;
+    });
+    if (allOk) return ok(value);
+  }
+  return first;
 }
 `;
 
@@ -287,13 +325,35 @@ export function parsePropertyValue(
  * keyed by ComputedStyle field name, typed by the generated field interface.
  */
 export function emitInitialValues(properties: readonly CssPropertyDef[]): GeneratedFile {
+  // Branded-length fields need `px(N)` — a bare `number` literal is not
+  // comparable to `Px` (or `Px`-containing shapes) in the `as` assertion.
+  const serializeInitial = (value: unknown, tsType: string): string => {
+    if (
+      typeof value === "number" &&
+      /\bPx\b|\bLengthOrAuto\b|\bLengthSizing\b/.test(tsType)
+    ) {
+      return `px(${serializeValue(value)})`;
+    }
+    if (
+      typeof value === "object" && value !== null && !Array.isArray(value) &&
+      /Edges<\s*Px\s*>/.test(tsType)
+    ) {
+      const parts = Object.entries(value as Record<string, unknown>).map(
+        ([k, v]) => `${objectKey(k)}: ${serializeInitial(v, "Px")}`,
+      );
+      return `{ ${parts.join(", ")} }`;
+    }
+    return serializeValue(value);
+  };
   const rows = properties.map(
-    (property) => `  ${objectKey(property.field)}: ${serializeValue(property.initial)},`,
+    (property) =>
+      `  ${objectKey(property.field)}: ${serializeInitial(property.initial, property.tsType)},`,
   );
 
   const contents = `${banner(
     "Initial computed values, one per property (Requirement 6.2).",
   )}
+import { px } from "@browser-engine/ir";
 import type { GeneratedComputedStyleFields } from "./computed-style-fields.js";
 
 /**

@@ -24,6 +24,7 @@ import type { NodeId } from "@browser-engine/ir";
 
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { makeCssNamespace } from "./css-namespace.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
 import { coerceGuestString, makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
 
@@ -695,10 +696,7 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
       querySelectorAll: () => [],
     });
   };
-  sandbox["CSS"] = {
-    supports: () => false,
-    escape: (s: unknown) => String(s),
-  };
+  sandbox["CSS"] = makeCssNamespace();
   if (sandbox["TextEncoder"] === undefined) sandbox["TextEncoder"] = TextEncoder;
   if (sandbox["TextDecoder"] === undefined) sandbox["TextDecoder"] = TextDecoder;
   if (sandbox["URL"] === undefined) sandbox["URL"] = URL;

@@ -14,7 +14,7 @@
  * without derailing the rest of the stylesheet (Requirement 13.1, applied by
  * the CSS parser in task 3.3).
  */
-import { px, type Color, type DisplayValue, type Edges, type Px } from "@browser-engine/ir";
+import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { LengthOrAuto, TransformValue } from "./value-grammar.js";
 
 /** A successful or failed parse of one CSS value. */
@@ -53,17 +53,133 @@ export function parseKeyword(
     : err(`expected one of ${keywords.join(" | ")}, got "${input.trim()}"`);
 }
 
+// ---- display ---------------------------------------------------------------
+
 /**
- * Parse `input` as a {@link DisplayValue}. A thin wrapper over
- * {@link parseKeyword} that narrows the result to the IR's display union, used
- * by the generated `display` parser.
+ * `<display>` keyword sets (css-display-3 § "the <display> legacy values" +
+ * the composable outside/inside/list-item productions).
  */
-export function parseDisplay(
-  input: string,
-  keywords: readonly string[],
-): ParseResult<DisplayValue> {
-  const result = parseKeyword(input, keywords);
-  return result.ok ? ok(result.value as DisplayValue) : result;
+const DISPLAY_OUTSIDE = new Set(["block", "inline", "run-in"]);
+const DISPLAY_INSIDE = new Set(["flow", "flow-root", "table", "flex", "grid", "math", "ruby"]);
+const DISPLAY_LISTITEM_MARKERS = new Set(["flow", "flow-root"]);
+const DISPLAY_INTERNAL = new Set([
+  "table-row-group", "table-header-group", "table-footer-group", "table-row",
+  "table-cell", "table-column-group", "table-column", "table-caption",
+  "ruby-base", "ruby-text", "ruby-base-container", "ruby-text-container",
+]);
+const DISPLAY_BOX = new Set(["contents", "none"]);
+const DISPLAY_LEGACY = new Set([
+  "inline-block", "inline-table", "inline-flex", "inline-grid",
+  "inline-list-item",
+  // Vendor-prefixed flexbox/grid values — accepted at parse time and mapped
+  // to the standard display by layout (matching real browsers).
+  "-webkit-box", "-webkit-inline-box", "-webkit-flex", "-webkit-inline-flex",
+  "-ms-flexbox", "-ms-inline-flexbox", "-ms-grid", "-ms-inline-grid",
+]);
+
+/**
+ * Parse `input` as a `<display>` (css-display-3):
+ *
+ *   [ <display-outside> || <display-inside> ] |
+ *   <display-listitem> | <display-internal> | <display-box> | <display-legacy>
+ *
+ * `<display-listitem>` = `<display-outside>? && [ flow | flow-root ]? &&
+ * list-item`. Returns the normalized (lowercased, single-spaced) text — the
+ * multi-keyword space is carried as a string into ComputedStyle.
+ */
+export function parseDisplay(input: string): ParseResult<string> {
+  const norm = normalize(input).toLowerCase();
+  const toks = norm.split(" ");
+  const fail = err<string>(`invalid <display> value "${input.trim()}"`);
+  if (toks.length === 1) {
+    const t = toks[0]!;
+    if (
+      DISPLAY_OUTSIDE.has(t) || DISPLAY_INSIDE.has(t) || DISPLAY_INTERNAL.has(t)
+      || DISPLAY_BOX.has(t) || DISPLAY_LEGACY.has(t) || t === "list-item"
+    ) {
+      return ok(norm);
+    }
+    return fail;
+  }
+  // [ outside || inside ] — one of each, either order.
+  if (toks.length === 2) {
+    const [a, b] = toks as [string, string];
+    if (
+      (DISPLAY_OUTSIDE.has(a) && DISPLAY_INSIDE.has(b))
+      || (DISPLAY_INSIDE.has(a) && DISPLAY_OUTSIDE.has(b))
+    ) {
+      return ok(norm);
+    }
+  }
+  // <display-listitem>: contains `list-item` plus at most one outside keyword
+  // and at most one of flow | flow-root, in any order (`&&` combinator).
+  if (toks.includes("list-item") && toks.length <= 3) {
+    const rest = toks.filter((t) => t !== "list-item");
+    const outside = rest.filter((t) => DISPLAY_OUTSIDE.has(t));
+    const flowish = rest.filter((t) => DISPLAY_LISTITEM_MARKERS.has(t));
+    if (
+      outside.length + flowish.length === rest.length
+      && outside.length <= 1 && flowish.length <= 1
+    ) {
+      return ok(norm);
+    }
+  }
+  return fail;
+}
+
+// ---- cursor ----------------------------------------------------------------
+
+/** `<cursor-keyword>` (css-ui-4 § cursor). */
+const CURSOR_KEYWORDS = new Set([
+  "auto", "default", "none", "context-menu", "help", "pointer", "progress",
+  "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy",
+  "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize",
+  "n-resize", "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize",
+  "w-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize",
+  "col-resize", "row-resize", "all-scroll", "zoom-in", "zoom-out",
+]);
+
+/**
+ * Parse `input` as a `cursor` value (css-ui-4):
+ * `[ [ <url> | <url-set> | <image> ] [ <number>{2} ]? ,]* <cursor-keyword>`.
+ * Returns the normalized text — the image list has no narrower storage shape.
+ */
+export function parseCursor(input: string): ParseResult<string> {
+  const norm = normalize(input).toLowerCase();
+  // Split at top-level commas (paren-aware — urls may contain commas inside
+  // functional notation like src-set descriptors).
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of norm) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    if (ch === "," && depth === 0) {
+      parts.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  parts.push(cur);
+  const items = parts.map((p) => p.trim());
+  if (depth !== 0 || items.some((p) => p === "")) {
+    return err(`invalid cursor value "${input.trim()}"`);
+  }
+  // The final item is the mandatory fallback keyword.
+  if (!CURSOR_KEYWORDS.has(items[items.length - 1]!)) {
+    return err(`cursor list must end in a <cursor-keyword>, got "${items[items.length - 1]}"`);
+  }
+  // Each earlier item: `<image> [<number> <number>]?` — a functional image
+  // notation (url()/image-set()/gradients/…) optionally followed by the
+  // hotspot's x y coordinates.
+  for (const item of items.slice(0, -1)) {
+    const m = /^[a-z-]+\(.*\)(?:\s+-?[\d.]+\s+-?[\d.]+)?$/is.exec(item);
+    if (m === null) {
+      return err(`invalid cursor image item "${item}"`);
+    }
+  }
+  return ok(norm);
 }
 
 // ---- length ----------------------------------------------------------------
@@ -268,7 +384,10 @@ function parsePrimary(p: CalcParser): CalcNode | null {
   if (factor !== undefined) {
     return { type: "px", value: n * factor };
   }
-  if (unit === "em" || unit === "rem" || unit === "vw" || unit === "vh" || unit === "vmin" || unit === "vmax") {
+  if (
+    unit === "em" || unit === "rem" || unit === "vw" || unit === "vh"
+    || unit === "vmin" || unit === "vmax" || unit === "%"
+  ) {
     return { type: "len", value: n, unit };
   }
   return null; // unsupported unit
@@ -526,6 +645,72 @@ export function parseNumber(
 }
 
 /**
+ * Parse `input` as a CSS `<time>` (`Ns` or `Nms` dimension), returning SECONDS
+ * as a number, clamped to the optional inclusive `[min, max]` bounds. Used by
+ * `transition-duration`/`animation-duration` & co. whose computed value is a
+ * number of seconds.
+ */
+export function parseTime(
+  input: string,
+  bounds: { readonly min?: number; readonly max?: number } = {},
+): ParseResult<number> {
+  const token = normalize(input);
+  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(s|ms)$/i.exec(token);
+  if (m === null) {
+    return err(`expected a <time>, got "${input.trim()}"`);
+  }
+  const n = m[2]!.toLowerCase() === "ms" ? Number(m[1]) / 1000 : Number(m[1]);
+  if (!Number.isFinite(n)) {
+    return err(`invalid <time> "${input.trim()}"`);
+  }
+  return ok(clampToBounds(n, bounds.min, bounds.max));
+}
+
+/** Split `input` on commas that sit outside parentheses/quotes. */
+function splitTopLevelCommasRuntime(input: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+    if (quote !== null) {
+      if (ch === quote && input[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (ch === "," && depth === 0) {
+      parts.push(input.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(input.slice(start).trim());
+  return parts.filter((p) => p !== "");
+}
+
+/**
+ * Parse `input` as a comma-separated `<time>#` list (`1s, 200ms` →
+ * `[1, 0.2]` seconds). A lone `<time>` is a one-element list; an empty item
+ * fails the whole list.
+ */
+export function parseTimes(
+  input: string,
+  bounds: { readonly min?: number; readonly max?: number } = {},
+): ParseResult<readonly number[]> {
+  const parts = splitTopLevelCommasRuntime(input);
+  if (parts.length === 0) return err(`expected a <time># list, got "${input.trim()}"`);
+  const out: number[] = [];
+  for (const part of parts) {
+    const r = parseTime(part, bounds);
+    if (!r.ok) return err(r.reason);
+    out.push(r.value);
+  }
+  return ok(out);
+}
+
+/**
  * Parse `input` as an `<integer>` or one of `keywords` (e.g. `column-count:
  * auto`). Keywords are returned verbatim (lowercased); integers are clamped to
  * the optional inclusive `[min, max]` bounds. A single reusable primitive, so
@@ -556,23 +741,56 @@ export function parseIntegerOrKeyword(
  * size) or any malformed/unknown function fails the whole value, so the cascade
  * falls back to the initial rather than fabricating a wrong matrix (no stub).
  */
+/** Transform function names the specified grammar recognizes (2D + 3D). */
+const KNOWN_TRANSFORM_FNS = new Set([
+  "translate", "translatex", "translatey", "translatez", "translate3d",
+  "scale", "scalex", "scaley", "scalez", "scale3d",
+  "rotate", "rotatex", "rotatey", "rotatez", "rotate3d",
+  "skew", "skewx", "skewy",
+  "matrix", "matrix3d", "perspective",
+]);
+
 export function parseTransform(input: string): ParseResult<TransformValue> {
   const token = normalize(input).toLowerCase();
   if (token === "none" || token === "") {
     return ok("none");
   }
-  const fnRe = /([a-z0-9]+)\(([^)]*)\)/g;
   let acc: Matrix6 = [1, 0, 0, 1, 0, 0];
   let matched = false;
-  let consumed = 0;
-  let m: RegExpExecArray | null;
-  while ((m = fnRe.exec(token)) !== null) {
+  let unresolvable = false;
+  let i = 0;
+  // Scan `name(balanced-args)` function tokens — nested parens (calc(),
+  // sibling-index()) stay inside the argument body.
+  while (i < token.length) {
+    while (i < token.length && /\s/.test(token[i]!)) i += 1;
+    if (i >= token.length) break;
+    const nameMatch = /^[a-z][a-z0-9-]*\(/.exec(token.slice(i));
+    if (nameMatch === null) {
+      return err(`malformed transform "${input.trim()}"`);
+    }
+    const fn = nameMatch[0].slice(0, -1);
+    let depth = 1;
+    let k = i + nameMatch[0].length;
+    while (k < token.length && depth > 0) {
+      if (token[k] === "(") depth += 1;
+      else if (token[k] === ")") depth -= 1;
+      k += 1;
+    }
+    if (depth !== 0) return err(`malformed transform "${input.trim()}"`);
+    const body = token.slice(i + nameMatch[0].length, k - 1);
+    i = k;
     matched = true;
-    consumed += m[0].length;
-    const fn = m[1] as string;
-    const args = (m[2] ?? "").split(/[\s,]+/).filter((p) => p.length > 0);
+    const args = body.split(/[\s,]+/).filter((p) => p.length > 0);
     const next = transformFunctionMatrix(fn, args);
     if (next === null) {
+      // A *recognized* function whose args need layout context (%, em, or a
+      // nested math/tree-counting function) or a 3D form (matrix3d,
+      // perspective/…3d) is a valid specified value that just cannot compose
+      // into our 2D matrix — keep the text for Typed OM.
+      if (KNOWN_TRANSFORM_FNS.has(fn)) {
+        unresolvable = true;
+        continue;
+      }
       return err(`unsupported or malformed transform function "${fn}(...)"`);
     }
     acc = multiplyMatrix(acc, next);
@@ -580,11 +798,7 @@ export function parseTransform(input: string): ParseResult<TransformValue> {
   if (!matched) {
     return err(`expected "none" or transform functions, got "${input.trim()}"`);
   }
-  // Reject trailing garbage between/after functions (only whitespace allowed).
-  const leftover = token.replace(fnRe, "").replace(/\s+/g, "");
-  if (leftover.length > 0 || consumed === 0) {
-    return err(`malformed transform "${input.trim()}"`);
-  }
+  if (unresolvable) return ok({ kind: "unresolved", text: input.trim() });
   return ok(acc);
 }
 
@@ -771,14 +985,90 @@ function parseFunctionalColor(token: string): ParseResult<Color> {
   });
 }
 
+/** `hsl(h, s%, l% [, a])` → sRGB (CSS Color 4 §the-hsl-notation). */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const hh = (((h % 360) + 360) % 360) / 360;
+  const ss = Math.max(0, Math.min(1, s / 100));
+  const ll = Math.max(0, Math.min(1, l / 100));
+  const f = (n: number): number => {
+    const k = (n + hh * 12) % 12;
+    const a = ss * Math.min(ll, 1 - ll);
+    return ll - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [f(0) * 255, f(8) * 255, f(4) * 255];
+}
+
+/** `hwb(h, w%, b% [, a])` → sRGB (CSS Color 4 §the-hwb-notation). */
+function hwbToRgb(h: number, w: number, b: number): [number, number, number] {
+  let ww = Math.max(0, Math.min(1, w / 100));
+  let bb = Math.max(0, Math.min(1, b / 100));
+  if (ww + bb >= 1) {
+    const gray = ww / (ww + bb);
+    return [gray * 255, gray * 255, gray * 255];
+  }
+  const [r, g, bl] = hslToRgb(h, 100, 50);
+  return [
+    (r / 255 * (1 - ww - bb) + ww) * 255,
+    (g / 255 * (1 - ww - bb) + ww) * 255,
+    (bl / 255 * (1 - ww - bb) + ww) * 255,
+  ];
+}
+
+/** Parse `hsl()/hsla()`/`hwb()` function bodies (space/comma, optional `/alpha`). */
+function parseCylindricalColor(token: string, kind: "hsl" | "hwb"): ParseResult<Color> {
+  const m = new RegExp(`^${kind}a?\\(([^)]*)\\)$`).exec(token);
+  if (m === null) return err(`invalid ${kind}() in "${token}"`);
+  const body = (m[1] ?? "").trim();
+  const alphaSplit = body.split("/");
+  const comps = alphaSplit[0]!.split(/[\s,]+/).filter((p) => p.length > 0);
+  if (comps.length !== 3) return err(`invalid ${kind}() components in "${token}"`);
+  const hue = Number(comps[0]!.replace(/(deg|grad|rad|turn)$/i, ""));
+  const p1 = comps[1]!.endsWith("%") ? Number(comps[1]!.slice(0, -1)) : NaN;
+  const p2 = comps[2]!.endsWith("%") ? Number(comps[2]!.slice(0, -1)) : NaN;
+  const alpha = alphaSplit[1] === undefined
+    ? (comps.length > 3 ? Number(comps[3]) : 1)
+    : Number(alphaSplit[1]!.replace(/%$/, "")) / (alphaSplit[1]!.endsWith("%") ? 100 : 1);
+  if (!Number.isFinite(hue) || !Number.isFinite(p1) || !Number.isFinite(p2) || !Number.isFinite(alpha)) {
+    return err(`invalid ${kind}() components in "${token}"`);
+  }
+  const [r, g, b] = kind === "hsl" ? hslToRgb(hue, p1, p2) : hwbToRgb(hue, p1, p2);
+  return ok({ r: clampChannel(r), g: clampChannel(g), b: clampChannel(b), a: clampAlpha(alpha) });
+}
+
 /**
- * Parse `input` as a `<color>`: a named color, a `#hex` (3/4/6/8 digit), or an
- * `rgb()/rgba()` function. Channels are clamped to 0..255 and alpha to 0..1.
+ * Colors whose COMPUTED value is the keyword itself (CSS Color 4): they parse
+ * as a `<color>` but carry no sRGB channels. Returned as the keyword string.
+ */
+const COLOR_KEYWORDS = new Set([
+  "currentcolor",
+  // Deprecated system colors (CSS Color 4 §system-colors) — computed value is
+  // the keyword pair resolved at used-value time; we keep the keyword.
+  "activeborder", "activecaption", "appworkspace", "background", "buttonface",
+  "buttonhighlight", "buttonshadow", "buttontext", "captiontext", "graytext",
+  "highlight", "highlighttext", "inactiveborder", "inactivecaption",
+  "inactivecaptiontext", "infobackground", "infotext", "menu", "menutext",
+  "scrollbar", "threeddarkshadow", "threedface", "threedhighlight",
+  "threedlightshadow", "threedshadow", "window", "windowframe", "windowtext",
+  // Modern system colors (CSS Color 4 §css-system-colors).
+  "accentcolor", "accentcolortext", "activetext", "buttonborder",
+  "buttonface", "buttontext", "canvas", "canvastext", "field", "fieldtext",
+  "linktext", "mark", "marktext", "selecteditem", "selecteditemtext",
+  "visitedtext",
+]);
+
+/**
+ * Parse `input` as a `<color>`: a named color, a `#hex` (3/4/6/8 digit), an
+ * `rgb()/rgba()`/`hsl()/hsla()`/`hwb()` function, or a keyword-valued color
+ * (`currentcolor`, system colors). Channels are clamped to 0..255 and alpha
+ * to 0..1. Keyword colors return the keyword string — its computed value.
  */
 export function parseColor(input: string): ParseResult<Color> {
   const token = normalize(input).toLowerCase();
   if (token.length === 0) {
     return err("expected a <color>, got empty value");
+  }
+  if (COLOR_KEYWORDS.has(token)) {
+    return ok(token as unknown as Color);
   }
   if (Object.prototype.hasOwnProperty.call(NAMED_COLORS, token)) {
     return ok(NAMED_COLORS[token] as Color);
@@ -788,6 +1078,12 @@ export function parseColor(input: string): ParseResult<Color> {
   }
   if (token.startsWith("rgb")) {
     return parseFunctionalColor(token);
+  }
+  if (token.startsWith("hsl")) {
+    return parseCylindricalColor(token, "hsl");
+  }
+  if (token.startsWith("hwb")) {
+    return parseCylindricalColor(token, "hwb");
   }
   return err(`unrecognized <color> "${input.trim()}"`);
 }
