@@ -3,34 +3,34 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 54472,
-    "generatedLines": 12855,
-    "testLines": 29935,
-    "totalLines": 97262,
-    "cssPropertyCount": 447,
+    "handWrittenLines": 65959,
+    "generatedLines": 13016,
+    "testLines": 29956,
+    "totalLines": 108931,
+    "cssPropertyCount": 450,
     "domMemberCount": 552,
-    "platformFeatureCount": 999,
+    "platformFeatureCount": 1002,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0008261124981641944,
-    "mechanismDensity": 18.339697459245116,
+    "compatPerLoc": 0.0006822419988174473,
+    "mechanismDensity": 15.191255173668491,
     "executionEvidence": {
-      "subsetCount": 6,
-      "files": 110,
-      "subtests": 462,
-      "passed": 462,
+      "subsetCount": 7,
+      "files": 232,
+      "subtests": 2702,
+      "passed": 2702,
       "failed": 0,
       "errored": 0,
-      "queryCalls": 9761,
-      "recomputes": 2779,
-      "cacheHits": 6982,
-      "verifiedCacheHits": 23,
-      "dependencyReads": 152675,
+      "queryCalls": 26176,
+      "recomputes": 7055,
+      "cacheHits": 19121,
+      "verifiedCacheHits": 564,
+      "dependencyReads": 526946,
       "tracedStages": [
         "qFineComputed",
         "qFineLayout",
         "qFineLayoutStyle",
         "qFinePaint",
-        "qFineRuleIndex",
+        "qFineScopedRuleIndex",
         "qFineSheets"
       ],
       "incrementalEdit": {
@@ -47,45 +47,45 @@
             "recomputes": 172,
             "cacheHits": 500,
             "verifiedCacheHits": 0,
-            "dependencyReads": 8771,
+            "dependencyReads": 12924,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
           {
             "name": "paint-only-edit",
-            "queryCalls": 676,
+            "queryCalls": 674,
             "recomputes": 5,
-            "cacheHits": 671,
+            "cacheHits": 669,
             "verifiedCacheHits": 167,
-            "dependencyReads": 9700,
+            "dependencyReads": 13866,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
           {
             "name": "layout-affecting-edit",
-            "queryCalls": 703,
+            "queryCalls": 701,
             "recomputes": 6,
-            "cacheHits": 697,
+            "cacheHits": 695,
             "verifiedCacheHits": 166,
-            "dependencyReads": 9727,
+            "dependencyReads": 13893,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
@@ -101,17 +101,17 @@
             ]
           }
         ],
-        "queryCalls": 2052,
+        "queryCalls": 2048,
         "recomputes": 183,
-        "cacheHits": 1869,
+        "cacheHits": 1865,
         "verifiedCacheHits": 333,
-        "dependencyReads": 28537,
+        "dependencyReads": 41022,
         "tracedStages": [
           "qFineComputed",
           "qFineLayout",
           "qFineLayoutStyle",
           "qFinePaint",
-          "qFineRuleIndex",
+          "qFineScopedRuleIndex",
           "qFineSheets"
         ]
       },
@@ -132,79 +132,79 @@
             "recomputes": 16,
             "cacheHits": 32,
             "verifiedCacheHits": 0,
-            "dependencyReads": 521,
+            "dependencyReads": 696,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
           {
             "name": "script-paint-only",
             "mutations": 1,
-            "queryCalls": 52,
+            "queryCalls": 50,
             "recomputes": 5,
-            "cacheHits": 47,
+            "cacheHits": 45,
             "verifiedCacheHits": 11,
-            "dependencyReads": 621,
+            "dependencyReads": 809,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
           {
             "name": "script-layout-edit",
             "mutations": 1,
-            "queryCalls": 59,
+            "queryCalls": 57,
             "recomputes": 6,
-            "cacheHits": 53,
+            "cacheHits": 51,
             "verifiedCacheHits": 10,
-            "dependencyReads": 636,
+            "dependencyReads": 824,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           },
           {
             "name": "script-append-child",
             "mutations": 4,
-            "queryCalls": 65,
+            "queryCalls": 62,
             "recomputes": 8,
-            "cacheHits": 57,
+            "cacheHits": 54,
             "verifiedCacheHits": 10,
-            "dependencyReads": 708,
+            "dependencyReads": 925,
             "tracedStages": [
               "qFineComputed",
               "qFineLayout",
               "qFineLayoutStyle",
               "qFinePaint",
-              "qFineRuleIndex",
+              "qFineScopedRuleIndex",
               "qFineSheets"
             ]
           }
         ],
-        "queryCalls": 224,
+        "queryCalls": 217,
         "recomputes": 35,
-        "cacheHits": 189,
+        "cacheHits": 182,
         "verifiedCacheHits": 31,
-        "dependencyReads": 2486,
+        "dependencyReads": 3254,
         "tracedStages": [
           "qFineComputed",
           "qFineLayout",
           "qFineLayoutStyle",
           "qFinePaint",
-          "qFineRuleIndex",
+          "qFineScopedRuleIndex",
           "qFineSheets"
         ]
       },
@@ -1989,8 +1989,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 54472,
-      "ourDisplay": "54,472 lines",
+      "ourValue": 65959,
+      "ourDisplay": "65,959 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2003,13 +2003,13 @@
         "confidence": "cited"
       },
       "verdict": "WIN",
-      "rationale": "Our hand-written surface is ~661× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
+      "rationale": "Our hand-written surface is ~546× smaller than Chromium's cited ~36,000,000 lines — one person can read it front to back. (Honest caveat: smaller surface buys readability, not feature parity.)"
     },
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0008261124981641944,
-      "ourDisplay": "0.0008 passes/line",
+      "ourValue": 0.0006822419988174473,
+      "ourDisplay": "0.0007 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "compat-per-loc",
@@ -2027,17 +2027,17 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 18.339697459245116,
-      "ourDisplay": "18.34 features/kloc",
+      "ourValue": 15.191255173668491,
+      "ourDisplay": "15.19 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "999 platform features (CSS properties + DOM members) over 54,472 hand-written lines = 18.34 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "1002 platform features (CSS properties + DOM members) over 65,959 hand-written lines = 15.19 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
       "label": "CSS-property coverage (raw count)",
-      "ourValue": 447,
-      "ourDisplay": "447 properties",
+      "ourValue": 450,
+      "ourDisplay": "450 properties",
       "competitor": {
         "engine": "CSS specifications (proxy for Chromium coverage)",
         "metric": "css-property-count",
@@ -2050,13 +2050,13 @@
         "confidence": "order-of-magnitude"
       },
       "verdict": "GAP",
-      "rationale": "We implement 447 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each."
+      "rationale": "We implement 450 curated properties vs the several-hundred-property long tail Chromium covers. This is the honest breadth gap — closed one data row at a time (Platform-as-Data), not by hand-writing each."
     },
     {
       "id": "raw-interop",
       "label": "Raw WPT / Interop pass rate",
       "ourValue": 100,
-      "ourDisplay": "100% of maintained WPT subsets (462/462 curated subtests)",
+      "ourDisplay": "100% of maintained WPT subsets (2702/2702 curated subtests)",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "wpt-interop-pass-rate",
