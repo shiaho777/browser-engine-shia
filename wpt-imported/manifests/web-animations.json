@@ -1,0 +1,19 @@
+{
+  "name": "imported-web-animations",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "web-animations/idlharness.window.html",
+    "web-animations/idlharness.window.js",
+    "web-animations/interfaces/Animatable/animate.html",
+    "web-animations/interfaces/DocumentOrShadowRoot/getAnimations.html",
+    "web-animations/interfaces/KeyframeEffect/constructor.html",
+    "web-animations/interfaces/KeyframeEffect/setKeyframes.html",
+    "web-animations/timing-model/animations/canceling-an-animation.html",
+    "web-animations/timing-model/animations/playing-an-animation.html",
+    "web-animations/timing-model/animations/reversing-an-animation.html",
+    "web-animations/timing-model/animations/setting-the-start-time-of-an-animation.html",
+    "web-animations/timing-model/timelines/update-and-send-events.html"
+  ],
+  "baselinePassCount": 0
+}

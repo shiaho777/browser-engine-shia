@@ -1,0 +1,30 @@
+{
+  "name": "imported-webidl",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "webidl/current-realm.html",
+    "webidl/ecmascript-binding/allow-resizable.html",
+    "webidl/ecmascript-binding/builtin-function-properties.any.html",
+    "webidl/ecmascript-binding/builtin-function-properties.any.js",
+    "webidl/ecmascript-binding/default-iterator-object.html",
+    "webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.html",
+    "webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.js",
+    "webidl/ecmascript-binding/es-exceptions/DOMException-is-error.any.html",
+    "webidl/ecmascript-binding/es-exceptions/DOMException-is-error.any.js",
+    "webidl/ecmascript-binding/global-immutable-prototype.any.html",
+    "webidl/ecmascript-binding/global-immutable-prototype.any.js",
+    "webidl/ecmascript-binding/global-object-implicit-this-value.any.html",
+    "webidl/ecmascript-binding/global-object-implicit-this-value.any.js",
+    "webidl/ecmascript-binding/global-object-implicit-this-value.any.worker.html",
+    "webidl/ecmascript-binding/legacy-callback-interface-object.html",
+    "webidl/ecmascript-binding/legacy-factor-function-subclass.window.html",
+    "webidl/ecmascript-binding/legacy-factor-function-subclass.window.js",
+    "webidl/ecmascript-binding/put-forwards.html",
+    "webidl/ecmascript-binding/replaceable-setter-throws-if-defineownproperty-fails.html",
+    "webidl/ecmascript-binding/sequence-conversion.html",
+    "webidl/ecmascript-binding/setter-argument.html",
+    "webidl/ecmascript-binding/window-named-properties-object.html"
+  ],
+  "baselinePassCount": 0
+}

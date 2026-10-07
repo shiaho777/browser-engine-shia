@@ -1,0 +1,22 @@
+{
+  "name": "imported-shadow-dom",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "shadow-dom/ShadowRoot-interface.html",
+    "shadow-dom/attachShadow-with-ShadowRoot.html",
+    "shadow-dom/declarative/declarative-shadow-dom-attachment.html",
+    "shadow-dom/declarative/declarative-shadow-dom-basic.html",
+    "shadow-dom/focus/DocumentOrShadowRoot-activeElement.html",
+    "shadow-dom/input-element-list.html",
+    "shadow-dom/reference-target/tentative/property-reflection-imperative-setup.html",
+    "shadow-dom/reference-target/tentative/property-reflection.html",
+    "shadow-dom/slotchange-customelements.html",
+    "shadow-dom/slotchange-event.html",
+    "shadow-dom/slots-fallback-in-document.html",
+    "shadow-dom/slots-fallback.html",
+    "shadow-dom/slots-outside-shadow-dom.html",
+    "shadow-dom/slots.html"
+  ],
+  "baselinePassCount": 0
+}

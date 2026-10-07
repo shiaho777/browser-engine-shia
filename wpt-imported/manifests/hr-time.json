@@ -1,0 +1,10 @@
+{
+  "name": "imported-hr-time",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "hr-time/timeOrigin.html",
+    "hr-time/timing-attack.html"
+  ],
+  "baselinePassCount": 0
+}

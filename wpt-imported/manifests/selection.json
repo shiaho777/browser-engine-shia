@@ -1,0 +1,9 @@
+{
+  "name": "imported-selection",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "selection/shadow-dom/tentative/Selection-direction.html"
+  ],
+  "baselinePassCount": 0
+}

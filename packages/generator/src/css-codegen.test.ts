@@ -25,6 +25,9 @@ import {
   emitInitialValues,
 } from "./emit/css-codegen.js";
 import { toCamelCase } from "./css-property-def.js";
+import { parseDisplay } from "./value-runtime.js";
+
+const unwrapOk = (r: { ok: boolean; value?: unknown }): unknown => (r.ok ? r.value : undefined);
 
 /** The seven Phase 1 properties (Requirement 14.2). */
 const PHASE1_PROPERTIES = [
@@ -84,15 +87,14 @@ void test("platform-as-data-layout: new properties carry generated camelCase fie
   assert.equal(byName.get("grid-template-columns")?.field, "gridTemplateColumns");
   assert.equal(byName.get("z-index")?.field, "zIndex");
   // The new grammar shapes are wired (integer / number / transform).
-  assert.equal(byName.get("z-index")?.syntax.kind, "integer");
+  assert.equal(byName.get("z-index")?.syntax.kind, "integer-or-keyword");
   assert.equal(byName.get("opacity")?.syntax.kind, "number");
   assert.equal(byName.get("transform")?.syntax.kind, "transform");
-  // display now accepts the table keyword.
+  // display uses the dedicated <display> grammar — it must still accept
+  // the table keyword (asserted through the parser, not the keyword list).
   const display = byName.get("display");
-  assert.ok(display !== undefined && display.syntax.kind === "keyword");
-  if (display !== undefined && display.syntax.kind === "keyword") {
-    assert.ok(display.syntax.keywords.includes("table"), "display must accept the table keyword");
-  }
+  assert.ok(display !== undefined && display.syntax.kind === "display");
+  assert.equal(unwrapOk(parseDisplay("table")), "table");
 });
 
 void test("platform-as-data-layout: emitted artifacts include every new field", () => {
@@ -104,7 +106,7 @@ void test("platform-as-data-layout: emitted artifacts include every new field", 
   assert.match(fields, /readonly gridTemplateColumns: string;/);
   assert.match(fields, /readonly opacity: number;/);
   assert.match(fields, /readonly transform: TransformValue;/);
-  assert.match(fields, /readonly zIndex: number;/);
+  assert.match(fields, /readonly zIndex: number \| "auto";/);
   assert.match(fields, /readonly position: PositionValue;/);
   // Initial values serialized from data.
   assert.match(initials, /opacity: 1/);
@@ -172,7 +174,7 @@ void test("Req 6.2: emitted initial-value table names every field", () => {
   }
   // initial values are serialized from the data (not hand-written)
   assert.match(file.contents, /display: "inline"/);
-  assert.match(file.contents, /fontSize: 16/);
+  assert.match(file.contents, /fontSize: px\(16\)/);
 });
 
 void test("Req 6.2: emitted inheritance table reflects each row's flag", () => {

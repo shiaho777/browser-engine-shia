@@ -108,8 +108,12 @@ void test("Req 3.4: ComputedStyle carries NO geometry field after adding the new
 });
 
 void test("Req 3.2: a malformed new-property value falls back to initial (no crash)", () => {
-  // A `%` translate needs the box size (unavailable to the cascade) → fails to
-  // parse → cascade uses the initial value rather than fabricating a matrix.
-  const cs = cascadeFirstElement("<div></div>", "div { transform: translate(50%) }");
-  assert.equal(cs["transform"], "none", "unparseable transform falls back to initial none");
+  // Wrong-arity matrix is malformed at parse time → the declaration drops and
+  // the cascade resolves to the initial `none` rather than fabricating a value.
+  const cs = cascadeFirstElement("<div></div>", "div { transform: matrix(1,2,3) }");
+  assert.equal(cs["transform"], "none", "malformed transform falls back to initial none");
+  // A `%` translate is VALID but needs the box size — kept as an unresolved
+  // specified value for layout/Typed OM, not dropped.
+  const pct = cascadeFirstElement("<div></div>", "div { transform: translate(50%) }");
+  assert.deepEqual(pct["transform"], { kind: "unresolved", text: "translate(50%)" });
 });

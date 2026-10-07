@@ -43,7 +43,15 @@ const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
 const UA_CSS =
   "html, body, div, p, h1, h2, h3, h4, h5, h6, section, article, header, footer, main, nav, " +
   "ul, ol, li, form, blockquote, pre, hr, figure, figcaption, address, " +
-  "table, thead, tbody, tfoot, tr, td, th, fieldset, legend { display: block }" +
+  "fieldset, legend { display: block }" +
+  // Table elements get their real CSS display values (css-tables-3 / HTML
+  // rendering): tables lay out as tables, rows as rows, cells as cells. The
+  // layout tree builder (layout/src/tree-builder.ts) wraps any misplaced
+  // content (bare text in tables, naked cells) into anonymous wrappers.
+  " table { display: table }" +
+  " tr { display: table-row }" +
+  " td, th { display: table-cell }" +
+  " thead, tbody, tfoot { display: table-row-group }" +
   " head, style, script, title, meta, link, base, noscript, template { display: none }" +
   " body { margin: 8px }" +
   " h1 { font-size: 2em; margin: 0.67em 0 }" +
@@ -78,8 +86,9 @@ export function documentStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  linkEnabled?: (node: DomNode) => boolean,
 ): StyleSheet[] {
-  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media)];
+  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media, linkEnabled)];
 }
 
 /** Optional hook to load an external stylesheet by URL (M2 networking). */
@@ -94,6 +103,7 @@ export function collectStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  linkEnabled?: (node: DomNode) => boolean,
 ): StyleSheet[] {
   const sheets: StyleSheet[] = [];
   const root = dom.nodes.get(dom.root);
@@ -108,10 +118,11 @@ export function collectStylesheets(
     }
     if (node.kind === "element" && node.tag === "style") {
       sheets.push(media !== undefined ? parseCss(encode(styleText(dom, node)), media) : parseCss(encode(styleText(dom, node))));
-    } else if (isActiveStylesheetLink(node)) {
+    } else if (isActiveStylesheetLink(node, linkEnabled?.(node) === true)) {
       const bytes = loadLinkedSheet(node, loadExternal);
       if (bytes !== undefined) {
-        sheets.push(media !== undefined ? parseCss(bytes, media) : parseCss(bytes));
+        const href = node.attrs?.get("href") ?? "";
+        sheets.push(...parseExternalSheetCached(href, bytes, media));
       }
     }
     for (const child of node.children) {
@@ -149,6 +160,38 @@ function loadLinkedSheet(link: DomNode, loadExternal?: SheetLoader): Uint8Array 
     return decodeCssDataUrl(href);
   }
   return loadExternal?.(href);
+}
+
+/**
+ * Parse cache for EXTERNAL sheets keyed by href + byteLength + a cheap
+ * head/tail checksum. `documentStylesheets` runs on every repaint/pump of a
+ * keepAlive page; re-parsing megabytes of minified CSS each render is pure
+ * waste when the bytes are identical. Entries keep a stable StyleSheet
+ * identity so downstream index caches can key on them. Small LRU (8 entries
+ * covers a multi-sheet site plus a couple of tabs).
+ */
+const EXTERNAL_SHEET_CACHE = new Map<string, StyleSheet[]>();
+const EXTERNAL_SHEET_CACHE_MAX = 8;
+
+function parseExternalSheetCached(href: string, bytes: Uint8Array, media?: MediaEnvironment): StyleSheet[] {
+  const head = bytes.subarray(0, 64).reduce((acc, b) => (acc * 31 + b) | 0, 0);
+  const tail = bytes.subarray(Math.max(0, bytes.length - 64)).reduce((acc, b) => (acc * 33 + b) | 0, 0);
+  const key = `${href}|${bytes.byteLength}|${head}|${tail}|${media?.type ?? ""}|${media?.widthPx ?? ""}x${media?.heightPx ?? ""}`;
+  const hit = EXTERNAL_SHEET_CACHE.get(key);
+  if (hit !== undefined) {
+    // Refresh LRU position.
+    EXTERNAL_SHEET_CACHE.delete(key);
+    EXTERNAL_SHEET_CACHE.set(key, hit);
+    return hit;
+  }
+  const sheets = media !== undefined ? [parseCss(bytes, media)] : [parseCss(bytes)];
+  EXTERNAL_SHEET_CACHE.set(key, sheets);
+  while (EXTERNAL_SHEET_CACHE.size > EXTERNAL_SHEET_CACHE_MAX) {
+    const oldest = EXTERNAL_SHEET_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    EXTERNAL_SHEET_CACHE.delete(oldest);
+  }
+  return sheets;
 }
 
 /**

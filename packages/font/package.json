@@ -14,5 +14,8 @@
   },
   "dependencies": {
     "@browser-engine/ir": "0.0.0"
+  },
+  "devDependencies": {
+    "harfbuzzjs": "^1.6.1"
   }
 }

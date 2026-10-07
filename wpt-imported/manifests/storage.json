@@ -1,0 +1,12 @@
+{
+  "name": "imported-storage",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "storage/estimate-parallel.https.any.html",
+    "storage/estimate-parallel.https.any.js",
+    "storage/storagemanager-estimate.https.any.html",
+    "storage/storagemanager-estimate.https.any.js"
+  ],
+  "baselinePassCount": 0
+}

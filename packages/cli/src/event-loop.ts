@@ -18,11 +18,13 @@
  * (fetch → promise reaction → DOM mutation → re-render) is real and ordered.
  */
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 
 import type { NodeId } from "@browser-engine/ir";
 
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { makeCssNamespace } from "./css-namespace.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
 import { coerceGuestString, makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
 
@@ -48,18 +50,40 @@ export interface ScriptNetworkOptions {
    */
   readonly keepAlive?: boolean;
   /**
+   * Aligned with `sources`: the URL each source came from (inline = null),
+   * used as the vm filename so guest stack frames identify the script.
+   */
+  readonly scriptUrls?: readonly (string | null)[];
+  /**
+   * Aligned with `sources`: each script's execution phase (HTML §4.12.1).
+   * "blocking" runs first in document order (inline + external without
+   * defer/async), then "defer" (document order, before DOMContentLoaded),
+   * then "async". Absent = every script is blocking (backward compatible).
+   */
+  readonly scriptPhases?: readonly ("blocking" | "defer" | "async")[];
+  /** Shared holder the document API reads for `document.currentScript`. */
+  readonly currentScriptBox?: { current: import("@browser-engine/ir").NodeId | null };
+  /**
    * Aligned with `sources` (external scripts may be interleaved): the <script>
    * element node executing each source, or null when unknown. Drives
    * `document.currentScript`.
    */
   readonly scriptNodeIds?: readonly (import("@browser-engine/ir").NodeId | null)[];
-  /** Shared holder the document API reads for `document.currentScript`. */
-  readonly currentScriptBox?: { current: import("@browser-engine/ir").NodeId | null };
   /**
-   * Aligned with `sources`: the URL each source came from (inline = null),
-   * used as the vm filename so guest stack frames identify the script.
+   * Diagnostics sink: every guest `console.*` call and every uncaught guest
+   * error (timer/rAF/dynamic-script/listener) is appended here LIVE, so an
+   * embedding host can read page problems without a debugger. Bounded by the
+   * sink owner (cap ~500 entries).
    */
-  readonly scriptUrls?: readonly (string | null)[];
+  readonly diagnostics?: GuestDiagnostics;
+}
+
+/** Host-side collector for guest console output + uncaught errors. */
+export interface GuestDiagnostics {
+  /** `console.<level>(...)` — one formatted line per call. */
+  readonly console: { readonly level: string; readonly message: string }[];
+  /** Uncaught guest errors (formatted `message :: first-stack-frame`). */
+  readonly errors: string[];
 }
 
 /** The outcome of an event-driven run: work performed + DOM mutations. */
@@ -79,6 +103,29 @@ export interface EventDrivenRun {
   readonly getMutations?: () => number;
   readonly drain?: () => void;
   readonly flushAsync?: () => Promise<void>;
+  /**
+   * Host→guest trusted input dispatch (UI Events): fire a platform-generated
+   * pointer/mouse/wheel/keyboard event at a DOM node through the full
+   * capture → target → bubble path. Returns whether not default-prevented.
+   * Present only when the run built its own document API (the keepAlive
+   * classic runner), so an embedding host can drive real page listeners.
+   */
+  readonly dispatchPlatformEvent?: (nodeId: import("@browser-engine/ir").NodeId, event: {
+    readonly type: string;
+    readonly bubbles?: boolean;
+    readonly cancelable?: boolean;
+    readonly clientX?: number;
+    readonly clientY?: number;
+    readonly button?: number;
+    readonly buttons?: number;
+    readonly detail?: number;
+    readonly deltaX?: number;
+    readonly deltaY?: number;
+    readonly deltaZ?: number;
+    readonly deltaMode?: number;
+    readonly key?: string;
+    readonly code?: string;
+  }) => boolean;
 }
 
 /** A minimal Promise-shaped thenable scheduled on the virtual loop's microtasks. */
@@ -264,6 +311,34 @@ class VirtualEventLoop {
   }
 
   /**
+   * Is there loop-side work a future `drain()` could run (queued microtasks,
+   * live rAF callbacks, or uncancelled timers — including wall-gated ones
+   * whose delay has not elapsed yet)? Host-side promise reactions are
+   * invisible here; see `nextTimerDelayMs` + the flush settle loop.
+   */
+  hasQueuedWork(): boolean {
+    if (this.#microtasks.length > 0) return true;
+    if (this.#raf.some((r) => !r.cancelled)) return true;
+    return this.#timers.some((t) => !t.cancelled);
+  }
+
+  /**
+   * Wall-clock milliseconds until the earliest uncancelled timer is due
+   * (`null` when no timer is pending). The drain gate holds timers until
+   * their delay has ACTUALLY elapsed on real-time runs; a flusher that only
+   * yields zero-delay turns starves them forever.
+   */
+  nextTimerDelayMs(): number | null {
+    let earliest: number | null = null;
+    for (const t of this.#timers) {
+      if (t.cancelled) continue;
+      const delay = t.due - this.#clock - this.#realElapsedMs;
+      earliest = earliest === null ? delay : Math.min(earliest, delay);
+    }
+    return earliest;
+  }
+
+  /**
    * Drain microtasks, then either flush one ANIMATION FRAME (the queued
    * `requestAnimationFrame` callbacks, advancing the clock ~16ms) or fire the
    * earliest timer — repeating to a fixed point. The frame budget caps runaway
@@ -272,6 +347,13 @@ class VirtualEventLoop {
    */
   drain(maxSteps = 100000, maxFrames = 1000): void {
     let steps = 0;
+    // Per-drain frame budget (resets every call): an infinite rAF loop (a
+    // particle canvas that re-queues forever) must not PERMANENTLY consume
+    // the budget and starve every later animation — the old cumulative gate
+    // let one page's background particles kill its count-up counters. The
+    // cumulative `frameCount` still counts for metrics; only the runaway
+    // guard is per-drain.
+    let framesThisDrain = 0;
     for (;;) {
       while (this.#microtasks.length > 0) {
         if (steps++ > maxSteps) return;
@@ -284,10 +366,11 @@ class VirtualEventLoop {
       const animating = this.#frameWork?.() ?? false;
       // Flush a frame when a rAF callback is queued OR a CSS animation is still
       // running — either way the frame clock must advance ~16ms.
-      if ((frame.length > 0 || animating) && this.frameCount < maxFrames) {
+      if ((frame.length > 0 || animating) && framesThisDrain < maxFrames) {
         this.#raf = [];
         this.#clock += 16;
         this.frameCount += 1;
+        framesThisDrain += 1;
         // "Update the rendering": sample animations FIRST, then run rAF callbacks.
         if (steps++ > maxSteps) return;
         this.#onFrame?.(this.#clock);
@@ -334,7 +417,7 @@ function emptyRect(): object {
   };
 }
 
-function createObserverStub(kind: "mutation" | "resize" | "intersection" | "performance", cb?: unknown): {
+function createObserverStub(kind: "resize" | "intersection" | "performance", cb?: unknown): {
   observe: (...args: unknown[]) => void;
   unobserve: (...args: unknown[]) => void;
   disconnect: () => void;
@@ -407,8 +490,13 @@ function createObserverStub(kind: "mutation" | "resize" | "intersection" | "perf
 }
 
 function installObserverGlobals(sandbox: Record<string, unknown>): void {
+  // NOTE: MutationObserver is intentionally NOT stubbed here. The real
+  // implementation is installed by buildDocumentApi (script.ts) into the same
+  // domGlobals every runner spreads into the sandbox, so assigning a stub here
+  // would shadow it. The remaining stub kinds (resize/intersection/performance)
+  // are tracked as separate work.
   const make =
-    (kind: "mutation" | "resize" | "intersection" | "performance") =>
+    (kind: "resize" | "intersection" | "performance") =>
     function Observer(this: unknown, cb?: unknown) {
       return createObserverStub(kind, cb);
     };
@@ -429,7 +517,6 @@ function installObserverGlobals(sandbox: Record<string, unknown>): void {
     "resource",
     "visibility-state",
   ];
-  sandbox["MutationObserver"] = make("mutation");
   sandbox["ResizeObserver"] = make("resize");
   sandbox["IntersectionObserver"] = make("intersection");
   sandbox["PerformanceObserver"] = PerformanceObserver;
@@ -609,10 +696,7 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
       querySelectorAll: () => [],
     });
   };
-  sandbox["CSS"] = {
-    supports: () => false,
-    escape: (s: unknown) => String(s),
-  };
+  sandbox["CSS"] = makeCssNamespace();
   if (sandbox["TextEncoder"] === undefined) sandbox["TextEncoder"] = TextEncoder;
   if (sandbox["TextDecoder"] === undefined) sandbox["TextDecoder"] = TextDecoder;
   if (sandbox["URL"] === undefined) sandbox["URL"] = URL;
@@ -824,6 +908,7 @@ function installBrowserGlobals(
   sandbox: Record<string, unknown>,
   href: string,
   consoleCapture?: (level: string, parts: string[]) => void,
+  guestDiagnostics?: GuestDiagnostics,
 ): void {
   let protocol = "";
   let host = "";
@@ -906,6 +991,10 @@ function installBrowserGlobals(
   sandbox["history"] = history;
   sandbox["localStorage"] = localStorage;
   sandbox["sessionStorage"] = sessionStorage;
+  // WebCrypto (Secure Contexts §): analytics/beacon bundles call
+  // `crypto.getRandomValues`/`randomUUID` at import time; reuse Node's
+  // built-in implementation rather than a stub that would throw.
+  sandbox["crypto"] = webcrypto;
   // Console API (Console §1): guest output is CAPTURED into a bounded ring
   // buffer (survivable diagnostics; DevTools-parity) — never printed, never
   // dropped silently. Errors and warnings are kept even past the cap.
@@ -976,6 +1065,37 @@ function installBrowserGlobals(
     countReset: record("count"),
   };
   sandbox["console"] = quietConsole;
+  if (guestDiagnostics !== undefined) {
+    // LIVE diagnostics: guest console output is forwarded to the host sink
+    // (the ring buffer keeps its in-guest readback role for `__consoleLog`).
+    const forward = (level: string): ((...args: unknown[]) => void) => {
+      const inner = (quietConsole as Record<string, ((...a: unknown[]) => void) | undefined>)[level] ?? (() => {});
+      return (...args: unknown[]) => {
+        inner(...args);
+        if (guestDiagnostics.console.length >= 500) guestDiagnostics.console.shift();
+        guestDiagnostics.console.push({ level, message: formatArgs(args) });
+      };
+    };
+    sandbox["console"] = {
+      log: forward("log"),
+      info: forward("info"),
+      warn: forward("warn"),
+      error: forward("error"),
+      debug: forward("debug"),
+      trace: forward("trace"),
+      dir: forward("log"),
+      table: forward("log"),
+      group: forward("group"),
+      groupEnd: forward("group"),
+      groupCollapsed: forward("groupCollapsed"),
+      time: forward("time"),
+      timeEnd: forward("timeEnd"),
+      assert: forward("assert"),
+      clear: (quietConsole as { clear: () => void }).clear,
+      count: forward("count"),
+      countReset: forward("countReset"),
+    };
+  }
   if (consoleCapture !== undefined) {
     sandbox["__consoleSink"] = (level: string, parts: string[]): void => consoleCapture(level, parts);
   }
@@ -1159,11 +1279,20 @@ export function runScriptsOnSession(
   session: FineSession,
   sources: readonly string[],
   resources: ReadonlyMap<string, string> = new Map(),
+  options: { readonly diagnostics?: GuestDiagnostics } = {},
 ): EventDrivenRun {
   const locationBox: { current: unknown } = { current: null };
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations } =
-    buildDocumentApi(session, { locationBox });
   const loop = new VirtualEventLoop();
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations } =
+    buildDocumentApi(session, {
+      locationBox,
+      // MutationObserver delivery must ride THIS loop's microtask queue so
+      // guest-observable ordering (observer callback before the guest's own
+      // queued microtasks) matches the platform.
+      observerScheduler: (fn) => loop.microtask(fn),
+      // D6: attachShadow mutates the flat-tree composition through this.
+      compositionControl: session.createCompositionController(),
+    });
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
 
   const resolveFetchUrl = (input: unknown): string => {
@@ -1227,7 +1356,7 @@ export function runScriptsOnSession(
     cancelAnimationFrame: (id: unknown) => loop.cancelAnimationFrame(Number(id)),
     fetch: fetchFn,
   };
-  installBrowserGlobals(sandbox, session.url);
+  installBrowserGlobals(sandbox, session.url, undefined, options.diagnostics);
   locationBox.current = sandbox["location"];
   installXMLHttpRequest(
     sandbox,
@@ -1280,15 +1409,34 @@ async function runScriptsOnSessionRealInner(
   options: ScriptNetworkOptions = {},
 ): Promise<EventDrivenRun> {
   const locationBox: { current: unknown } = { current: null };
+  // HTML parsing model: parser-inserted scripts execute while readyState is
+  // "loading"; the lifecycle below flips it to "interactive" after
+  // DOMContentLoaded and "complete" after window load. Guests that branch on
+  // readyState (e.g. deferring i18n hydration to DCL) need this ordering —
+  // a constant "complete" strands them on the pre-DCL path forever.
+  const readyStateBox: { current: string } = { current: "loading" };
+  // The box `document.currentScript` reads — the SAME object the source loop
+  // writes below. (Previously the runner wrote its own disconnected box, so
+  // currentScript was always null on this path.) Callers may share the box.
+  const currentScriptBox: { current: NodeId | null } = options.currentScriptBox ?? { current: null };
   // Late-bound dynamic script evaluator: the vm context exists only after
   // the sandbox is fully assembled, but appendChild can fire any time.
   let dynamicScriptEvaluator: ((nodeId: NodeId) => void) | null = null;
   let loopErrorSink: ((error: unknown) => void) | null = null;
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents, fireScriptElementEvent } =
+  const loop = new VirtualEventLoop({ realTime: true });
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents, fireScriptElementEvent, dispatchPlatformEvent } =
     buildDocumentApi(session, {
-      geometryMode: "stub",
+      // "throttled": REAL geometry, cached per mutation-epoch + 48ms. The old
+      // "stub" returned all-zero rects, which silently breaks every SPA that
+      // measures anything (carousel sizing, virtual lists, dialogs) — pages
+      // loaded but were functionally dead.
+      geometryMode: "throttled",
       styleMode: "fast",
       locationBox,
+      readyStateBox,
+      currentScriptBox,
+      observerScheduler: (fn) => loop.microtask(fn),
+      compositionControl: session.createCompositionController(),
       onDynamicScript: (nodeId: NodeId) => dynamicScriptEvaluator?.(nodeId),
       // listener exceptions (lifecycle + document.dispatchEvent) surface as
       // the run's error instead of vanishing
@@ -1297,10 +1445,15 @@ async function runScriptsOnSessionRealInner(
         loopErrorSink?.(error);
       },
     });
-  const loop = new VirtualEventLoop({ realTime: true });
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
   const decoder = new TextDecoder();
-  const inflight = new Set<Promise<void>>();
+  // In-flight guest fetches and the URL each one targets. Abandoning a slow
+  // fetch at the flush budget must name the URL in diagnostics — dropping it
+  // silently strands the guest promise with zero errors anywhere (the
+  // shiaho.sbs stats stall: a ~1s API outlived the 500ms budget). Entries
+  // carry whether the guest aborted: a cancelled fetch dropped at the budget
+  // is correct behavior, not a failure, and stays silent.
+  const inflight = new Map<Promise<void>, { url: string; aborted: () => boolean }>();
   const liveIntervals = new Set<number>();
   const browserFetch = options.browserFetch;
 
@@ -1325,6 +1478,7 @@ async function runScriptsOnSessionRealInner(
     const abortLike = signal as { aborted?: boolean; addEventListener?: (t: string, fn: () => void) => void } | undefined;
     const fetchCore = (): Thenable<object> => {
     const deferred = loop.deferred<object>();
+    const label = resolveFetchUrl(input);
     const job = (async (): Promise<void> => {
       if (browserFetch !== undefined) {
         try {
@@ -1422,7 +1576,7 @@ async function runScriptsOnSessionRealInner(
       );
     })();
     const tracked = job.finally(() => inflight.delete(tracked));
-    inflight.add(tracked);
+    inflight.set(tracked, { url: label, aborted: () => abortLike?.aborted === true });
     return deferred;
     };
     if (abortLike !== undefined && abortLike !== null && abortLike.aborted === true) {
@@ -1477,7 +1631,7 @@ async function runScriptsOnSessionRealInner(
     cancelAnimationFrame: (id: unknown) => loop.cancelAnimationFrame(Number(id)),
     fetch: fetchImpl,
   };
-  installBrowserGlobals(sandbox, session.url);
+  installBrowserGlobals(sandbox, session.url, undefined, options.diagnostics);
   // document.location must be the SAME object as window.location (HTML §7.3);
   // hand the document getter the installed location after globals exist.
   locationBox.current = sandbox["location"];
@@ -1559,32 +1713,59 @@ async function runScriptsOnSessionRealInner(
     }
   };
   loop.onUncaught((e) => {
-    if (error === null) error = formatError(e);
+    const formatted = formatError(e);
+    options.diagnostics?.errors.push(formatted);
+    if (error === null) error = formatted;
   });
   loopErrorSink = (e: unknown): void => {
-    if (error === null) error = formatError(e);
+    const formatted = formatError(e);
+    options.diagnostics?.errors.push(formatted);
+    if (error === null) error = formatted;
   };
-  const box = options.currentScriptBox ?? { current: null as import("@browser-engine/ir").NodeId | null };
-  for (let i = 0; i < sources.length; i += 1) {
-    const source = sources[i] ?? "";
-    if (source.trim() === "") continue;
-    box.current = options.scriptNodeIds?.[i] ?? null;
-    try {
-      // Per-source filename: guest stack frames must identify WHICH script
-      // failed (inline sources are labeled by index, externals by URL when
-      // the host provided scriptUrls).
-      const filename = options.scriptUrls?.[i] ?? `inline-script-${i}.js`;
-      vm.runInContext(source, context, { timeout: 2000, filename });
-    } catch (e) {
-      if (error === null) error = formatError(e);
+  const box = currentScriptBox;
+  // HTML §4.12.1 execution phases: blocking scripts (inline + external without
+  // defer/async) run first in document order, then defer scripts (document
+  // order, still before DOMContentLoaded), then async scripts. The lifecycle
+  // microtasks below are queued AFTER all three phases, so DCL correctly
+  // observes every defer script having already run.
+  const phaseOf = (i: number): "blocking" | "defer" | "async" =>
+    options.scriptPhases?.[i] ?? "blocking";
+  for (const phase of ["blocking", "defer", "async"] as const) {
+    for (let i = 0; i < sources.length; i += 1) {
+      if (phaseOf(i) !== phase) continue;
+      const source = sources[i] ?? "";
+      if (source.trim() === "") continue;
+      box.current = options.scriptNodeIds?.[i] ?? null;
+      try {
+        // Per-source filename: guest stack frames must identify WHICH script
+        // failed (inline sources are labeled by index, externals by URL when
+        // the host provided scriptUrls).
+        const filename = options.scriptUrls?.[i] ?? `inline-script-${i}.js`;
+        vm.runInContext(source, context, { timeout: 2000, filename });
+      } catch (e) {
+        const formatted = formatError(e);
+        options.diagnostics?.errors.push(formatted);
+        if (error === null) error = formatted;
+      }
+      // A static external script that finished executing fires `load` at its
+      // element (HTML: the load event fires after the script has run; page
+      // loaders chain the next fetch from it).
+      if (options.scriptUrls?.[i] != null) {
+        const scriptNodeId = options.scriptNodeIds?.[i];
+        if (scriptNodeId != null) fireScriptElementEvent(scriptNodeId, "load");
+      }
     }
   }
   box.current = null;
   // HTML end-of-parsing lifecycle: DOMContentLoaded at the document, then
   // `load` at the window. SPAs commonly defer hydration until these fire.
   // Callback errors report through the loop's uncaught handler like any task.
+  loop.microtask(() => {
+    readyStateBox.current = "interactive";
+  });
   loop.microtask(() => fireDocumentLifecycleEvents());
   loop.microtask(() => {
+    readyStateBox.current = "complete";
     const winDispatch = sandbox["dispatchEvent"];
     if (typeof winDispatch === "function") {
       (winDispatch as (event: unknown) => boolean)({ type: "load" });
@@ -1592,25 +1773,66 @@ async function runScriptsOnSessionRealInner(
     const onLoad = sandbox["onload"];
     if (typeof onLoad === "function") (onLoad as () => void)();
   });
-  const flushAsync = async (maxMs = 500): Promise<void> => {
+  // Default flush budget: slow-but-alive APIs (a ~1s stats endpoint) must
+  // survive boot. Abandoning them at 500ms stranded guest promises with zero
+  // errors; the budget now covers normal tail latency and abandonment is loud.
+  const flushAsync = async (maxMs = 5000): Promise<void> => {
     loop.drain();
-    let rounds = 0;
     const deadline = Date.now() + Math.max(0, maxMs);
-    while (inflight.size > 0 && rounds < 24 && Date.now() < deadline) {
-      const wait = Promise.allSettled([...inflight]);
-      const timeout = new Promise<void>((resolve) => {
-        setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now())));
-      });
-      await Promise.race([wait, timeout]);
+    const sleep = (ms: number): Promise<void> =>
+      new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
+    // Settle to a fixed point. Guest reactions run on REAL (host) promise
+    // microtasks, invisible to `inflight`: a reaction queued behind our last
+    // drain can START new loop work (a nested fetch inside `.then`, a chained
+    // rAF) after we already observed quiescence — stopping there stalls nested
+    // chains silently with zero errors. So a turn is: yield a real macrotask
+    // (pending host reactions run first), drain, then wait for in-flight
+    // fetches and wall-gated timers. Only consecutive fully-quiet turns stop
+    // us, and the deadline always bounds the total wait.
+    let quietTurns = 0;
+    for (let iter = 0; iter < 128; iter += 1) {
+      await sleep(0);
       loop.drain();
-      rounds += 1;
+      // The drain above queued host-side reactions (native promise
+      // continuations) that run AFTER this task: yield once more and drain
+      // again BEFORE observing quiescence, or the observation is blind to
+      // work the drain itself just caused (the nested-fetch stall).
+      await sleep(0);
+      loop.drain();
+      if (inflight.size > 0) {
+        if (Date.now() >= deadline) break;
+        const wait = Promise.allSettled([...inflight.keys()]);
+        await Promise.race([wait, sleep(Math.min(50, Math.max(0, deadline - Date.now())))]);
+        loop.drain();
+        quietTurns = 0;
+        continue;
+      }
+      if (loop.hasQueuedWork()) {
+        const timerDelay = loop.nextTimerDelayMs();
+        if (timerDelay !== null && timerDelay > 0) {
+          if (Date.now() >= deadline) break;
+          await sleep(Math.min(timerDelay, 100, Math.max(0, deadline - Date.now())));
+          loop.drain();
+        }
+        quietTurns = 0;
+        continue;
+      }
+      quietTurns += 1;
+      if (quietTurns >= 2) break;
+    }
+    if (inflight.size > 0) {
+      // Budget exhausted with fetches still in flight: the guest promises
+      // will never settle from the page's view. Name every UNABORTED
+      // abandoned URL — a silent drop here once froze a whole page on zeros.
+      for (const { url, aborted } of new Set(inflight.values())) {
+        if (aborted()) continue;
+        if (options.diagnostics !== undefined && options.diagnostics.errors.length < 500) {
+          options.diagnostics.errors.push(`fetch abandoned after ${String(maxMs)}ms budget: ${url}`);
+        }
+        if (error === null) error = `fetch abandoned after ${String(maxMs)}ms budget: ${url}`;
+      }
     }
     inflight.clear();
-    loop.drain();
-    // Guest fetch chains run on REAL promise microtasks (host queue); a guest
-    // reaction may hop through our loop thenables, so yield a full macrotask
-    // turn (which runs ALL chained host microtasks) before the final drain.
-    await new Promise<void>((resolve) => setImmediate(resolve));
     loop.drain();
     if (options.keepAlive !== true) {
       for (const id of liveIntervals) clearInterval(id);
@@ -1635,6 +1857,7 @@ async function runScriptsOnSessionRealInner(
     getMutations: mutations,
     drain: () => loop.drain(),
     flushAsync,
+    dispatchPlatformEvent,
   };
 }
 

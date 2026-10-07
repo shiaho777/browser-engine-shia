@@ -1,0 +1,26 @@
+{
+  "name": "imported-service-workers",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "service-workers/cache-storage/cache-add.https.any.html",
+    "service-workers/cache-storage/cache-add.https.any.js",
+    "service-workers/cache-storage/cache-delete.https.any.html",
+    "service-workers/cache-storage/cache-delete.https.any.js",
+    "service-workers/cache-storage/cache-keys.https.any.html",
+    "service-workers/cache-storage/cache-keys.https.any.js",
+    "service-workers/cache-storage/cache-match.https.any.html",
+    "service-workers/cache-storage/cache-match.https.any.js",
+    "service-workers/cache-storage/cache-matchAll.https.any.html",
+    "service-workers/cache-storage/cache-matchAll.https.any.js",
+    "service-workers/cache-storage/cache-put.https.any.html",
+    "service-workers/cache-storage/cache-put.https.any.js",
+    "service-workers/cache-storage/cache-storage-keys.https.any.html",
+    "service-workers/cache-storage/cache-storage-keys.https.any.js",
+    "service-workers/cache-storage/cache-storage-match.https.any.html",
+    "service-workers/cache-storage/cache-storage-match.https.any.js",
+    "service-workers/cache-storage/cache-storage.https.any.html",
+    "service-workers/cache-storage/cache-storage.https.any.js"
+  ],
+  "baselinePassCount": 0
+}

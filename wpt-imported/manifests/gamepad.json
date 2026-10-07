@@ -1,0 +1,10 @@
+{
+  "name": "imported-gamepad",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "gamepad/idlharness.window.html",
+    "gamepad/idlharness.window.js"
+  ],
+  "baselinePassCount": 0
+}

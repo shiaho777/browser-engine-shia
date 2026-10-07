@@ -40,6 +40,22 @@ export function displayListToCommandBuffer(
         h: Number(cmd.rect.height),
         fragment: { kind: "solid", color: toGpuColor(cmd.fill) },
       });
+    } else if (cmd.op === "gradient") {
+      // A gradient background is exactly the GPU's programmable-fragment quad:
+      // multi-stop interpolation along the CSS angle (the same projection the
+      // software shade() and the backend rasterizer use).
+      commands.push({
+        op: "quad",
+        x: Number(cmd.rect.x),
+        y: Number(cmd.rect.y),
+        w: Number(cmd.rect.width),
+        h: Number(cmd.rect.height),
+        fragment: {
+          kind: "linear-gradient",
+          stops: cmd.stops.map((s) => ({ color: toGpuColor(s.color), position: s.position })),
+          angle: cmd.angle,
+        },
+      });
     }
   }
   return { width, height, commands };

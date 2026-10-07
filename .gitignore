@@ -9,3 +9,6 @@ dist/
 .codebuddy/
 .zcode/
 artifacts/
+
+# Reference engine snapshot (not our code, do not commit)
+ladybird-master/

@@ -21,6 +21,7 @@
  * primitive); coverage/image/layer WGSL passes extend it at the same seam.
  */
 import type { CommandBuffer, Fragment, GpuColor } from "./pipeline.js";
+import { sampleGradientStops } from "./pipeline.js";
 import type { GpuDevice, GpuSurface } from "./device.js";
 import {
   GPUBufferUsage,
@@ -229,13 +230,17 @@ function buildVertices(cmd: CommandBuffer): Float32Array {
 function cornerColor(fragment: Fragment, u: number, v: number): GpuColor {
   if (fragment.kind === "solid") return fragment.color;
   if (fragment.kind === "linear-gradient") {
-    const t = fragment.axis === "x" ? u : v;
-    return {
-      r: fragment.from.r + (fragment.to.r - fragment.from.r) * t,
-      g: fragment.from.g + (fragment.to.g - fragment.from.g) * t,
-      b: fragment.from.b + (fragment.to.b - fragment.from.b) * t,
-      a: fragment.from.a + (fragment.to.a - fragment.from.a) * t,
-    };
+    // Delegate to the shared multi-stop evaluator (imported from pipeline).
+    return sampleGradientStops(fragment.stops, gradientT(fragment.angle, u, v));
   }
   return { r: 0, g: 0, b: 0, a: 0 }; // coverage/image need textures (seam extension).
+}
+
+/** The CSS gradient-line projection in normalized quad space. */
+function gradientT(angleDeg: number, u: number, v: number): number {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+  const len = Math.abs(dx) + Math.abs(dy);
+  return len > 0 ? ((u - 0.5) * dx + (v - 0.5) * dy) / len + 0.5 : 0.5;
 }

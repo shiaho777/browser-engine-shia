@@ -37,7 +37,14 @@ export type LengthSizing = Px | "auto" | "none";
  */
 export type TransformValue =
   | readonly [number, number, number, number, number, number]
-  | "none";
+  | "none"
+  /**
+   * Well-formed transform functions that cannot collapse to a 2D matrix —
+   * `translate(50%)`, `perspective(10em)`, `matrix3d(…)`. The specified text is
+   * preserved so computed-style surfaces reify the component list (Typed OM)
+   * instead of fabricating a wrong matrix.
+   */
+  | { readonly kind: "unresolved"; readonly text: string };
 
 /** Parse `value` as one of a fixed set of `keywords` (e.g. `display`). */
 export interface KeywordGrammar {
@@ -61,10 +68,36 @@ export interface LengthOrKeywordGrammar {
   readonly keywords: readonly string[];
 }
 
+/** Parse `value` as a `<color>` OR one of `keywords` (e.g. `outline-color: invert`). */
+export interface ColorOrKeywordGrammar {
+  readonly kind: "color-or-keyword";
+  readonly keywords: readonly string[];
+}
+
 /** Parse `value` as a 1-to-4 `<length>` quad expanded to four edges (`margin`). */
 export interface EdgesGrammar {
   readonly kind: "edges";
   readonly of: "length";
+}
+
+/** Parse `value` as an `<integer>` OR one of `keywords` (e.g. `column-count: auto`). */
+export interface IntegerOrKeywordGrammar {
+  readonly kind: "integer-or-keyword";
+  readonly keywords: readonly string[];
+  /** Optional inclusive lower bound the parsed integer is clamped to. */
+  readonly min?: number;
+  /** Optional inclusive upper bound the parsed integer is clamped to. */
+  readonly max?: number;
+}
+
+/** Parse `value` as an `<integer>` OR one of `keywords` (e.g. `column-count: auto`). */
+export interface IntegerOrKeywordGrammar {
+  readonly kind: "integer-or-keyword";
+  readonly keywords: readonly string[];
+  /** Optional inclusive lower bound the parsed integer is clamped to. */
+  readonly min?: number;
+  /** Optional inclusive upper bound the parsed integer is clamped to. */
+  readonly max?: number;
 }
 
 /** Parse `value` as an `<integer>` (e.g. `z-index`, a grid track count). */
@@ -90,6 +123,22 @@ export interface TransformGrammar {
   readonly kind: "transform";
 }
 
+/** Parse `value` as a `<time>` (`Ns`/`Nms`), stored as SECONDS (number). */
+export interface TimeGrammar {
+  readonly kind: "time";
+  /** Optional inclusive lower bound the parsed time is clamped to. */
+  readonly min?: number;
+  /** Optional inclusive upper bound the parsed time is clamped to. */
+  readonly max?: number;
+}
+
+/** Parse `value` as a comma-separated `<time>#` list, stored as SECONDS[]. */
+export interface TimesGrammar {
+  readonly kind: "times";
+  readonly min?: number;
+  readonly max?: number;
+}
+
 /**
  * Parse `value` as a free-form trimmed string (e.g. `font-family`, `content`,
  * `cursor` URLs). Any non-empty value parses; the canonical form is trimmed,
@@ -100,17 +149,44 @@ export interface StringGrammar {
   readonly kind: "string";
 }
 
+/**
+ * Parse `value` as a `<display>` (css-display-3): a single keyword from the
+ * outside/inside/internal/box/legacy sets, an `[ <display-outside> ||
+ * <display-inside> ]` pair (either order), or a `<display-listitem>`
+ * combination (`<display-outside>? && [ flow | flow-root ]? && list-item`).
+ * Stored as normalized text — the multi-keyword space has no narrower shape.
+ */
+export interface DisplayGrammar {
+  readonly kind: "display";
+}
+
+/**
+ * Parse `value` as a `cursor` list (css-ui-4):
+ * `[ [ <url> | <image> ] [ <number>{2} ]? ,]* <cursor-keyword>` — zero or
+ * more image items with optional hotspot coordinates, ending in a mandatory
+ * keyword. Stored as normalized text.
+ */
+export interface CursorGrammar {
+  readonly kind: "cursor";
+}
+
 /** The closed set of value grammars (Phase 1 subset + the layout/compositing shapes). */
 export type ValueGrammar =
   | KeywordGrammar
   | ColorGrammar
+  | ColorOrKeywordGrammar
   | LengthGrammar
   | LengthOrKeywordGrammar
   | EdgesGrammar
   | IntegerGrammar
+  | IntegerOrKeywordGrammar
   | NumberGrammar
   | TransformGrammar
-  | StringGrammar;
+  | TimeGrammar
+  | TimesGrammar
+  | StringGrammar
+  | DisplayGrammar
+  | CursorGrammar;
 
 // ---- ergonomic constructors for the data table ----------------------------
 
@@ -122,6 +198,11 @@ export function keyword(...keywords: readonly string[]): KeywordGrammar {
 /** `color()` — the `<color>` grammar. */
 export function color(): ColorGrammar {
   return { kind: "color" };
+}
+
+/** `colorOr("invert")` — a `<color>` or one of the given keywords. */
+export function colorOr(...keywords: readonly string[]): ColorOrKeywordGrammar {
+  return { kind: "color-or-keyword", keywords };
 }
 
 /** `length()` — a single `<length>` grammar. */
@@ -144,9 +225,27 @@ export function integer(bounds: { readonly min?: number; readonly max?: number }
   return { kind: "integer", ...bounds };
 }
 
+/** `integerOrKeyword(["auto"], { min })` — an `<integer>` or one of the given keywords. */
+export function integerOrKeyword(
+  keywords: readonly string[],
+  bounds: { readonly min?: number; readonly max?: number } = {},
+): IntegerOrKeywordGrammar {
+  return { kind: "integer-or-keyword", keywords, ...bounds };
+}
+
 /** `number({ min, max })` — a `<number>` grammar, optionally clamped. */
 export function number(bounds: { readonly min?: number; readonly max?: number } = {}): NumberGrammar {
   return { kind: "number", ...bounds };
+}
+
+/** `time({ min, max })` — a `<time>` grammar (seconds as number), optionally clamped. */
+export function time(bounds: { readonly min?: number; readonly max?: number } = {}): TimeGrammar {
+  return { kind: "time", ...bounds };
+}
+
+/** `times({ min, max })` — a `<time>#` list grammar (seconds[]), optionally clamped. */
+export function times(bounds: { readonly min?: number; readonly max?: number } = {}): TimesGrammar {
+  return { kind: "times", ...bounds };
 }
 
 /** `transform()` — the `<transform>` grammar (`none` or `matrix(...)`). */
@@ -158,3 +257,18 @@ export function transform(): TransformGrammar {
 export function string(): StringGrammar {
   return { kind: "string" };
 }
+
+/** `display()` — the multi-keyword `<display>` grammar. */
+export function display(): DisplayGrammar {
+  return { kind: "display" };
+}
+
+/** `cursor()` — the `<cursor>` image-list + keyword grammar. */
+export function cursor(): CursorGrammar {
+  return { kind: "cursor" };
+}
+
+// The unresolved-length specified forms are part of the value vocabulary a
+// `tsType` may name (e.g. imported rows whose initial keeps a percentage), so
+// the computed-style-fields emitter can import them through this module.
+export type { SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";

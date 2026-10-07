@@ -6,7 +6,7 @@
  * Regenerate with `npm run generate --workspace @browser-engine/generator`.
  */
 import type { Color, Edges, FlexDirection, FloatValue, PositionValue, Px } from "@browser-engine/ir";
-import type { LengthOrAuto, LengthSizing, TransformValue } from "../value-grammar.js";
+import type { LengthOrAuto, LengthSizing, SpecifiedLength, TransformValue } from "../value-grammar.js";
 
 /**
  * The typed fields the cascade produces, one per CSS property in the data table.
@@ -20,7 +20,7 @@ export interface GeneratedComputedStyleFields {
   readonly height: LengthOrAuto;
   readonly margin: Edges<Px>;
   readonly backgroundColor: Color;
-  readonly fontSize: Px;
+  readonly fontSize: LengthOrAuto;
   readonly position: PositionValue;
   readonly float: FloatValue;
   readonly top: LengthOrAuto;
@@ -31,12 +31,12 @@ export interface GeneratedComputedStyleFields {
   readonly gridTemplateColumns: string;
   readonly opacity: number;
   readonly transform: TransformValue;
-  readonly zIndex: number;
+  readonly zIndex: number | "auto";
   readonly padding: Edges<Px>;
-  readonly marginTop: Px;
-  readonly marginRight: Px;
-  readonly marginBottom: Px;
-  readonly marginLeft: Px;
+  readonly marginTop: LengthOrAuto;
+  readonly marginRight: LengthOrAuto;
+  readonly marginBottom: LengthOrAuto;
+  readonly marginLeft: LengthOrAuto;
   readonly paddingTop: Px;
   readonly paddingRight: Px;
   readonly paddingBottom: Px;
@@ -57,14 +57,14 @@ export interface GeneratedComputedStyleFields {
   readonly overflow: string;
   readonly cursor: string;
   readonly fontFamily: string;
-  readonly fontWeight: number;
+  readonly fontWeight: number | "normal" | "bold" | "bolder" | "lighter";
   readonly fontStyle: string;
-  readonly lineHeight: string;
+  readonly lineHeight: string | number;
   readonly textAlign: string;
   readonly textDecorationLine: string;
   readonly textTransform: string;
   readonly whiteSpace: string;
-  readonly letterSpacing: Px;
+  readonly letterSpacing: LengthOrAuto;
   readonly flexWrap: string;
   readonly justifyContent: string;
   readonly alignItems: string;
@@ -76,19 +76,19 @@ export interface GeneratedComputedStyleFields {
   readonly order: number;
   readonly gridTemplateRows: string;
   readonly gap: Px;
-  readonly borderTopWidth: Px;
-  readonly borderRightWidth: Px;
-  readonly borderBottomWidth: Px;
-  readonly borderLeftWidth: Px;
-  readonly outlineWidth: Px;
+  readonly borderTopWidth: LengthOrAuto;
+  readonly borderRightWidth: LengthOrAuto;
+  readonly borderBottomWidth: LengthOrAuto;
+  readonly borderLeftWidth: LengthOrAuto;
+  readonly outlineWidth: LengthOrAuto;
   readonly outlineStyle: string;
-  readonly outlineColor: Color;
+  readonly outlineColor: Color | string;
   readonly outlineOffset: Px;
   readonly listStyleType: string;
   readonly listStylePosition: string;
   readonly verticalAlign: string;
   readonly textIndent: Px;
-  readonly wordSpacing: Px;
+  readonly wordSpacing: LengthOrAuto;
   readonly wordBreak: string;
   readonly overflowWrap: string;
   readonly textOverflow: string;
@@ -139,12 +139,12 @@ export interface GeneratedComputedStyleFields {
   readonly transformOrigin: string;
   readonly perspectiveOrigin: string;
   readonly transitionProperty: string;
-  readonly transitionDuration: number;
-  readonly transitionDelay: number;
+  readonly transitionDuration: readonly number[];
+  readonly transitionDelay: readonly number[];
   readonly transitionTimingFunction: string;
   readonly animationName: string;
-  readonly animationDuration: number;
-  readonly animationDelay: number;
+  readonly animationDuration: readonly number[];
+  readonly animationDelay: readonly number[];
   readonly animationTimingFunction: string;
   readonly animationIterationCount: number;
   readonly animationDirection: string;
@@ -269,6 +269,9 @@ export interface GeneratedComputedStyleFields {
   readonly lightingColor: Color;
   readonly textAnchor: string;
   readonly dominantBaseline: string;
+  readonly alignmentBaseline: string;
+  readonly baselineShift: string;
+  readonly baselineSource: string;
   readonly colorInterpolation: string;
   readonly shapeRendering: string;
   readonly vectorEffect: string;
@@ -354,6 +357,113 @@ export interface GeneratedComputedStyleFields {
   readonly overflowBlock: string;
   readonly overflowInline: string;
   readonly offset: string;
+  readonly anchorName: string;
+  readonly anchorScope: string;
+  readonly animationComposition: string;
+  readonly animationTimeline: string;
+  readonly backgroundPositionX: Px | SpecifiedLength | "center" | "left" | "right";
+  readonly backgroundPositionY: Px | SpecifiedLength | "center" | "bottom" | "top";
+  readonly blockEllipsis: string;
+  readonly borderBlockColor: string;
+  readonly borderBlockEnd: string;
+  readonly borderBlockStart: string;
+  readonly borderBlockStyle: string;
+  readonly borderBlockWidth: string;
+  readonly borderImageOutset: string;
+  readonly borderImageRepeat: string;
+  readonly borderImageSlice: string;
+  readonly borderImageSource: string;
+  readonly borderImageWidth: string;
+  readonly borderInlineColor: string;
+  readonly borderInlineEnd: string;
+  readonly borderInlineStart: string;
+  readonly borderInlineStyle: string;
+  readonly borderInlineWidth: string;
+  readonly clip: string;
+  readonly colorInterpolationFilters: string;
+  readonly columnHeight: LengthOrAuto;
+  readonly containIntrinsicHeight: string;
+  readonly containIntrinsicWidth: string;
+  readonly container: string;
+  readonly containerName: string;
+  readonly containerType: string;
+  readonly continue: string;
+  readonly cornerBlockEndShape: string;
+  readonly cornerBlockStartShape: string;
+  readonly cornerBottomLeftShape: string;
+  readonly cornerBottomRightShape: string;
+  readonly cornerBottomShape: string;
+  readonly cornerInlineEndShape: string;
+  readonly cornerInlineStartShape: string;
+  readonly cornerLeftShape: string;
+  readonly cornerRightShape: string;
+  readonly cornerShape: string;
+  readonly cornerTopLeftShape: string;
+  readonly cornerTopRightShape: string;
+  readonly cornerTopShape: string;
+  readonly cx: Px;
+  readonly cy: Px;
+  readonly d: string;
+  readonly fontLanguageOverride: string;
+  readonly fontVariantAlternates: string;
+  readonly fontVariantCaps: string;
+  readonly fontVariantEastAsian: string;
+  readonly fontVariantEmoji: string;
+  readonly fontVariantLigatures: string;
+  readonly fontVariantPosition: string;
+  readonly fontWidth: string;
+  readonly gridColumnEnd: string;
+  readonly gridColumnStart: string;
+  readonly gridRowEnd: string;
+  readonly gridRowStart: string;
+  readonly maskClip: string;
+  readonly maskComposite: string;
+  readonly maskImage: string;
+  readonly maskMode: string;
+  readonly maskOrigin: string;
+  readonly maskPosition: string;
+  readonly maskRepeat: string;
+  readonly maskSize: Px | "auto" | "cover" | "contain";
+  readonly mathDepth: number;
+  readonly mathShift: string;
+  readonly mathStyle: string;
+  readonly maxLines: number | "none";
+  readonly overflowClipMargin: Px;
+  readonly overflowClipMarginBlock: Px;
+  readonly overflowClipMarginBottom: Px;
+  readonly overflowClipMarginInline: Px;
+  readonly overflowClipMarginLeft: Px;
+  readonly overflowClipMarginRight: Px;
+  readonly overflowClipMarginTop: Px;
+  readonly positionAnchor: string;
+  readonly positionArea: string;
+  readonly positionTryFallbacks: string;
+  readonly positionTryOrder: string;
+  readonly positionVisibility: string;
+  readonly r: Px;
+  readonly rx: LengthOrAuto;
+  readonly ry: LengthOrAuto;
+  readonly scrollMargin: Px;
+  readonly scrollMarginInline: Px;
+  readonly scrollPadding: LengthOrAuto;
+  readonly scrollPaddingInline: LengthOrAuto;
+  readonly scrollTimeline: string;
+  readonly scrollTimelineAxis: string;
+  readonly scrollTimelineName: string;
+  readonly textDecorationSkipInk: string;
+  readonly textUnderlinePosition: string;
+  readonly textWrap: string;
+  readonly textWrapMode: string;
+  readonly textWrapStyle: string;
+  readonly timelineScope: string;
+  readonly transitionBehavior: string;
+  readonly viewTimeline: string;
+  readonly viewTimelineAxis: string;
+  readonly viewTimelineInset: string;
+  readonly viewTimelineName: string;
+  readonly viewTransitionName: string;
+  readonly whiteSpaceCollapse: string;
+  readonly whiteSpaceTrim: string;
 }
 
 /** The ComputedStyle field names, in data-table order. */
@@ -613,6 +723,9 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "lightingColor",
   "textAnchor",
   "dominantBaseline",
+  "alignmentBaseline",
+  "baselineShift",
+  "baselineSource",
   "colorInterpolation",
   "shapeRendering",
   "vectorEffect",
@@ -698,4 +811,111 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "overflowBlock",
   "overflowInline",
   "offset",
+  "anchorName",
+  "anchorScope",
+  "animationComposition",
+  "animationTimeline",
+  "backgroundPositionX",
+  "backgroundPositionY",
+  "blockEllipsis",
+  "borderBlockColor",
+  "borderBlockEnd",
+  "borderBlockStart",
+  "borderBlockStyle",
+  "borderBlockWidth",
+  "borderImageOutset",
+  "borderImageRepeat",
+  "borderImageSlice",
+  "borderImageSource",
+  "borderImageWidth",
+  "borderInlineColor",
+  "borderInlineEnd",
+  "borderInlineStart",
+  "borderInlineStyle",
+  "borderInlineWidth",
+  "clip",
+  "colorInterpolationFilters",
+  "columnHeight",
+  "containIntrinsicHeight",
+  "containIntrinsicWidth",
+  "container",
+  "containerName",
+  "containerType",
+  "continue",
+  "cornerBlockEndShape",
+  "cornerBlockStartShape",
+  "cornerBottomLeftShape",
+  "cornerBottomRightShape",
+  "cornerBottomShape",
+  "cornerInlineEndShape",
+  "cornerInlineStartShape",
+  "cornerLeftShape",
+  "cornerRightShape",
+  "cornerShape",
+  "cornerTopLeftShape",
+  "cornerTopRightShape",
+  "cornerTopShape",
+  "cx",
+  "cy",
+  "d",
+  "fontLanguageOverride",
+  "fontVariantAlternates",
+  "fontVariantCaps",
+  "fontVariantEastAsian",
+  "fontVariantEmoji",
+  "fontVariantLigatures",
+  "fontVariantPosition",
+  "fontWidth",
+  "gridColumnEnd",
+  "gridColumnStart",
+  "gridRowEnd",
+  "gridRowStart",
+  "maskClip",
+  "maskComposite",
+  "maskImage",
+  "maskMode",
+  "maskOrigin",
+  "maskPosition",
+  "maskRepeat",
+  "maskSize",
+  "mathDepth",
+  "mathShift",
+  "mathStyle",
+  "maxLines",
+  "overflowClipMargin",
+  "overflowClipMarginBlock",
+  "overflowClipMarginBottom",
+  "overflowClipMarginInline",
+  "overflowClipMarginLeft",
+  "overflowClipMarginRight",
+  "overflowClipMarginTop",
+  "positionAnchor",
+  "positionArea",
+  "positionTryFallbacks",
+  "positionTryOrder",
+  "positionVisibility",
+  "r",
+  "rx",
+  "ry",
+  "scrollMargin",
+  "scrollMarginInline",
+  "scrollPadding",
+  "scrollPaddingInline",
+  "scrollTimeline",
+  "scrollTimelineAxis",
+  "scrollTimelineName",
+  "textDecorationSkipInk",
+  "textUnderlinePosition",
+  "textWrap",
+  "textWrapMode",
+  "textWrapStyle",
+  "timelineScope",
+  "transitionBehavior",
+  "viewTimeline",
+  "viewTimelineAxis",
+  "viewTimelineInset",
+  "viewTimelineName",
+  "viewTransitionName",
+  "whiteSpaceCollapse",
+  "whiteSpaceTrim",
 ];

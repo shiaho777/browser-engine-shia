@@ -1,0 +1,10 @@
+{
+  "name": "imported-urlpattern",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "urlpattern/urlpattern.any.html",
+    "urlpattern/urlpattern.any.js"
+  ],
+  "baselinePassCount": 0
+}

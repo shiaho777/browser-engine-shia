@@ -104,6 +104,41 @@ export const pipelineShaper: TextShaper = {
   },
 };
 
+// E1: the REAL HarfBuzz shaper, engaged via ENGINE_SHAPER=harfbuzz (lazy —
+// the WASM module initializes on first use; absent the flag the proportional
+// metrics placeholder above remains the pipeline shaper, byte-for-byte).
+let harfbuzzOverride: TextShaper | null | undefined;
+export function resolvePipelineShaper(): TextShaper {
+  if (process.env["ENGINE_SHAPER"] !== "harfbuzz") {
+    return pipelineShaper;
+  }
+  if (harfbuzzOverride === undefined) {
+    // Async init: the first resolvePipelineShaper() call returns the
+    // placeholder while the WASM module loads in the background; once ready,
+    // every subsequent layout uses the real shaper.
+    void loadFontModule()
+      .then((font) => {
+        harfbuzzOverride = font.createHarfBuzzShaper();
+      })
+      .catch(() => {
+        harfbuzzOverride = null; // unavailable — keep the placeholder.
+      });
+    harfbuzzOverride = null; // still loading — placeholder for THIS call.
+  }
+  return harfbuzzOverride ?? pipelineShaper;
+}
+
+/**
+ * The font package's harfbuzz entry, imported lazily and typed at the seam.
+ * A static import would pull the harfbuzzjs WASM into EVERY cli process; the
+ * lazy dynamic import keeps it out of the default runtime path.
+ */
+let fontModule: { createHarfBuzzShaper: () => TextShaper } | undefined;
+async function loadFontModule(): Promise<{ createHarfBuzzShaper: () => TextShaper }> {
+  fontModule ??= await import("@browser-engine/font");
+  return fontModule;
+}
+
 export function pipelinePrimaryFontName(): string {
   return FACES.length > 1 ? "system+builtin" : "builtin";
 }

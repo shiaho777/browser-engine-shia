@@ -11,7 +11,7 @@ import {
   type WptSubsetManifestRunSummary,
 } from "./wpt-manifest.js";
 
-/** Parsed args for `wpt-subsets [manifest-dir] [--wpt-root path] [--json]`. */
+/** Parsed args for `wpt-subsets [manifest-dir] [--dir manifest-dir] [--wpt-root path] [--json]`. */
 export interface WptSubsetCommandArgs {
   readonly manifestDir: string;
   readonly wptRootOverride?: string;
@@ -34,6 +34,18 @@ export function parseWptSubsetArgs(argv: readonly string[]): WptSubsetCommandArg
     }
     if (arg === "--trace") {
       trace = true;
+      continue;
+    }
+    if (arg === "--dir") {
+      const raw = argv[i + 1];
+      if (raw === undefined) {
+        throw new Error("wpt-subsets: --dir requires a path");
+      }
+      if (manifestDir !== undefined) {
+        throw new Error("wpt-subsets: manifest directory given twice (positional and --dir)");
+      }
+      manifestDir = raw;
+      i += 1;
       continue;
     }
     if (arg === "--wpt-root") {
@@ -66,7 +78,7 @@ export async function runWptSubsetsCommand(argv: readonly string[]): Promise<num
     args = parseWptSubsetArgs(argv);
   } catch (error: unknown) {
     console.error(error instanceof Error ? error.message : String(error));
-    console.error("usage: wpt-subsets [manifest-dir] [--wpt-root path] [--json]");
+    console.error("usage: wpt-subsets [manifest-dir] [--dir manifest-dir] [--wpt-root path] [--json]");
     return 1;
   }
 

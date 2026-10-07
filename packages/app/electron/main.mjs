@@ -56,6 +56,17 @@ function withDisplayDpr(viewport) {
 }
 
 function okFrame(frame, extra = {}) {
+  if (frame && frame.pngBytes) {
+    // Binary path: the raw PNG travels once, at the top level (structured
+    // clone would copy every occurrence separately, so strip both the base64
+    // twin and the nested copy of the bytes).
+    const { pngBase64: _omit, pngBytes: _bytes, ...metaFrame } = frame;
+    return okFrameImpl(metaFrame, { ...extra, frameMode: "binary", pngBytes: frame.pngBytes });
+  }
+  return okFrameImpl(frame, { ...extra, frameMode: "base64" });
+}
+
+function okFrameImpl(frame, extra = {}) {
   return {
     ok: true,
     frame,
@@ -63,7 +74,6 @@ function okFrame(frame, extra = {}) {
     viewport: tab().viewport,
     tabs: host.list(),
     activeTabId: host.activeId,
-    frameMode: "base64",
     frameRev: frame?.frameRev,
     width: frame?.width,
     height: frame?.height,
@@ -76,9 +86,32 @@ function okFrame(frame, extra = {}) {
     mutations: frame?.mutations,
     scriptError: frame?.scriptError,
     engine: frame?.engine,
-    pngBase64: frame?.pngBase64,
     ...extra,
   };
+}
+
+/**
+ * Dump the active tab's LIVE guest diagnostics (console + uncaught errors +
+ * failed network calls) to `<dist>/diagnostics.log` and return them. This is
+ * the "read the console instead of blind-testing" loop: a broken page shows
+ * exactly which scripts failed to fetch, which API calls 4xx'd, and what the
+ * page itself logged.
+ */
+function dumpDiagnostics() {
+  const t = tab();
+  const live = t.page?.runtime?.diagnostics;
+  const snapshot = live ?? t.page?.diagnostics ?? { console: [], errors: [] };
+  const lines = [
+    `[${new Date().toISOString()}] url=${t.url} title=${t.page?.title ?? ""}`,
+    ...snapshot.errors.map((e) => `ERROR: ${e}`),
+    ...snapshot.console.map((c) => `${String(c.level).toUpperCase()}: ${c.message}`),
+  ];
+  const diagPath = resolve(here, "../dist/diagnostics.log");
+  try {
+    appendFileSync(diagPath, lines.join("\n") + "\n");
+  } catch {
+  }
+  return { errors: snapshot.errors, console: snapshot.console };
 }
 
 function emptyFrame(extra = {}) {
@@ -118,12 +151,19 @@ function registerIpc() {
   ipcMain.removeHandler("shell:selectTab");
   ipcMain.removeHandler("shell:closeTab");
   ipcMain.removeHandler("shell:tabs");
+  ipcMain.removeHandler("shell:diagnostics");
   ipcMain.removeHandler("shell:ping");
 
   ipcMain.handle("shell:navigate", async (_event, target, viewport) => {
     try {
       log(`navigate ${String(target ?? "")}`);
-      return okFrame(await tab().navigate(String(target ?? ""), { viewport: withDisplayDpr(viewport) }));
+      // keepAlive: the interactive shell needs the guest runtime alive so
+      // clicks dispatch trusted events into page listeners and pumps pick up
+      // timer/rAF-driven DOM work (SPA feeds).
+      const frame = await tab().navigate(String(target ?? ""), { viewport: withDisplayDpr(viewport), keepAlive: true });
+      const diag = dumpDiagnostics();
+      if (diag.errors.length > 0) log(`diagnostics: ${diag.errors.length} errors (see diagnostics.log)`);
+      return okFrame(frame, { diagnostics: diag });
     } catch (error) {
       log(`navigate error ${error instanceof Error ? error.message : String(error)}`);
       return fail(error);
@@ -174,6 +214,9 @@ function registerIpc() {
       const vp = withDisplayDpr(viewport)
       if (viewport) tab().setViewport(vp);
       const settle = extra && extra.settle === true;
+      // Absorb SPA mutations (carousel ticks, feed refresh) before painting
+      // the scrolled frame; a no-op when the page is idle (~1ms).
+      if (!settle) await tab().pumpIfMutated();
       const frame = await tab().scrollBy(Number(deltaX) || 0, Number(deltaY) || 0, { settle });
       return frame === null ? emptyFrame() : okFrame(frame);
     } catch (error) {
@@ -245,6 +288,11 @@ function registerIpc() {
     ok: true,
     tabs: host.list(),
     activeTabId: host.activeId,
+  }));
+  ipcMain.handle("shell:diagnostics", () => ({
+    ok: true,
+    url: tab().url,
+    ...dumpDiagnostics(),
   }));
   ipcMain.handle("shell:ping", () => ({
     ok: true,

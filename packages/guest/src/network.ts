@@ -130,8 +130,11 @@ export const nodeFetchNetworkStack: NetworkStack = {
           : req.destination === "style"
             ? "text/css,*/*;q=0.1"
             : req.destination === "image"
-              ? "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-              : "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+              // No `image/avif` here: the decoder handles PNG/JPEG/WebP only,
+              // and advertising AVIF makes CDNs content-negotiate AVIF bytes
+              // for .jpg URLs that we then cannot decode.
+              ? "image/png,image/jpeg,image/webp,image/apng,image/*;q=0.8,*/*;q=0.8"
+              : "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
       "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
       "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
       "sec-ch-ua-mobile": "?0",
@@ -205,7 +208,7 @@ export function createBrowserNetworkStack(options: BrowserNetworkOptions = {}): 
     const headers: Record<string, string> = {
       accept:
         method === "GET" || method === "HEAD"
-          ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+          ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
           : "*/*",
       "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
       "user-agent": userAgent,
@@ -433,6 +436,7 @@ export function createBrowserNetworkStack(options: BrowserNetworkOptions = {}): 
           const base = baseUrl ?? "https://localhost/";
           parsed = new URL(req.url, base);
         } catch {
+          events.push({ url: req.url, method: req.method ?? "GET", status: 0, ok: false, byteLength: 0, setCookie: 0 });
           throw new NotImplemented("network:invalid-url", {
             category: "other",
             detail: `not an absolute URL: ${req.url}`,
@@ -440,6 +444,7 @@ export function createBrowserNetworkStack(options: BrowserNetworkOptions = {}): 
         }
       }
       if (!SUPPORTED_SCHEMES.has(parsed.protocol)) {
+        events.push({ url: parsed.href, method: req.method ?? "GET", status: 0, ok: false, byteLength: 0, setCookie: 0 });
         throw new NotImplemented(`network:scheme:${parsed.protocol}`, {
           category: "other",
           detail: `only http(s) is supported by the reused stack; got ${parsed.protocol}`,
@@ -448,9 +453,16 @@ export function createBrowserNetworkStack(options: BrowserNetworkOptions = {}): 
       const method = (req.method ?? "GET").toUpperCase();
       const headers = buildHeaders(req, parsed);
       const body = req.body;
-      const viaCurl = await requestViaCurl(parsed, method, headers, body);
-      if (viaCurl !== null) return viaCurl;
-      return requestViaFetch(parsed, method, headers, body);
+      try {
+        const viaCurl = await requestViaCurl(parsed, method, headers, body);
+        if (viaCurl !== null) return viaCurl;
+        return await requestViaFetch(parsed, method, headers, body);
+      } catch (error) {
+        // A thrown request (timeout, DNS, unsupported scheme) is a DIAGNOSTIC
+        // event the host must see: record it as status 0 before rethrowing.
+        events.push({ url: parsed.href, method, status: 0, ok: false, byteLength: 0, setCookie: 0 });
+        throw error;
+      }
     },
   };
   return stack;

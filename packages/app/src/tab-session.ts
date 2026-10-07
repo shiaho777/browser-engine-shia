@@ -169,14 +169,21 @@ export class TabSession {
 
   async navigate(
     target: string,
-    options: { push?: boolean; viewport?: Partial<EngineViewport>; keepAlive?: boolean } = {},
+    options: { push?: boolean; viewport?: Partial<EngineViewport>; keepAlive?: boolean; quality?: "fast" | "full" } = {},
   ): Promise<PageFrame> {
     if (options.viewport !== undefined) {
       this.setViewport(options.viewport);
     }
     const push = options.push ?? true;
+    // quality "fast": first paint at dpr1 (a click-navigation lands in
+    // ~150-250ms instead of ~600ms on photo-heavy pages; the next scroll
+    // settle or relayout repaints at true DPR).
+    const navViewport =
+      options.quality === "fast" && this.#viewport.devicePixelRatio !== 1
+        ? { ...this.#viewport, devicePixelRatio: 1 }
+        : this.#viewport;
     const page = await loadPage(target, {
-      viewport: this.#viewport,
+      viewport: navViewport,
       ...(options.keepAlive ? { keepAlive: true } : {}),
     });
     this.#page = page;
@@ -198,6 +205,24 @@ export class TabSession {
    * timers/rAF, then repaint each time. Stops early when guest work stops
    * mutating the DOM. Returns the number of frames actually produced.
    */
+  /**
+   * Advance the live page ONLY when the guest has mutated the DOM since the
+   * rendered frame. Interactive paths call this before painting so SPA
+   * updates (carousels, feeds) show up, while idle pages pay ~1ms. Fast
+   * paint (dpr1) keeps mutated frames responsive.
+   */
+  async pumpIfMutated(): Promise<PageFrame | null> {
+    if (this.#page === null) return null;
+    const runtime = this.#page.runtime;
+    if (runtime === undefined) return null;
+    if ((runtime.mutations() ?? 0) === (this.#page.scripts.mutations ?? 0)) {
+      return this.#page.frame;
+    }
+    const result = await pumpFrames(this.#page, 1, { settleMs: 0, idleStop: false, skipIfIdle: true, fastPaint: true });
+    this.#page = result.page;
+    return this.#page.frame;
+  }
+
   async pump(
     count = 1,
     options: { readonly settleMs?: number; readonly idleStop?: boolean } = {},
@@ -216,7 +241,9 @@ export class TabSession {
     if (viewport !== undefined) {
       this.setViewport(viewport);
     }
-    const page = await loadHtmlDocument(html, `engine://upload/${title}`, this.#viewport);
+    // keepAlive: uploaded pages get the same live guest runtime as navigations
+    // (trusted input dispatch + pumpable timers/rAF).
+    const page = await loadHtmlDocument(html, `engine://upload/${title}`, this.#viewport, true, true);
     this.#page = page;
     this.#history = this.#history.slice(0, this.#index + 1);
     this.#history.push(page.url);
@@ -273,7 +300,11 @@ export class TabSession {
       };
     }
     const docY = y + (this.#page.scrollY ?? 0);
-    const hit = hitTest(this.#page.fragmentTree, x, docY);
+    const styleOf = this.#page.scrollPaint?.styleOf;
+    const hit =
+      styleOf !== undefined
+        ? hitTest(this.#page.fragmentTree, x, docY, { styleOf })
+        : hitTest(this.#page.fragmentTree, x, docY);
     if (hit === null) {
       return {
         x,
@@ -333,11 +364,55 @@ export class TabSession {
     if (this.#page.focus !== null) {
       this.#page = await applyFocus(this.#page, null);
     }
-    if (hit.href === null) {
-      return { hit, navigated: false, frame: this.#page.frame, editable: null };
+
+    // Trusted input pipeline (UI Events): the click reaches the page's real
+    // listeners — `addEventListener("click")`, inline onclick, capture/bubble
+    // — plus activation behavior. This is how a real browser delivers input;
+    // URL navigation is only the no-listener fallback below.
+    const targetId = hit.nodeId !== null ? nodeId(Number(hit.nodeId)) : null;
+    const dispatch = this.#page.runtime?.dispatchPlatformEvent ?? null;
+    if (targetId !== null && dispatch !== null) {
+      const notPrevented = dispatch(targetId, {
+        type: "pointerdown",
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: 1,
+      });
+      if (notPrevented) {
+        dispatch(targetId, {
+          type: "pointerup",
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons: 0,
+        });
+        dispatch(targetId, {
+          type: "click",
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons: 0,
+          detail: 1,
+        });
+      }
+      // Guest listeners may have mutated the DOM or started async work: drain
+      // one cycle; if the guest produced nothing, keep the current frame —
+      // a full re-render for a no-op pump is what read as a click freeze.
+      // When it DID mutate, repaint fast (dpr1) for snappy feedback.
+      if (this.#page.runtime !== undefined) {
+        const pumped = await pumpFrames(this.#page, 1, { settleMs: 0, idleStop: false, skipIfIdle: true, fastPaint: true });
+        this.#page = pumped.page;
+      }
     }
-    const next = resolveNavigationTarget(hit.href, this.#page.url);
-    const frame = await this.navigate(next, { push: true });
+
+    // A guest handler may have navigated or mutated; re-derive the link.
+    const href = hit.href ?? (hit.nodeId !== null ? findLinkHref(this.#page.dom, nodeId(Number(hit.nodeId))) : null);
+    if (href === null) {
+      return { hit: { ...hit, href: null }, navigated: false, frame: this.#page.frame, editable: null };
+    }
+    const next = resolveNavigationTarget(href, this.#page.url);
+    const frame = await this.navigate(next, { push: true, quality: "fast" });
     return { hit: { ...hit, href: next }, navigated: true, frame, editable: null };
   }
 

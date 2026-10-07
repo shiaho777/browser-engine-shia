@@ -19,7 +19,7 @@ test(function () {
   assert_equals(el.style.getPropertyValue("float"), "left", "cssFloat writes the float declaration");
   assert_equals(el.style.cssFloat, "left", "cssFloat reads the declaration back");
   assert_equals(el.style["float"], "left", "float property access reads the same declaration");
-  assert_equals(el.getAttribute("style"), "float: left", "style attribute serializes the CSS property name");
+  assert_equals(el.getAttribute("style"), "float: left;", "style attribute serializes the CSS property name");
   assert_equals(getComputedStyle(el).getPropertyValue("float"), "left", "inline cssFloat participates in computed style");
 }, "cssFloat writes normalize to the float CSS property");
 
@@ -42,7 +42,7 @@ test(function () {
 
   assert_equals(el.style.cssFloat, "", "empty cssFloat assignment removes the declaration");
   assert_equals(el.style.getPropertyValue("float"), "", "removed float declaration no longer reads through getPropertyValue");
-  assert_equals(el.getAttribute("style"), "width: 42px", "empty cssFloat assignment removes only float");
+  assert_equals(el.getAttribute("style"), "width: 42px;", "empty cssFloat assignment removes only float");
   assert_equals(getComputedStyle(el).getPropertyValue("float"), "right", "computed style falls back after cssFloat removal");
 }, "empty cssFloat assignment removes the float declaration");
 </script>

@@ -1,0 +1,11 @@
+{
+  "name": "imported-user-timing",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "user-timing/mark.any.html",
+    "user-timing/mark.any.js",
+    "user-timing/measure_associated_with_navigation_timing.html"
+  ],
+  "baselinePassCount": 0
+}

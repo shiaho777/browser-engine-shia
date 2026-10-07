@@ -168,7 +168,7 @@ void test("real JS toggleAttribute mutates only when the final attribute presenc
      if (x.toggleAttribute("data-on") !== false) throw new Error("present no-force toggle did not return false");
      if (x.hasAttribute("data-on")) throw new Error("attribute survived no-force removal");
      if (x.matches("[data-on]")) throw new Error("presence selector still matches after remove");
-     if (getComputedStyle(x).getPropertyValue("height") !== "auto") throw new Error("computed style did not update after remove");
+     if (getComputedStyle(x).getPropertyValue("height") !== "0px") throw new Error("computed style did not update after remove");
      if (x.toggleAttribute("data-on", false) !== false) throw new Error("force=false did not return false");`,
   );
 

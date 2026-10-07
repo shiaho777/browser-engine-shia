@@ -1,0 +1,9 @@
+{
+  "name": "imported-uievents",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "uievents/constructors/inputevent-constructor.html"
+  ],
+  "baselinePassCount": 0
+}

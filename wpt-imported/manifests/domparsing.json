@@ -1,0 +1,16 @@
+{
+  "name": "imported-domparsing",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "domparsing/DOMParser-parseFromString-html.html",
+    "domparsing/DOMParser-parseFromString-xml.html",
+    "domparsing/XMLSerializer-serializeToString.html",
+    "domparsing/innerhtml-01.xhtml",
+    "domparsing/insert_adjacent_html-xhtml.xhtml",
+    "domparsing/outerhtml-02.html",
+    "domparsing/style_attribute_html.html",
+    "domparsing/xmldomparser.html"
+  ],
+  "baselinePassCount": 0
+}

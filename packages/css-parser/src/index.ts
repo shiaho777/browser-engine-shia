@@ -97,10 +97,12 @@ import type {
   StyleSheet,
 } from "@browser-engine/ir";
 import { PROPERTY_PARSERS, parsePropertyValue } from "@browser-engine/generator";
+import { expandShorthand, isShorthandName, parseColor } from "@browser-engine/generator";
 import { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches } from "./media-query.js";
 import type { MediaEnvironment } from "./media-query.js";
 export type { MediaEnvironment };
 export { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches };
+export { parsePropertyValue, expandShorthand, isShorthandName, PROPERTY_PARSERS, parseColor };
 
 export const PACKAGE_NAME = "@browser-engine/css-parser" as const;
 
@@ -593,55 +595,121 @@ function findTopLevelSemicolon(text: string, from: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Evaluate a simplified `@supports` condition. Supports:
- *   - `(property: value)` — true if the property is known to the engine.
- *   - `(property)` — feature query for custom properties (always true if it
- *     starts with `--`).
+ * At-rules the engine's rule scanner recognizes — the answer `at-rule(@x)`
+ * gives. CSS Conditional 5 additionally registers a set of at-rule names a
+ * conformant UA must know about even where their behavior is not yet
+ * implemented (starting-style, swash, scope, …), so those are included.
+ * `@charset` is an encoding declaration, not an at-rule — deliberately out.
+ */
+const SUPPORTED_AT_RULES = new Set([
+  "media", "supports", "layer", "import", "keyframes", "font-face", "page",
+  "namespace", "viewport", "counter-style", "property", "container",
+  "starting-style", "swash", "scope", "position-try", "font-feature-values",
+  "view-transition",
+]);
+
+/** A selector-validity probe injected by the harness (the cascade owns the
+ *  real selector parser; css-parser must not import it). */
+export type SelectorPredicate = (selector: string) => boolean;
+
+/** Extract a function's balanced argument; null when malformed or trailing junk. */
+function functionArg(text: string, openIdx: number): string | null {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(i + 1).trim() === "" ? text.slice(openIdx + 1, i) : null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The declaration check shared by `CSS.supports(prop, value)` and
+ * `(prop: value)` inside a supports condition: the property must be known
+ * (or a known vendor alias, or a `--` custom property) AND the value must
+ * parse against the generated per-property grammar. Values that substitute
+ * at computed-value time (var/env/attr/toggle) are grammar-valid whenever
+ * the property is.
+ */
+function declarationSupported(prop: string, value: string): boolean {
+  if (prop.startsWith("--")) {
+    return !/!important/i.test(value);
+  }
+  const std = vendorPrefixToStandard(prop) ?? prop;
+  if (!Object.hasOwn(PROPERTY_PARSERS, std)) return false;
+  const v = value.trim();
+  if (v === "" || /!important/i.test(v)) return false;
+  if (/\b(?:var|env|attr|toggle)\s*\(/i.test(v)) return true;
+  try {
+    return parsePropertyValue(std, v).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Evaluate a `@supports` condition. Supports:
+ *   - `(property: value)` — property known to the engine AND value parses.
+ *   - `(property)` — feature query for custom properties (`--x` → true).
  *   - `not <condition>` — negation.
  *   - `<cond> and <cond>` — conjunction.
  *   - `<cond> or <cond>` — disjunction.
- *   - `selector(<selector>)` — always true (selector matching is supported).
+ *   - `at-rule(@name)` — the engine recognizes the at-rule.
+ *   - `selector(<complex-selector>)` — the selector parses (injected probe;
+ *     defaults to "non-empty balanced argument").
  *   - `font-tech(...)`, `font-format(...)` — always false (no font system).
- *
- * Unknown properties evaluate to false (the engine doesn't support them).
  */
-function supportsConditionMatches(condition: string): boolean {
-  return evalSupports(condition.trim());
+function supportsConditionMatches(condition: string, selectorOk: SelectorPredicate = (s) => s.trim() !== ""): boolean {
+  return evalSupports(condition.trim(), selectorOk);
 }
 
 /** Recursive supports-condition evaluator. */
-function evalSupports(cond: string): boolean {
+function evalSupports(cond: string, selectorOk: SelectorPredicate): boolean {
   // Strip outer parens (but not function-like parens).
   const stripped = stripOuterParens(cond);
 
   // Check for top-level `or` (lowest precedence).
   const orParts = splitTopLevelKeyword(stripped, "or");
   if (orParts.length > 1) {
-    return orParts.some((p) => evalSupports(p));
+    return orParts.some((p) => evalSupports(p, selectorOk));
   }
 
   // Check for top-level `and`.
   const andParts = splitTopLevelKeyword(stripped, "and");
   if (andParts.length > 1) {
-    return andParts.every((p) => evalSupports(p));
+    return andParts.every((p) => evalSupports(p, selectorOk));
   }
 
   // Check for `not`.
   if (stripped.toLowerCase().startsWith("not ")) {
-    return !evalSupports(stripped.slice(4).trim());
+    return !evalSupports(stripped.slice(4).trim(), selectorOk);
   }
 
   // A single condition: `(prop: value)`, `(prop)`, `selector(...)`, etc.
-  return evalSupportsFeature(stripped);
+  return evalSupportsFeature(stripped, selectorOk);
 }
 
 /** Evaluate a single supports feature. */
-function evalSupportsFeature(feature: string): boolean {
+function evalSupportsFeature(feature: string, selectorOk: SelectorPredicate): boolean {
   const trimmed = feature.trim();
 
-  // selector(<compound>) — always true (we support selector matching).
-  if (/^selector\(/i.test(trimmed)) {
-    return true;
+  // at-rule(@name) — CSS Conditional 5: true iff the engine recognizes it.
+  const atRule = /^at-rule\s*\(\s*@([\w-]+)\s*\)$/i.exec(trimmed);
+  if (atRule !== null) {
+    return SUPPORTED_AT_RULES.has((atRule[1] as string).toLowerCase());
+  }
+  if (/^at-rule\s*\(/i.test(trimmed)) return false;
+
+  // selector(<complex-selector>) — the selector must parse.
+  const selFn = /^selector\s*\(/i.exec(trimmed);
+  if (selFn !== null) {
+    const arg = functionArg(trimmed, selFn[0].length - 1);
+    return arg !== null && arg.trim() !== "" && selectorOk(arg.trim());
   }
 
   // font-tech(...), font-format(...) — false (no font system).
@@ -660,9 +728,64 @@ function evalSupportsFeature(feature: string): boolean {
     return inner.startsWith("--");
   }
   const prop = inner.slice(0, colonIdx).trim().toLowerCase();
-  // Known property in the engine's property table = supported. A vendor-prefixed
-  // alias whose unprefixed core is known also counts as supported.
-  return Boolean(PROPERTY_PARSERS[prop] || (vendorPrefixToStandard(prop) !== null));
+  const value = inner.slice(colonIdx + 1);
+  return declarationSupported(prop, value);
+}
+
+// ---------------------------------------------------------------------------
+// CSS namespace (CSS Conditional 3 §the CSS interface)
+// ---------------------------------------------------------------------------
+
+/**
+ * `CSS.supports(conditionText)` — the single-argument condition form —
+ * evaluated by the same engine the `@supports` at-rule uses.
+ */
+export function cssSupports(conditionText: string, selectorOk?: SelectorPredicate): boolean {
+  return supportsConditionMatches(String(conditionText), selectorOk);
+}
+
+/**
+ * `CSS.supports(property, value)` — the two-argument declaration form.
+ */
+export function cssSupportsDeclaration(property: string, value: string): boolean {
+  const prop = String(property).trim().toLowerCase();
+  if (!/^(?:--[-\w]*|[-_a-zA-Z][-\w]*)$/.test(prop)) return false;
+  return declarationSupported(prop, String(value));
+}
+
+/**
+ * `CSS.escape(ident)` — serialize a string for use as a CSS identifier
+ * (CSSOM §serialize-an-identifier).
+ */
+export function cssEscape(value: string): string {
+  const s = String(value);
+  let out = "";
+  let i = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code === 0) {
+      out += "";
+    } else if ((code >= 0x01 && code <= 0x1f) || code === 0x7f) {
+      out += `\\${code.toString(16)} `;
+    } else if (i === 0 && code >= 0x30 && code <= 0x39) {
+      out += `\\${code.toString(16)} `;
+    } else if (i === 1 && code >= 0x30 && code <= 0x39 && s.charCodeAt(0) === 0x2d) {
+      out += `\\${code.toString(16)} `;
+    } else if (i === 0 && code === 0x2d && s.length === 1) {
+      out += `\\${ch}`;
+    } else if (
+      code >= 0x80 || code === 0x2d || code === 0x5f
+      || (code >= 0x30 && code <= 0x39)
+      || (code >= 0x41 && code <= 0x5a)
+      || (code >= 0x61 && code <= 0x7a)
+    ) {
+      out += ch;
+    } else {
+      out += `\\${ch}`;
+    }
+    i += 1;
+  }
+  return out;
 }
 
 /** Remove one layer of surrounding parentheses if they wrap the entire string. */

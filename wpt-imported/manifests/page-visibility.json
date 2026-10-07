@@ -1,0 +1,10 @@
+{
+  "name": "imported-page-visibility",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "page-visibility/iframe-unload.html",
+    "page-visibility/test_child_document.html"
+  ],
+  "baselinePassCount": 0
+}

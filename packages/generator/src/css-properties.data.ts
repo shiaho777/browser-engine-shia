@@ -20,7 +20,8 @@
 import { px, type Color, type Edges, type Px } from "@browser-engine/ir";
 import type { FlexDirection, FloatValue, PositionValue } from "@browser-engine/ir";
 import { defineProperty, type CssPropertyDef } from "./css-property-def.js";
-import { color, edges, integer, keyword, length, lengthOr, number, string as stringValue, transform } from "./value-grammar.js";
+import { LADYBIRD_PROPERTIES } from "./generated/ladybird-properties.data.js";
+import { color, colorOr, cursor, display as displayGrammar, edges, integer, integerOrKeyword, keyword, length, lengthOr, number, string as stringValue, times, transform } from "./value-grammar.js";
 import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar.js";
 
 // ---- shared initial-value constants ---------------------------------------
@@ -28,37 +29,6 @@ import type { LengthOrAuto, LengthSizing, TransformValue } from "./value-grammar
 const BLACK: Color = { r: 0, g: 0, b: 0, a: 1 };
 const TRANSPARENT: Color = { r: 0, g: 0, b: 0, a: 0 };
 const ZERO_EDGES: Edges<Px> = { top: px(0), right: px(0), bottom: px(0), left: px(0) };
-
-/**
- * The display outer/inner keywords accepted by the parser. Beyond the typed
- * {@link DisplayValue} union, this includes the legacy/vendor display values
- * (`-webkit-box`, `inline-flex`, etc.) so they PARSE instead of being silently
- * dropped — the layout engine normalizes them to a supported branch in
- * {@link readDisplay}. The list is typed `string[]` (not `DisplayValue[]`)
- * precisely to admit those extra keywords.
- */
-const DISPLAY_KEYWORDS: readonly string[] = [
-  "block",
-  "inline",
-  "inline-block",
-  "flex",
-  "grid",
-  "table",
-  "none",
-  // Inline-level variants: parsed and normalized to their block-level counterpart's
-  // layout internally (the inline *outer* role awaits a real inline formatting context).
-  "inline-flex",
-  "inline-grid",
-  "inline-table",
-  "list-item",
-  // Legacy / vendor-prefixed flexbox values: every modern browser maps these to
-  // standard flex, so we accept them at parse time and normalize to "flex".
-  "-webkit-box",
-  "-webkit-inline-box",
-  "-ms-flexbox",
-  "-ms-inline-flexbox",
-  "-webkit-inline-flex",
-];
 
 // ---- the rows --------------------------------------------------------------
 
@@ -85,7 +55,7 @@ const DISPLAY: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "display",
   inherited: false,
   initial: "inline",
-  syntax: keyword(...DISPLAY_KEYWORDS),
+  syntax: displayGrammar(),
   computeValue: (specified) => specified,
   animationType: "discrete",
   tsType: "string",
@@ -142,15 +112,15 @@ const BACKGROUND_COLOR: CssPropertyDef<Color, Color> = defineProperty<Color, Col
   // field defaults to "backgroundColor" via toCamelCase.
 });
 
-/** `font-size` — inherited; a `<length>` in px (initial: 16px medium). */
-const FONT_SIZE: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `font-size` — inherited; an absolute/relative size keyword or `<length>` (initial: 16px medium). */
+const FONT_SIZE: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "font-size",
   inherited: true,
   initial: px(16),
-  syntax: length(),
+  syntax: lengthOr("xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large", "smaller", "larger"),
   computeValue: (specified) => specified,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 // ---------------------------------------------------------------------------
@@ -295,14 +265,14 @@ const TRANSFORM: CssPropertyDef<TransformValue, TransformValue> = defineProperty
  * `z-index` — not inherited; an `<integer>` stacking level (initial: 0, which
  * the paint engine reads as `auto`). Reuses the integer shape.
  */
-const Z_INDEX: CssPropertyDef<number, number> = defineProperty<number, number>({
+const Z_INDEX: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "z-index",
   inherited: false,
   initial: 0,
-  syntax: integer(),
+  syntax: integerOrKeyword(["auto"]),
   computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "number",
+  tsType: 'number | "auto"',
   // field defaults to "zIndex" via toCamelCase.
 });
 
@@ -328,22 +298,23 @@ const PADDING: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edges<Px>, 
 });
 
 /** Build a per-edge `<length>` longhand row (margin-top, padding-left, …). */
-function edgeLength(name: string): CssPropertyDef<Px, Px> {
-  return defineProperty<Px, Px>({
+function edgeLength(name: string, ...keywords: readonly string[]): CssPropertyDef<unknown, unknown> {
+  return defineProperty<unknown, unknown>({
     name,
     inherited: false,
     initial: px(0),
-    syntax: length(),
+    syntax: keywords.length > 0 ? lengthOr(...keywords) : length(),
     computeValue: (s) => s,
     animationType: "by-computed-value",
-    tsType: "Px",
+    tsType: keywords.length > 0 ? "LengthOrAuto" : "Px",
   });
 }
 
-const MARGIN_TOP = edgeLength("margin-top");
-const MARGIN_RIGHT = edgeLength("margin-right");
-const MARGIN_BOTTOM = edgeLength("margin-bottom");
-const MARGIN_LEFT = edgeLength("margin-left");
+// Margin longhands take `auto` in addition to <length>/<percentage>.
+const MARGIN_TOP = edgeLength("margin-top", "auto");
+const MARGIN_RIGHT = edgeLength("margin-right", "auto");
+const MARGIN_BOTTOM = edgeLength("margin-bottom", "auto");
+const MARGIN_LEFT = edgeLength("margin-left", "auto");
 const PADDING_TOP = edgeLength("padding-top");
 const PADDING_RIGHT = edgeLength("padding-right");
 const PADDING_BOTTOM = edgeLength("padding-bottom");
@@ -486,12 +457,16 @@ const OVERFLOW: CssPropertyDef<string, string> = defineProperty<string, string>(
   tsType: "string",
 });
 
-/** `cursor` — inherited; a keyword subset (initial: auto). */
+/**
+ * `cursor` — inherited; keywords plus the `[<url> [<number>{2}]?]# <keyword>`
+ * image list (css-ui-4). Stored as normalized text — image lists have no
+ * narrower representation.
+ */
 const CURSOR: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "cursor",
   inherited: true,
   initial: "auto",
-  syntax: keyword("auto", "default", "pointer", "text", "move", "not-allowed", "grab", "grabbing", "wait", "help", "crosshair"),
+  syntax: cursor(),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -510,15 +485,15 @@ const FONT_FAMILY: CssPropertyDef<string, string> = defineProperty<string, strin
   tsType: "string",
 });
 
-/** `font-weight` — inherited; an `<integer>` 1..1000 (initial: 400). */
-const FONT_WEIGHT: CssPropertyDef<number, number> = defineProperty<number, number>({
+/** `font-weight` — inherited; a weight keyword or `<integer>` 1..1000 (initial: 400). */
+const FONT_WEIGHT: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "font-weight",
   inherited: true,
   initial: 400,
-  syntax: integer({ min: 1, max: 1000 }),
+  syntax: integerOrKeyword(["normal", "bold", "bolder", "lighter"], { min: 1, max: 1000 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: 'number | "normal" | "bold" | "bolder" | "lighter"',
 });
 
 /** `font-style` — inherited; a keyword (initial: normal). */
@@ -532,16 +507,17 @@ const FONT_STYLE: CssPropertyDef<string, string> = defineProperty<string, string
   tsType: "string",
 });
 
-/** `line-height` — inherited free-form string (initial "normal"). Layout reads
- * unitless multipliers, px lengths, and "normal". */
-const LINE_HEIGHT: CssPropertyDef<string, string> = defineProperty<string, string>({
+/** `line-height` — inherited free-form (initial "normal"). The cascade stores
+ * unitless multipliers as numeric STRINGS and resolved lengths as px NUMBERS
+ * (`<length>`/`<percentage>` resolve against the element's own font-size). */
+const LINE_HEIGHT: CssPropertyDef<string, string | number> = defineProperty<string, string | number>({
   name: "line-height",
   inherited: true,
   initial: "normal",
   syntax: stringValue(),
   computeValue: (s) => s,
   animationType: "discrete",
-  tsType: "string",
+  tsType: "string | number",
 });
 
 /** `text-align` — inherited; a keyword (initial: start). */
@@ -588,15 +564,15 @@ const WHITE_SPACE: CssPropertyDef<string, string> = defineProperty<string, strin
   tsType: "string",
 });
 
-/** `letter-spacing` — inherited; a `<length>` (initial: 0 normal). */
-const LETTER_SPACING: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `letter-spacing` — inherited; `normal` or a `<length>` (initial: 0 normal). */
+const LETTER_SPACING: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "letter-spacing",
   inherited: true,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr("normal"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 // ---- flexbox + grid item/container longhands ------------------------------
@@ -739,22 +715,23 @@ const GAP: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
 
 // ---- per-edge border-width longhands (reuse the length shape) -------------
 
-const BORDER_TOP_WIDTH = edgeLength("border-top-width");
-const BORDER_RIGHT_WIDTH = edgeLength("border-right-width");
-const BORDER_BOTTOM_WIDTH = edgeLength("border-bottom-width");
-const BORDER_LEFT_WIDTH = edgeLength("border-left-width");
+const LINE_WIDTH_KEYWORDS = ["thin", "medium", "thick"] as const;
+const BORDER_TOP_WIDTH = edgeLength("border-top-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_RIGHT_WIDTH = edgeLength("border-right-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_BOTTOM_WIDTH = edgeLength("border-bottom-width", ...LINE_WIDTH_KEYWORDS);
+const BORDER_LEFT_WIDTH = edgeLength("border-left-width", ...LINE_WIDTH_KEYWORDS);
 
 // ---- outline (a border-like ring; reuses border grammar shapes) -----------
 
 /** `outline-width` — not inherited; a `<length>` (initial: 0). */
-const OUTLINE_WIDTH: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+const OUTLINE_WIDTH: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "outline-width",
   inherited: false,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr(...LINE_WIDTH_KEYWORDS),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 /** `outline-style` — not inherited; a line-style keyword (initial: none). */
@@ -769,14 +746,14 @@ const OUTLINE_STYLE: CssPropertyDef<string, string> = defineProperty<string, str
 });
 
 /** `outline-color` — not inherited; a `<color>` (initial: black). */
-const OUTLINE_COLOR: CssPropertyDef<Color, Color> = defineProperty<Color, Color>({
+const OUTLINE_COLOR: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "outline-color",
   inherited: false,
   initial: BLACK,
-  syntax: color(),
+  syntax: colorOr("invert"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Color",
+  tsType: "Color | string",
 });
 
 /** `outline-offset` — not inherited; a `<length>` (initial: 0). */
@@ -797,7 +774,18 @@ const LIST_STYLE_TYPE: CssPropertyDef<string, string> = defineProperty<string, s
   name: "list-style-type",
   inherited: true,
   initial: "disc",
-  syntax: keyword("disc", "circle", "square", "decimal", "decimal-leading-zero", "lower-roman", "upper-roman", "lower-alpha", "upper-alpha", "none"),
+  syntax: keyword(
+    "disc", "circle", "square", "decimal", "decimal-leading-zero",
+    "lower-roman", "upper-roman", "lower-greek", "lower-alpha", "lower-latin",
+    "upper-alpha", "upper-latin", "armenian", "georgian", "lower-armenian",
+    "upper-armenian", "cjk-decimal", "cjk-earthly-branch", "cjk-heavenly-stem",
+    "cjk-ideographic", "ethiopic-numeric", "hebrew", "hiragana",
+    "hiragana-iroha", "japanese-formal", "japanese-informal", "katakana",
+    "katakana-iroha", "korean-hangul-formal", "korean-hanja-formal",
+    "korean-hanja-informal", "simp-chinese-formal", "simp-chinese-informal",
+    "trad-chinese-formal", "trad-chinese-informal", "disclosure-open",
+    "disclosure-closed", "none",
+  ),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -838,15 +826,15 @@ const TEXT_INDENT: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
   tsType: "Px",
 });
 
-/** `word-spacing` — inherited; a `<length>` (initial: 0 normal). */
-const WORD_SPACING: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
+/** `word-spacing` — inherited; `normal` or a `<length>` (initial: 0 normal). */
+const WORD_SPACING: CssPropertyDef<unknown, unknown> = defineProperty<unknown, unknown>({
   name: "word-spacing",
   inherited: true,
   initial: px(0),
-  syntax: length(),
+  syntax: lengthOr("normal"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "Px",
+  tsType: "LengthOrAuto",
 });
 
 /** `word-break` — inherited; a keyword (initial: normal). */
@@ -1235,47 +1223,47 @@ const ANIMATION_FILL_MODE = stringProp("animation-fill-mode", "none");
 const ANIMATION_PLAY_STATE = stringProp("animation-play-state", "running");
 
 /** `transition-duration` — not inherited; seconds as a `<number>` (initial: 0). */
-const TRANSITION_DURATION: CssPropertyDef<number, number> = defineProperty<number, number>({
+const TRANSITION_DURATION: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "transition-duration",
   inherited: false,
-  initial: 0,
-  syntax: number({ min: 0 }),
+  initial: [0],
+  syntax: times({ min: 0 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `transition-delay` — not inherited; seconds as a `<number>` (initial: 0). */
-const TRANSITION_DELAY: CssPropertyDef<number, number> = defineProperty<number, number>({
+const TRANSITION_DELAY: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "transition-delay",
   inherited: false,
-  initial: 0,
-  syntax: number(),
+  initial: [0],
+  syntax: times({}),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-duration` — not inherited; seconds as a `<number>` (initial: 0). */
-const ANIMATION_DURATION: CssPropertyDef<number, number> = defineProperty<number, number>({
+const ANIMATION_DURATION: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "animation-duration",
   inherited: false,
-  initial: 0,
-  syntax: number({ min: 0 }),
+  initial: [0],
+  syntax: times({ min: 0 }),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-delay` — not inherited; seconds as a `<number>` (initial: 0). */
-const ANIMATION_DELAY: CssPropertyDef<number, number> = defineProperty<number, number>({
+const ANIMATION_DELAY: CssPropertyDef<readonly number[], readonly number[]> = defineProperty<readonly number[], readonly number[]>({
   name: "animation-delay",
   inherited: false,
-  initial: 0,
-  syntax: number(),
+  initial: [0],
+  syntax: times({}),
   computeValue: (s) => s,
   animationType: "by-computed-value",
-  tsType: "number",
+  tsType: "readonly number[]",
 });
 
 /** `animation-iteration-count` — not inherited; a `<number>` ≥ 0 (initial: 1). */
@@ -1577,6 +1565,10 @@ const FLOOD_OPACITY = numProp("flood-opacity", 1);
 const LIGHTING_COLOR = colorProp("lighting-color", { r: 255, g: 255, b: 255, a: 1 });
 const TEXT_ANCHOR = stringProp("text-anchor", "start", true);
 const DOMINANT_BASELINE = stringProp("dominant-baseline", "auto");
+// CSS Inline Layout / SVG baseline properties.
+const ALIGNMENT_BASELINE = stringProp("alignment-baseline", "baseline", true);
+const BASELINE_SHIFT = stringProp("baseline-shift", "0", true);
+const BASELINE_SOURCE = stringProp("baseline-source", "auto", true);
 const COLOR_INTERPOLATION = stringProp("color-interpolation", "srgb", true);
 const SHAPE_RENDERING = stringProp("shape-rendering", "auto", true);
 const VECTOR_EFFECT = stringProp("vector-effect", "none");
@@ -1915,6 +1907,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   FILL, STROKE, STROKE_WIDTH, FILL_OPACITY, STROKE_OPACITY, STROKE_LINECAP, STROKE_LINEJOIN,
   STROKE_MITERLIMIT, STROKE_DASHARRAY, STROKE_DASHOFFSET, PAINT_ORDER, FILL_RULE, CLIP_RULE,
   STOP_COLOR, STOP_OPACITY, FLOOD_COLOR, FLOOD_OPACITY, LIGHTING_COLOR, TEXT_ANCHOR, DOMINANT_BASELINE,
+  ALIGNMENT_BASELINE, BASELINE_SHIFT, BASELINE_SOURCE,
   COLOR_INTERPOLATION, SHAPE_RENDERING, VECTOR_EFFECT, MASK_TYPE, MARKER_START, MARKER_MID, MARKER_END,
   // Breadth expansion — batch 4: scroll per-edge longhands + extras.
   SCROLL_PADDING_TOP, SCROLL_PADDING_RIGHT, SCROLL_PADDING_BOTTOM, SCROLL_PADDING_LEFT,
@@ -1938,4 +1931,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   BORDER_IMAGE, FONT_SHORTHAND, LIST_STYLE, TEXT_DECORATION, FLEX, FLEX_FLOW, TRANSITION, ANIMATION,
   GRID, GRID_TEMPLATE, GRID_TEMPLATE_AREAS, OUTLINE, COLUMNS, COLUMN_RULE, OVERFLOW_BLOCK, OVERFLOW_INLINE,
   INSET_SHORTHAND,
+  // Import wave 1 (Ladybird Properties.json): 278 rows, ours-win on conflicts.
+  // See tools/ladybird-import/import-properties.mjs and the file banner.
+  ...LADYBIRD_PROPERTIES,
 ] as readonly CssPropertyDef[];

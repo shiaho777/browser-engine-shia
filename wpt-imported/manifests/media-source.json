@@ -1,0 +1,9 @@
+{
+  "name": "imported-media-source",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "media-source/mediasource-is-type-supported.html"
+  ],
+  "baselinePassCount": 0
+}

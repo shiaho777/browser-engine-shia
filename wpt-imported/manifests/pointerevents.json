@@ -1,0 +1,14 @@
+{
+  "name": "imported-pointerevents",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "pointerevents/compat/pointerevent_touch-action-verification.html",
+    "pointerevents/parsing/touch-action-computed.html",
+    "pointerevents/parsing/touch-action-invalid.html",
+    "pointerevents/parsing/touch-action-valid.html",
+    "pointerevents/pointerevent_on_event_handlers.html",
+    "pointerevents/pointerevent_touch-action-illegal.html"
+  ],
+  "baselinePassCount": 0
+}

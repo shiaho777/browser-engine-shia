@@ -58,7 +58,7 @@ test(function () {
   var el = document.getElementById("target");
 
   assert_false(el.matches("[data-on]"), "precondition: selector does not match");
-  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "precondition: height uses initial value");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "16px", "precondition: height uses initial value");
 
   assert_equals(el.toggleAttribute("data-on"), true, "toggle adds the selector attribute");
   assert_true(el.matches("[data-on]"), "presence selector matches after add");
@@ -68,7 +68,7 @@ test(function () {
 
   assert_equals(el.toggleAttribute("data-on"), false, "toggle removes the selector attribute");
   assert_false(el.matches("[data-on]"), "presence selector stops matching after removal");
-  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "computed style falls back after removal");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "16px", "computed style falls back after removal");
 }, "toggleAttribute updates selector matching and computed style");
 </script>
 </body>

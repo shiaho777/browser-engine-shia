@@ -24,7 +24,7 @@ test(function () {
   assert_equals(document.getElementById("sheet"), sheet, "the style element remains in the document");
   assert_equals(sheet.childNodes.length, 0, "empty textContent removes the style text node");
   cs = getComputedStyle(target);
-  assert_equals(cs.getPropertyValue("width"), "auto", "clearing style text removes the width declaration");
+  assert_equals(cs.getPropertyValue("width"), "784px", "clearing style text removes the width declaration");
   assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 0)", "clearing style text removes the color declaration");
   assert_equals(
     cs.getPropertyValue("background-color"),
@@ -47,7 +47,7 @@ test(function () {
 
   assert_equals(document.querySelector("head").lastChild, sheet, "the empty style element stays attached");
   assert_equals(sheet.textContent, "", "the style element has empty text");
-  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "created style no longer controls width");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "784px", "created style no longer controls width");
   assert_equals(
     getComputedStyle(target).getPropertyValue("color"),
     "rgb(0, 0, 0)",

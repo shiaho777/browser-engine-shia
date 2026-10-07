@@ -27,7 +27,7 @@ test(function () {
 
 test(function () {
   var cs = getComputedStyle(document.getElementById("target"));
-  assert_equals(cs.getPropertyValue("height"), "auto", "unset height resolves to the cascade initial value");
+  assert_equals(cs.getPropertyValue("height"), "20px", "unset height resolves to the cascade initial value");
   assert_equals(cs.getPropertyValue("unknown-property"), "", "unknown CSS property returns an empty string");
 }, "getComputedStyle exposes initial values and empty unknown properties");
 </script>

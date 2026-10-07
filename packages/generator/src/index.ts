@@ -54,11 +54,12 @@ export type {
 } from "./dom-interfaces.idl.js";
 
 // ---- declarative value grammars + runtime parsing primitives --------------
-export { color, edges, integer, keyword, length, lengthOr, number, string, transform } from "./value-grammar.js";
+export { color, edges, integer, integerOrKeyword, keyword, length, lengthOr, number, string, transform } from "./value-grammar.js";
 export type {
   ColorGrammar,
   EdgesGrammar,
   IntegerGrammar,
+  IntegerOrKeywordGrammar,
   KeywordGrammar,
   LengthGrammar,
   LengthOrAuto,
@@ -84,12 +85,14 @@ export {
   parseLengthOrKeyword,
   parseNumber,
   parseString,
+  parseTime,
+  parseTimes,
   parseTransform,
 } from "./value-runtime.js";
 export type { CalcNode, ParseResult, SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";
 
 // ---- CSS shorthand expansion (ROADMAP Phase 2) ----------------------------
-export { expandShorthand, expandDeclarations } from "./shorthand-expansion.js";
+export { expandShorthand, expandDeclarations, isShorthandName } from "./shorthand-expansion.js";
 export type { ExpandedDeclaration, ShorthandExpander } from "./shorthand-expansion.js";
 
 // ---- the emitters (the "code generation" half) ----------------------------
@@ -126,6 +129,7 @@ export type {
 // inheritance table, ComputedStyle field types, and DOM surface from here.
 export {
   PROPERTY_PARSERS,
+  LENGTH_BARE_ZERO_PX,
   parsePropertyValue,
   type PropertyValueParser,
 } from "./generated/css-parsing.js";

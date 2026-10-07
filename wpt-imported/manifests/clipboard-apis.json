@@ -1,0 +1,10 @@
+{
+  "name": "imported-clipboard-apis",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "clipboard-apis/async-navigator-clipboard-basics.https.html",
+    "clipboard-apis/clipboard-item.https.html"
+  ],
+  "baselinePassCount": 0
+}

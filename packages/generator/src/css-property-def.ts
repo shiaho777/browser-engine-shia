@@ -76,6 +76,35 @@ export interface CssPropertyDef<Specified = unknown, Computed = unknown> {
    * already a single identifier-safe token.
    */
   readonly field: string;
+
+  // ---- optional Ladybird-derived metadata (import wave 1) -------------------
+  // These fields are pure data: nothing in the current engine consumes them
+  // yet. They land here so the value-level invalidation and shorthand-expansion
+  // mechanisms (follow-ups) read them from the row instead of a parallel table.
+  /** Computed-style storage group Ladybird assigns the property (e.g. "InheritedTextValues"). */
+  readonly styleGroup?: string;
+  /** Whether a computed-value change can alter geometry (drives repaint-vs-relayout later). */
+  readonly affectsLayout?: boolean;
+  /** Whether a change affects stacking-context establishment. */
+  readonly affectsStackingContext?: boolean;
+  /** Whether a change affects accumulated visual contexts (transforms/clips/scroll). */
+  readonly affectsAccumulatedVisualContexts?: boolean;
+  /** Whether a change affects the scrollable overflow area. */
+  readonly affectsScrollableOverflow?: boolean;
+  /** What percentages in this property resolve against (e.g. "length"). */
+  readonly percentagesResolveTo?: string;
+  /** Ladybird's computation-requirement tag (e.g. "cascaded-value", "non-inherited-value"). */
+  readonly requiresComputation?: string;
+  /** Whether getComputedStyle needs the layout box for this property's resolved value. */
+  readonly needsLayoutForGetComputedStyle?: boolean;
+  /** Whether resolved-value computation needs a layout node. */
+  readonly needsLayoutNodeForResolvedValue?: boolean;
+  /** Quirks-mode behaviors that apply to this property (e.g. "unitless-length"). */
+  readonly quirks?: readonly string[];
+  /** For a shorthand: its longhand property names, in canonical order. */
+  readonly longhands?: readonly string[];
+  /** For a coordinating-list shorthand (e.g. `background`): Ladybird's multiplicity tag. */
+  readonly multiplicity?: string;
 }
 
 /**

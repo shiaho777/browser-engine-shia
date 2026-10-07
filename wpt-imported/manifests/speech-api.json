@@ -1,0 +1,10 @@
+{
+  "name": "imported-speech-api",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "speech-api/idlharness.https.window.html",
+    "speech-api/idlharness.https.window.js"
+  ],
+  "baselinePassCount": 0
+}

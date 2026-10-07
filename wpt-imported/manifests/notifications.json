@@ -1,0 +1,12 @@
+{
+  "name": "imported-notifications",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "notifications/constructor-basic.https.html",
+    "notifications/constructor-invalid.https.html",
+    "notifications/idlharness.https.any.html",
+    "notifications/idlharness.https.any.js"
+  ],
+  "baselinePassCount": 0
+}

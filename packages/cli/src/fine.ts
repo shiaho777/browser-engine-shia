@@ -40,6 +40,7 @@ import {
   type DomNode,
   type DomTree,
   type NodeId,
+  type StyleSheet,
   nodeId,
 } from "@browser-engine/ir";
 import {
@@ -51,17 +52,19 @@ import {
   type QueryDef,
 } from "@browser-engine/kernel";
 import { parseHtml } from "@browser-engine/html-parser";
-import { cascade, cascadeWithRuleIndex, buildRuleIndex } from "@browser-engine/cascade";
-import { layout } from "@browser-engine/layout";
+import { cascade, cascadePseudo, cascadeWithRuleIndex, buildRuleIndex, type InteractionState } from "@browser-engine/cascade";
+import { layout, type ShadowComposition } from "@browser-engine/layout";
+import type { TextShaper } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
 
+import { parseCss } from "@browser-engine/css-parser";
 import { documentStylesheets, type SheetLoader } from "./stylesheets.js";
 import { collectImages } from "./images.js";
 import { isActiveStylesheetLink } from "./link-rel.js";
 import { cacheLoader, documentBaseUrl, resolveUrl } from "./loader.js";
 import type { NodeRef, Url } from "./pipeline.js";
 
-import { pipelineShaper } from "./fonts.js";
+import { resolvePipelineShaper } from "./fonts.js";
 
 /**
  * Per-node STRUCTURE input (kind/tag/text/children/parent) — what LAYOUT reads
@@ -85,7 +88,68 @@ export const DocRoot: InputSlot<Url, NodeId> = defineInput<Url, NodeId>("FineDoc
 export const FineExternalSheets: InputSlot<Url, ReadonlyMap<string, Uint8Array>> =
   defineInput<Url, ReadonlyMap<string, Uint8Array>>("FineExternalSheets");
 
+/**
+ * `document.adoptedStyleSheets` — the serialized cssText of each adopted,
+ * non-disabled sheet (document order, after the document's own sheets).
+ * Seeded by {@link FineSession.setAdoptedSheets}; re-seeded whenever an
+ * adopted sheet mutates so the cascade sees live contents.
+ */
+export const FineAdoptedSheets: InputSlot<Url, readonly string[]> =
+  defineInput<Url, readonly string[]>("FineAdoptedSheets");
+
+/**
+ * Per-SHADOW-ROOT adopted stylesheets — `shadowRoot.adoptedStyleSheets` as a
+ * `Map<shadowRootId, serialized cssText[]>`. Seeded by
+ * {@link FineSession.setShadowAdoptedSheets}; shadow-scope cascade reads the
+ * entry for the node's owning tree scope.
+ */
+export const FineShadowAdoptedSheets: InputSlot<Url, ReadonlyMap<NodeId, readonly string[]>> =
+  defineInput<Url, ReadonlyMap<NodeId, readonly string[]>>("FineShadowAdoptedSheets");
+
+/**
+ * Host → shadow-root map — `attachShadow` registrations as a kernel input so
+ * the cascade can find an element's shadow scope (for `:host` rules) without
+ * reaching into wiring-layer state.
+ */
+export const FineShadowHosts: InputSlot<Url, ReadonlyMap<NodeId, NodeId>> =
+  defineInput<Url, ReadonlyMap<NodeId, NodeId>>("FineShadowHosts");
+
+/**
+ * Script-set `<link>` enablement (HTML "explicitly enabled" — persists across
+ * disconnect/reconnect). The cascade/link predicates read it so an alternate
+ * stylesheet enabled via `link.disabled = false` becomes active.
+ */
+export const FineLinkEnabled: InputSlot<Url, ReadonlySet<NodeId>> =
+  defineInput<Url, ReadonlySet<NodeId>>("FineLinkEnabled");
+
+/**
+ * The per-document INTERACTION STATE input (D4): which nodes are hovered /
+ * active / focused. The cascade queries read it so `:hover`/`:active`/
+ * `:focus` match live UI state; changing it (via `setInteractionState`)
+ * invalidates exactly the queries that read it — a re-cascade, not a rebuild.
+ */
+export const FineInteractionState: InputSlot<Url, InteractionState> =
+  defineInput<Url, InteractionState>("FineInteractionState");
+
+/** The empty interaction state: no node hovered/active/focused. */
+export const NO_INTERACTION: InteractionState = Object.freeze({
+  hovered: new Set<NodeId>(),
+  active: new Set<NodeId>(),
+  focused: new Set<NodeId>(),
+});
+
+/**
+ * The per-document SHADOW COMPOSITION input (D6): the flat-tree view (shadow
+ * hosts → shadow children, slots → assigned light children). The layout
+ * queries read it through `buildLayoutTree`'s composition parameter; changing
+ * it (attachShadow / slot changes) re-runs exactly the layout queries that
+ * read the affected nodes' children.
+ */
+export const FineComposition: InputSlot<Url, ShadowComposition | null> =
+  defineInput<Url, ShadowComposition | null>("FineComposition");
+
 const EMPTY_ATTRS: ReadonlyMap<string, string> = new Map();
+const EMPTY_DIRTY: ReadonlySet<NodeId> = new Set();
 const EMPTY_EXTERNAL_SHEETS: ReadonlyMap<string, Uint8Array> = new Map();
 
 /** The memo key for a node's input slots. */
@@ -142,8 +206,19 @@ function domFacade(
 /** `qFineSheets` — collect stylesheets from the live (full) DOM facade. */
 export const qFineSheets = define((db, url: Url) => {
   const externalSheets = db.getInput(FineExternalSheets, url);
+  const adopted = db.getInput(FineAdoptedSheets, url) ?? [];
   const dom = domFacade(db, url, false);
-  return documentStylesheets(dom, cacheLoader(externalSheets, documentBaseUrl(dom, url)));
+  const enabledLinks = db.getInput(FineLinkEnabled, url);
+  const sheets = documentStylesheets(
+    dom,
+    cacheLoader(externalSheets, documentBaseUrl(dom, url)),
+    undefined,
+    (node) => enabledLinks.has(node.id),
+  );
+  // Adopted sheets come after the document's own sheets (CSSOM cascade order).
+  return adopted.length === 0
+    ? sheets
+    : [...sheets, ...adopted.map((text) => parseCss(encode(text)))];
 }, "qFineSheets");
 
 /**
@@ -172,11 +247,104 @@ export const qFineRuleIndex: QueryDef<
   });
 }, "qFineRuleIndex");
 
+/**
+ * The tree scope a node belongs to for stylesheet applicability (CSS Scoping /
+ * Shadow DOM): the nearest ancestor (inclusive) that is a `#shadow-root`, else
+ * `null` for the document tree. Shadow roots are detached nodes in the flat DOM
+ * — scope membership is decided by the `parent` chain only.
+ */
+function treeScopeOf(dom: DomTree, node: NodeId): NodeId | null {
+  let cur: NodeId | null | undefined = node;
+  const seen = new Set<NodeId>();
+  while (cur !== null && cur !== undefined && !seen.has(cur)) {
+    seen.add(cur);
+    const n = dom.nodes.get(cur);
+    if (n === undefined) return null;
+    if (n.kind === "element" && (n.tag === "#shadow-root" || n.tag === "#iframe-document")) return cur;
+    cur = n.parent;
+  }
+  return null;
+}
+
+/**
+ * `qFineScopedRuleIndex` — the rule index for one TREE SCOPE: `null` (document)
+ * or a shadow-root id. Document scope gets every collected sheet; a shadow
+ * scope gets ONLY the UA sheet plus `<style>` elements inside that shadow
+ * subtree plus that root's adopted sheets — document author sheets do NOT leak
+ * into shadow trees (CSS Scoping §3.3).
+ */
+/**
+ * The stylesheet list applicable inside one tree scope (see
+ * {@link qFineScopedRuleIndex}): the document list unchanged, or — for a shadow
+ * root — the UA sheet + `<style>` elements inside the subtree + the root's
+ * adopted sheets.
+ */
+function scopeSheetList(
+  db: { getInput: <K, V>(slot: InputSlot<K, V>, key: K) => V; query: <K, V>(q: QueryDef<K, V>, key: K) => V },
+  url: Url,
+  scope: NodeId | null,
+): readonly StyleSheet[] {
+  const all = db.query(qFineSheets, url);
+  if (scope === null) return all;
+  const dom = domFacade(db, url, false);
+  const inner: StyleSheet[] = [];
+  const visit = (id: NodeId): void => {
+    const n = dom.nodes.get(id);
+    if (n === undefined) return;
+    if (n.kind === "element" && n.tag === "style") {
+      let text = "";
+      for (const c of n.children) {
+        const cn = dom.nodes.get(c);
+        if (cn?.kind === "text") text += cn.text ?? "";
+      }
+      inner.push(parseCss(encode(text)));
+    }
+    for (const c of n.children) visit(c);
+  };
+  visit(scope);
+  const adopted = (db.getInput(FineShadowAdoptedSheets, url) ?? new Map()).get(scope) ?? [];
+  return [...all.slice(0, 1), ...inner, ...adopted.map((text) => parseCss(encode(text)))];
+}
+
+export const qFineScopedRuleIndex: QueryDef<
+  { readonly url: Url; readonly scope: NodeId | null },
+  { readonly index: ReturnType<typeof buildRuleIndex>; readonly layerOrder: readonly (readonly string[])[] | undefined }
+> = define((db, key: { url: Url; scope: NodeId | null }) => {
+  const sheets = scopeSheetList(db, key.url, key.scope);
+  const origins: readonly ("ua" | "author")[] = sheets.map((_, i) => (i === 0 ? "ua" : "author"));
+  const layerOrder: (readonly string[])[] = [];
+  for (const sheet of sheets) {
+    if (sheet.layerOrder) {
+      for (const layer of sheet.layerOrder) {
+        if (!layerOrder.some((l) => l.join(".") === layer.join("."))) {
+          layerOrder.push(layer);
+        }
+      }
+    }
+  }
+  return Object.freeze({
+    index: buildRuleIndex(sheets, origins, layerOrder.length > 0 ? layerOrder : undefined),
+    layerOrder: layerOrder.length > 0 ? layerOrder : undefined,
+  });
+}, "qFineScopedRuleIndex");
+
 export const qFineComputed: QueryDef<NodeRef, ReturnType<typeof cascade>> = define((db, ref: NodeRef) => {
   const dom = domFacade(db, ref.url, false);
-  const { index, layerOrder } = db.query(qFineRuleIndex, ref.url);
+  const scope = treeScopeOf(dom, ref.node);
+  const { index, layerOrder } = db.query(qFineScopedRuleIndex, { url: ref.url, scope });
+  const interaction = db.getInput(FineInteractionState, ref.url);
+  const hostMap = db.getInput(FineShadowHosts, ref.url);
   const cache = new Map<NodeId, ReturnType<typeof cascade>>();
-  return cascadeWithRuleIndex(dom, index, ref.node, undefined, layerOrder, cache);
+  const shadow = {
+    hostRootOf: (n: NodeId): NodeId | null => hostMap.get(n) ?? null,
+    hostOf: (rootId: NodeId): NodeId | null => {
+      for (const [h, r] of hostMap) if (r === rootId) return h;
+      return null;
+    },
+    sheetsOf: (rootId: NodeId): readonly StyleSheet[] => scopeSheetList(db, ref.url, rootId),
+    computedOf: (n: NodeId) => db.query(qFineComputed, { url: ref.url, node: n }),
+  };
+  return cascadeWithRuleIndex(dom, index, ref.node, undefined, layerOrder, cache, interaction, shadow);
 }, "qFineComputed");
 
 /**
@@ -202,6 +370,21 @@ const LAYOUT_FIELDS: ReadonlySet<string> = new Set([
   "gridTemplateColumns", "gridTemplateRows",
   "lineHeight", "textAlign", "whiteSpace", "letterSpacing", "wordSpacing",
   "textIndent", "wordBreak", "overflowWrap",
+  // B-group additions the layout engine reads.
+  "verticalAlign",
+  "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor",
+  "borderColor",
+  // E2: the rendered-text view (text-transform drives shaping).
+  "textTransform",
+  "fontWeight",
+  "fontStyle",
+  "overflowX", "overflowY",
+  "contain",
+  "contentVisibility",
+  "containIntrinsicSize",
+  "gridAutoFlow", "gridAutoColumns", "gridAutoRows",
+  "gridColumn", "gridRow", "gridArea",
+  "insetBlockStart", "insetBlockEnd", "insetInlineStart", "insetInlineEnd",
 ]);
 
 /** Project a full ComputedStyle to ONLY its layout-relevant fields (frozen). */
@@ -233,7 +416,10 @@ export const qFineLayoutStyle: QueryDef<NodeRef, ReturnType<typeof cascade>> = d
  * but NOT on attrs — a class/style edit that is paint-only never invalidates it. */
 export const qFineLayout = define((db, url: Url) => {
   const dom = domFacade(db, url, true);
-  return layout(dom, (node) => db.query(qFineLayoutStyle, { url, node }), { shaper: pipelineShaper });
+  const composition = db.getInput(FineComposition, url);
+  const layoutOptions: { shaper: TextShaper; composition?: ShadowComposition } = { shaper: resolvePipelineShaper() };
+  if (composition !== null) layoutOptions.composition = composition;
+  return layout(dom, (node) => db.query(qFineLayoutStyle, { url, node }), layoutOptions);
 }, "qFineLayout");
 
 /** `qFinePaint` — the DisplayList for the live document. */
@@ -267,6 +453,27 @@ export interface FineSessionOptions {
  * per-node inputs so a mutation recomputes only the cascades that actually read
  * the edited node.
  */
+/**
+ * A raw DOM mutation at the NodeId level, reported by FineSession after each
+ * mutating method. This is the seam the guest MutationObserver wires into
+ * (see mutation-observer.ts): the session stays engine-pure, observers are a
+ * guest concept layered on top.
+ */
+export interface FineMutation {
+  readonly kind: "attributes" | "characterData" | "childList";
+  readonly target: NodeId;
+  /** For "attributes": the mutated attribute's (lowercased) name. */
+  readonly attributeName?: string;
+  /** The value BEFORE the mutation (old attribute/text content). */
+  readonly oldValue?: string | null;
+  /** For "childList": nodes inserted / removed at `target`. */
+  readonly added?: readonly NodeId[];
+  readonly removed?: readonly NodeId[];
+  /** Siblings of the mutated child at record time (null when absent). */
+  readonly previousSibling?: NodeId | null;
+  readonly nextSibling?: NodeId | null;
+}
+
 export class FineSession {
   readonly #db: IncrementalDb;
   readonly #url: Url;
@@ -276,8 +483,24 @@ export class FineSession {
   #root: NodeId;
   #pendingStructSeeds: Set<NodeId> = new Set();
   #pendingAttrSeeds: Set<NodeId> = new Set();
+  /**
+   * Every node whose structure or attributes changed since the host last
+   * drained this set. The kernel's own invalidation is query-level; this is
+   * the NODE-level record a renderer needs to invalidate exactly the cascade
+   * results a mutation could have changed (see `takeDirtyNodes`).
+   */
+  #dirtySinceDrain: Set<NodeId> = new Set();
   /** Next free node id for created nodes (one past the current maximum). */
   #nextId: number;
+  /**
+   * MutationObserver seam: when set, every DOM mutation reports here AFTER the
+   * tree update (the record semantics are pre-mutation for oldValue/siblings).
+   * Null = zero-cost path (no observer anywhere).
+   */
+  #mutationListener: ((mutation: FineMutation) => void) | null = null;
+  /** Script-set `<link>` enablement — HTML "explicitly enabled" survives
+   *  disconnect/reconnect, so it lives on the session (not the node). */
+  #linkEnabled: Set<NodeId> = new Set();
 
   constructor(html: string, url: Url = "fine://doc", options: FineSessionOptions = {}) {
     this.#db = new IncrementalDb(options.onQuery === undefined ? {} : { onQuery: options.onQuery });
@@ -296,6 +519,12 @@ export class FineSession {
   /** Seed the document root + every node's structure/attrs + external sheets. */
   #seed(dom: DomTree): void {
     this.#db.setInput(DocRoot, this.#url, dom.root);
+    this.#db.setInput(FineInteractionState, this.#url, NO_INTERACTION);
+    this.#db.setInput(FineComposition, this.#url, null);
+    this.#db.setInput(FineAdoptedSheets, this.#url, []);
+    this.#db.setInput(FineShadowAdoptedSheets, this.#url, new Map());
+    this.#db.setInput(FineShadowHosts, this.#url, new Map());
+    this.#db.setInput(FineLinkEnabled, this.#url, this.#linkEnabled);
     this.#syncExternalSheets();
     for (const [id, node] of dom.nodes) {
       this.#db.setInput(NodeStruct, nodeKey(this.#url, id), structOf(node));
@@ -346,54 +575,236 @@ export class FineSession {
     return this.#db.query(qFineComputed, { url: this.#url, node });
   }
 
+  /**
+   * The ComputedStyle of a node's PSEUDO-ELEMENT (`::before`/`::after`/…),
+   * backing `getComputedStyle(el, pseudo)`. Not cached through the kernel —
+   * WPT volumes are small and the pseudo shares the sheets' rule-index cache.
+   */
+  computedPseudo(node: NodeId, pseudo: string): ReturnType<typeof cascade> {
+    this.#flushSeeds();
+    const dom = domFacade(this.#db, this.#url, false);
+    const scope = treeScopeOf(dom, node);
+    const sheets = scopeSheetList(this.#db, this.#url, scope);
+    const { layerOrder } = this.#db.query(qFineScopedRuleIndex, { url: this.#url, scope });
+    const origins: readonly ("ua" | "author")[] = sheets.map((_, i) => (i === 0 ? "ua" : "author"));
+    const interaction = this.#db.getInput(FineInteractionState, this.#url);
+    return cascadePseudo(dom, sheets, node, pseudo, undefined, origins, layerOrder, interaction);
+  }
+
+  /**
+   * The document's parsed stylesheets (via the kernel). Exposed so consumers
+   * that reason over style RULES — accessibility generated-content
+   * resolution, CSSOM views — share the incremental sheet pipeline instead of
+   * re-parsing `<style>` text themselves.
+   */
+  styleSheets(): readonly StyleSheet[] {
+    this.#flushSeeds();
+    return this.#db.query(qFineSheets, this.#url);
+  }
+
   setExternalSheetLoader(loader: SheetLoader | undefined): void {
     this.#loadExternalSheet = loader;
     this.#syncExternalSheets();
   }
 
+  /**
+   * `document.adoptedStyleSheets` → cascade: seed the serialized cssText of
+   * each adopted, non-disabled sheet. Re-call whenever the list or any adopted
+   * sheet's contents change.
+   */
+  setAdoptedSheets(texts: readonly string[]): void {
+    this.#db.setInput(FineAdoptedSheets, this.#url, [...texts]);
+  }
+
+  /** Per-shadow-root adopted sheets — keyed by the shadow-root node id. */
+  #shadowAdopted = new Map<NodeId, readonly string[]>();
+  /** Host → shadow-root registrations (`attachShadow`). */
+  #shadowHosts = new Map<NodeId, NodeId>();
+
+  setShadowAdoptedSheets(rootId: NodeId, texts: readonly string[]): void {
+    if (texts.length === 0) this.#shadowAdopted.delete(rootId);
+    else this.#shadowAdopted.set(rootId, [...texts]);
+    this.#db.setInput(FineShadowAdoptedSheets, this.#url, new Map(this.#shadowAdopted));
+  }
+
+  registerShadowHost(hostId: NodeId, rootId: NodeId): void {
+    this.#shadowHosts.set(hostId, rootId);
+    this.#db.setInput(FineShadowHosts, this.#url, new Map(this.#shadowHosts));
+  }
+
   setText(node: NodeId, text: string): void {
     const existing = this.#nodes.get(node);
     if (existing === undefined) return;
+    const oldValue = existing.text ?? "";
     const updated: DomNode = { ...existing, text };
     this.#nodes.set(node, updated);
     this.#seedStruct(node);
+    this.#mutationListener?.({ kind: "characterData", target: node, oldValue });
   }
 
   setAttribute(node: NodeId, name: string, value: string): void {
     const previousBaseUrl = this.#documentBaseUrl();
     const existing = this.#nodes.get(node);
     if (existing === undefined || existing.kind !== "element") return;
+    const oldValue = existing.attrs?.get(name) ?? null;
     const attrs = new Map(existing.attrs ?? []);
     attrs.set(name, value);
     const updated: DomNode = { ...existing, attrs };
     this.#nodes.set(node, updated);
     this.#seedAttrs(node);
     this.#syncExternalSheetsIfAttributeMutation(updated, name, previousBaseUrl);
+    this.#mutationListener?.({ kind: "attributes", target: node, attributeName: name, oldValue });
   }
 
   removeAttribute(node: NodeId, name: string): void {
     const previousBaseUrl = this.#documentBaseUrl();
     const existing = this.#nodes.get(node);
     if (existing === undefined || existing.kind !== "element") return;
+    const oldValue = existing.attrs?.get(name) ?? null;
     const attrs = new Map(existing.attrs ?? []);
-    attrs.delete(name);
+    const had = attrs.delete(name);
     const updated: DomNode = { ...existing, attrs };
     this.#nodes.set(node, updated);
     this.#seedAttrs(node);
     this.#syncExternalSheetsIfAttributeMutation(updated, name, previousBaseUrl);
+    // Spec: removing an absent attribute queues no record.
+    if (had) {
+      this.#mutationListener?.({ kind: "attributes", target: node, attributeName: name, oldValue });
+    }
+  }
+
+  /** Register the mutation listener (MutationObserver seam; null disables). */
+  setMutationListener(listener: ((mutation: FineMutation) => void) | null): void {
+    this.#mutationListener = listener;
+  }
+
+  /** Add a second consumer to the mutation seam without replacing the
+   *  existing one (used by window named-access registration). */
+  addMutationListener(listener: (mutation: FineMutation) => void): void {
+    const previous = this.#mutationListener;
+    this.#mutationListener = (m) => {
+      listener(m);
+      previous?.(m);
+    };
+  }
+
+  /**
+   * D4 — set the document's INTERACTION STATE (`:hover` / `:active` /
+   * `:focus`). Setting a NEW state object re-seeds the kernel input, which
+   * invalidates exactly the cascade queries that read the state (the rule
+   * index does NOT rebuild — the DOM and sheets are unchanged).
+   */
+  setInteractionState(state: InteractionState): void {
+    this.#db.setInput(FineInteractionState, this.#url, state);
+  }
+
+  /**
+   * Script-set `<link>` enablement (HTML "explicitly enabled"). Re-seeding the
+   * input invalidates the sheet-collection query so the link's stylesheet
+   * activates/deactivates without waiting for an attribute mutation.
+   */
+  setLinkEnabled(node: NodeId, enabled: boolean): void {
+    if (enabled) this.#linkEnabled.add(node);
+    else this.#linkEnabled.delete(node);
+    this.#db.setInput(FineLinkEnabled, this.#url, new Set(this.#linkEnabled));
+    this.#syncExternalSheets();
+  }
+
+  /** Whether `node` was explicitly enabled via `link.disabled = false`. */
+  isLinkEnabled(node: NodeId): boolean {
+    return this.#linkEnabled.has(node);
+  }
+
+  /**
+   * D6 — set the SHADOW COMPOSITION (the flat-tree view). Passing `null`
+   * clears it (pure light DOM). Re-seeding invalidates the layout queries
+   * that read the affected nodes' children.
+   */
+  setComposition(composition: ShadowComposition | null): void {
+    this.#db.setInput(FineComposition, this.#url, composition);
+  }
+
+  /**
+   * D6 — a composition controller for the document API: `attachShadow` /
+   * slot assignment mutate the flat-tree view through it, re-seeding the
+   * kernel input on every change (host registration and slot assignment both
+   * re-run the affected layout queries only).
+   */
+  createCompositionController(): {
+    registerHost(hostId: NodeId, shadowRootId: NodeId): void;
+    assignSlot(slotId: NodeId, assigned: readonly NodeId[]): void;
+    read(): ShadowComposition | null;
+  } {
+    // Live mutable maps → frozen views re-seeded into the kernel input.
+    const hosts = new Map<NodeId, readonly NodeId[]>();
+    const slots = new Map<NodeId, readonly NodeId[]>();
+    const commit = (): void => {
+      if (hosts.size === 0 && slots.size === 0) {
+        this.#db.setInput(FineComposition, this.#url, null);
+        return;
+      }
+      this.#db.setInput(FineComposition, this.#url, {
+        hosts: new Map(hosts),
+        slots: new Map(slots),
+      });
+    };
+    return {
+      registerHost: (hostId, shadowRootId) => {
+        // The host renders the shadow ROOT's children (not the root itself).
+        const sync = (): void => {
+          const kids = this.#nodes.get(shadowRootId)?.children ?? [];
+          hosts.set(hostId, [...kids]);
+          commit(); // re-seed the kernel input so layout sees the flat tree.
+        };
+        sync();
+        // Keep the composition fresh when the shadow tree mutates: piggyback
+        // on the mutation listener seam (the same one MutationObserver uses).
+        // A full slot-assignment engine is the follow-up; host children
+        // syncing covers the dominant custom-element render pattern.
+        const previous = this.#mutationListener;
+        this.#mutationListener = (m) => {
+          if (m.target === shadowRootId || m.target === hostId) sync();
+          previous?.(m);
+        };
+      },
+      assignSlot: (slotId, assigned) => {
+        slots.set(slotId, [...assigned]);
+        commit();
+      },
+      read: () => {
+        if (hosts.size === 0 && slots.size === 0) return null;
+        return { hosts: new Map(hosts), slots: new Map(slots) };
+      },
+    };
   }
 
   #seedNode(node: NodeId): void {
     this.#pendingStructSeeds.add(node);
     this.#pendingAttrSeeds.add(node);
+    this.#dirtySinceDrain.add(node);
   }
 
   #seedStruct(node: NodeId): void {
     this.#pendingStructSeeds.add(node);
+    this.#dirtySinceDrain.add(node);
   }
 
   #seedAttrs(node: NodeId): void {
     this.#pendingAttrSeeds.add(node);
+    this.#dirtySinceDrain.add(node);
+  }
+
+  /**
+   * Drain the set of nodes mutated since the last call. A renderer uses it to
+   * evict exactly the cascade entries a mutation could have invalidated
+   * (the node, its subtree via inheritance, and its following siblings via
+   * sibling combinators) instead of re-cascading the whole document.
+   */
+  takeDirtyNodes(): ReadonlySet<NodeId> {
+    if (this.#dirtySinceDrain.size === 0) return EMPTY_DIRTY;
+    const drained = this.#dirtySinceDrain;
+    this.#dirtySinceDrain = new Set();
+    return drained;
   }
 
   #flushSeeds(): void {
@@ -457,15 +868,44 @@ export class FineSession {
     return id;
   }
 
+  /** Siblings of `child` within `parent`'s current child list (null when absent). */
+  #siblingsOf(parent: DomNode, child: NodeId): { prev: NodeId | null; next: NodeId | null } {
+    const idx = parent.children.indexOf(child);
+    if (idx < 0) return { prev: null, next: null };
+    return {
+      prev: idx > 0 ? (parent.children[idx - 1] ?? null) : null,
+      next: idx + 1 < parent.children.length ? (parent.children[idx + 1] ?? null) : null,
+    };
+  }
+
+  /** Emit the childList record for detaching `child` from its old parent, if any. */
+  #emitDetach(child: NodeId, oldParent: NodeId | null): void {
+    if (this.#mutationListener === null || oldParent === null) return;
+    const parentNode = this.#nodes.get(oldParent);
+    if (parentNode === undefined) return;
+    const { prev, next } = this.#siblingsOf(parentNode, child);
+    this.#mutationListener({
+      kind: "childList",
+      target: oldParent,
+      removed: [child],
+      previousSibling: prev,
+      nextSibling: next,
+    });
+  }
+
   appendChild(parent: NodeId, child: NodeId): void {
     const previousBaseUrl = this.#documentBaseUrl();
     const p = this.#nodes.get(parent);
     const c = this.#nodes.get(child);
     if (p === undefined || c === undefined || parent === child) return;
     const oldParent = c.parent;
+    this.#emitDetach(child, oldParent);
     this.#detachChild(child);
     const freshParent = this.#nodes.get(parent);
     if (freshParent === undefined) return;
+    const previousSibling = freshParent.children.length > 0
+      ? (freshParent.children[freshParent.children.length - 1] ?? null)
+      : null;
     this.#nodes.set(parent, {
       ...freshParent,
       children: [...freshParent.children.filter((id) => id !== child), child],
@@ -475,6 +915,13 @@ export class FineSession {
     this.#seedStruct(child);
     if (oldParent !== null && oldParent !== parent) this.#seedStruct(oldParent);
     this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
+    this.#mutationListener?.({
+      kind: "childList",
+      target: parent,
+      added: [child],
+      previousSibling,
+      nextSibling: null,
+    });
   }
 
   insertBefore(parent: NodeId, child: NodeId, ref: NodeId | null): void {
@@ -483,12 +930,15 @@ export class FineSession {
     const c = this.#nodes.get(child);
     if (p === undefined || c === undefined || parent === child) return;
     const oldParent = c.parent;
+    this.#emitDetach(child, oldParent);
     this.#detachChild(child);
     const freshParent = this.#nodes.get(parent);
     if (freshParent === undefined) return;
     const kids = freshParent.children.filter((id) => id !== child);
     const at = ref === null ? kids.length : kids.indexOf(ref);
     const idx = at < 0 ? kids.length : at;
+    const previousSibling = idx > 0 ? (kids[idx - 1] ?? null) : null;
+    const nextSibling = idx < kids.length ? (kids[idx] ?? null) : null;
     this.#nodes.set(parent, {
       ...freshParent,
       children: [...kids.slice(0, idx), child, ...kids.slice(idx)],
@@ -498,6 +948,13 @@ export class FineSession {
     this.#seedStruct(child);
     if (oldParent !== null && oldParent !== parent) this.#seedStruct(oldParent);
     this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
+    this.#mutationListener?.({
+      kind: "childList",
+      target: parent,
+      added: [child],
+      previousSibling,
+      nextSibling,
+    });
   }
 
   removeChild(parent: NodeId, child: NodeId): void {
@@ -505,6 +962,7 @@ export class FineSession {
     const p = this.#nodes.get(parent);
     const c = this.#nodes.get(child);
     if (p === undefined || c === undefined) return;
+    const { prev, next } = this.#siblingsOf(p, child);
     this.#nodes.set(parent, {
       ...p,
       children: p.children.filter((id) => id !== child),
@@ -513,11 +971,24 @@ export class FineSession {
     this.#seedStruct(parent);
     this.#seedStruct(child);
     this.#syncExternalSheetsIfSubtreeMutationCanAffectResources(child, previousBaseUrl);
+    this.#mutationListener?.({
+      kind: "childList",
+      target: parent,
+      removed: [child],
+      previousSibling: prev,
+      nextSibling: next,
+    });
   }
 
   /** Recompute the external stylesheet input from the current DOM. */
   #syncExternalSheets(): void {
-    this.#db.setInput(FineExternalSheets, this.#url, loadExternalStylesheets(this.#dom, this.#url, this.#loadExternalSheet));
+    this.#db.setInput(
+      FineExternalSheets,
+      this.#url,
+      loadExternalStylesheets(this.#dom, this.#url, this.#loadExternalSheet, (node) =>
+        this.#linkEnabled.has(node.id),
+      ),
+    );
   }
 
   /** The document's current effective base URL for resolving external resources. */
@@ -550,6 +1021,7 @@ function loadExternalStylesheets(
   dom: DomTree,
   documentUrl: string,
   loadExternal?: SheetLoader,
+  linkEnabled?: (node: DomNode) => boolean,
 ): ReadonlyMap<string, Uint8Array> {
   if (loadExternal === undefined) {
     return EMPTY_EXTERNAL_SHEETS;
@@ -561,7 +1033,7 @@ function loadExternalStylesheets(
     if (node === undefined) {
       return;
     }
-    if (!isActiveStylesheetLink(node)) {
+    if (!isActiveStylesheetLink(node, linkEnabled?.(node) === true)) {
       for (const child of node.children) {
         visit(child);
       }

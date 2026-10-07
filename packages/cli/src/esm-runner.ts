@@ -1,7 +1,9 @@
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 
 import type { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { makeCssNamespace } from "./css-namespace.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
 import { makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
 import type { GuestBrowserFetch } from "./event-loop.js";
@@ -70,7 +72,7 @@ function emptyRect(): object {
   };
 }
 
-function createObserverStub(kind: "mutation" | "resize" | "intersection" | "performance", cb?: unknown): {
+function createObserverStub(kind: "resize" | "intersection" | "performance", cb?: unknown): {
   observe: (...args: unknown[]) => void;
   unobserve: (...args: unknown[]) => void;
   disconnect: () => void;
@@ -144,7 +146,7 @@ function createObserverStub(kind: "mutation" | "resize" | "intersection" | "perf
 
 function installObserverGlobals(sandbox: Record<string, unknown>): void {
   const make =
-    (kind: "mutation" | "resize" | "intersection" | "performance") =>
+    (kind: "resize" | "intersection" | "performance") =>
     function Observer(this: unknown, cb?: unknown) {
       return createObserverStub(kind, cb);
     };
@@ -165,7 +167,6 @@ function installObserverGlobals(sandbox: Record<string, unknown>): void {
     "resource",
     "visibility-state",
   ];
-  sandbox["MutationObserver"] = make("mutation");
   sandbox["ResizeObserver"] = make("resize");
   sandbox["IntersectionObserver"] = make("intersection");
   sandbox["PerformanceObserver"] = PerformanceObserver;
@@ -354,16 +355,16 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
       querySelectorAll: () => [],
     });
   };
-  sandbox["CSS"] = {
-    supports: () => false,
-    escape: (s: unknown) => String(s),
-  };
+  sandbox["CSS"] = makeCssNamespace();
   if (sandbox["TextEncoder"] === undefined) sandbox["TextEncoder"] = TextEncoder;
   if (sandbox["TextDecoder"] === undefined) sandbox["TextDecoder"] = TextDecoder;
   if (sandbox["URL"] === undefined) sandbox["URL"] = URL;
   if (sandbox["URLSearchParams"] === undefined) sandbox["URLSearchParams"] = URLSearchParams;
   if (sandbox["AbortController"] === undefined) sandbox["AbortController"] = AbortController;
   if (sandbox["AbortSignal"] === undefined) sandbox["AbortSignal"] = AbortSignal;
+  // WebCrypto: reuse Node's implementation (see event-loop.ts) so module
+  // bundles calling `crypto.getRandomValues` at import time keep working.
+  if (sandbox["crypto"] === undefined) sandbox["crypto"] = webcrypto;
   if (sandbox["Blob"] === undefined) sandbox["Blob"] = makeBlobClass();
   if (sandbox["File"] === undefined) sandbox["File"] = makeFileClass();
   if (typeof (URL as { createObjectURL?: unknown }).createObjectURL !== "function") {
@@ -375,27 +376,50 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
 }
 
 
-function quietConsole(): Record<string, (...args: unknown[]) => void> {
-  const noop = (..._args: unknown[]): void => {};
+function quietConsole(
+  diagnostics?: { readonly console: { level: string; message: string }[] },
+): Record<string, (...args: unknown[]) => void> {
+  const formatArgs = (args: unknown[]): string =>
+    args
+      .map((a) => {
+        if (typeof a === "string") return a;
+        if (typeof a === "object" && a !== null) {
+          try {
+            return JSON.stringify(a) ?? "[object]";
+          } catch {
+            return "[unserializable]";
+          }
+        }
+        return String(a);
+      })
+      .join(" ");
+  const record = (level: string): ((...args: unknown[]) => void) => {
+    const noop = (..._args: unknown[]): void => {};
+    if (diagnostics === undefined) return noop;
+    return (...args: unknown[]) => {
+      if (diagnostics.console.length >= 500) diagnostics.console.shift();
+      diagnostics.console.push({ level, message: formatArgs(args) });
+    };
+  };
   return {
-    log: noop,
-    info: noop,
-    warn: noop,
-    error: noop,
-    debug: noop,
-    trace: noop,
-    dir: noop,
-    table: noop,
-    group: noop,
-    groupEnd: noop,
-    groupCollapsed: noop,
-    time: noop,
-    timeEnd: noop,
-    timeLog: noop,
-    assert: noop,
-    clear: noop,
-    count: noop,
-    countReset: noop,
+    log: record("log"),
+    info: record("info"),
+    warn: record("warn"),
+    error: record("error"),
+    debug: record("debug"),
+    trace: record("trace"),
+    dir: record("log"),
+    table: record("log"),
+    group: record("group"),
+    groupEnd: record("group"),
+    groupCollapsed: record("group"),
+    time: record("time"),
+    timeEnd: record("timeEnd"),
+    timeLog: record("time"),
+    assert: record("assert"),
+    clear: record("clear"),
+    count: record("count"),
+    countReset: record("countReset"),
   };
 }
 
@@ -582,7 +606,11 @@ function installXMLHttpRequest(
 }
 
 
-function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): void {
+function installBrowserGlobals(
+  sandbox: Record<string, unknown>,
+  href: string,
+  diagnostics?: { readonly console: { level: string; message: string }[] },
+): void {
   let protocol = "";
   let host = "";
   let hostname = "";
@@ -679,7 +707,7 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
   sandbox["history"] = history;
   sandbox["localStorage"] = storage;
   sandbox["sessionStorage"] = storage;
-  sandbox["console"] = quietConsole();
+  sandbox["console"] = quietConsole(diagnostics);
   sandbox["atob"] = (data: unknown) => Buffer.from(String(data), "base64").toString("binary");
   sandbox["btoa"] = (data: unknown) => Buffer.from(String(data), "binary").toString("base64");
   const navStart = Date.now() - 1000;
@@ -905,18 +933,33 @@ export async function runModuleScripts(
      * `liveTimers`/`settle`/`getMutations` hooks for exactly that.
      */
     readonly keepAlive?: boolean;
+    /**
+     * Diagnostics sink: guest `console.*` output and uncaught module errors
+     * (evaluate failures, uncaught-in-promise from timers/rAF) append here
+     * LIVE so the embedding host can surface page problems. Bounded by owner.
+     */
+    readonly diagnostics?: {
+      readonly console: { level: string; message: string }[];
+      readonly errors: string[];
+    };
   } = {},
 ): Promise<ModuleRunResult> {
   const SourceTextModule = getSourceTextModule();
   if (SourceTextModule === null) {
+    // Console-completeness: the unsupported path must be as loud as an
+    // evaluate failure — otherwise a host reading only `diagnostics` sees a
+    // page with zero modules and zero explanation (the bilibili blind spot).
+    const message =
+      "ESM not available: restart Node with --experimental-vm-modules to execute type=module scripts";
+    options.diagnostics?.errors.push(
+      entries.length > 0 ? `${message} (${String(entries.length)} module(s) skipped)` : message,
+    );
     return {
       supported: false,
       evaluated: 0,
       linked: 0,
       failed: entries.length,
-      errors: [
-        "ESM not available: restart Node with --experimental-vm-modules to execute type=module scripts",
-      ],
+      errors: [message],
       importedUrls: [],
       mutations: 0,
     };
@@ -1143,14 +1186,16 @@ export async function runModuleScripts(
     sandbox["fetch"] = makeFetch();
     installXMLHttpRequest(sandbox, sandbox["fetch"] as (input: unknown, init?: unknown) => Promise<object>, session.url);
   } else {
-    const api = buildDocumentApi(session, { geometryMode: "stub", styleMode: "fast" });
+    // "throttled": real (cached) geometry — the all-zero stub broke every
+    // module script that measures the page (SPA bootstraps measure on mount).
+    const api = buildDocumentApi(session, { geometryMode: "throttled", styleMode: "fast" });
     mutationsOf = api.mutations;
     sandbox = {
       document: api.document,
       ...api.globals,
     };
     sandbox["fetch"] = makeFetch();
-    installBrowserGlobals(sandbox, session.url);
+    installBrowserGlobals(sandbox, session.url, options.diagnostics);
     installObserverGlobals(sandbox);
     installEventTarget(sandbox);
     installTimers(sandbox);
@@ -1345,7 +1390,9 @@ export async function runModuleScripts(
       failed += 1;
       const msg = e instanceof Error ? e.message : String(e);
       const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 6).join(" | ") : "";
-      errors.push(`module evaluate ${entry.url}: ${msg}${stack ? " :: " + stack : ""}`);
+      const formatted = `module evaluate ${entry.url}: ${msg}${stack ? " :: " + stack : ""}`;
+      errors.push(formatted);
+      options.diagnostics?.errors.push(formatted);
       if (profile) {
         console.error(`[profile] module.error ${msg.slice(0, 120)}`);
       }

@@ -1,0 +1,16 @@
+{
+  "name": "imported-FileAPI",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "FileAPI/blob/Blob-slice.any.html",
+    "FileAPI/blob/Blob-slice.any.js",
+    "FileAPI/reading-data-section/FileReader-multiple-reads.any.html",
+    "FileAPI/reading-data-section/FileReader-multiple-reads.any.js",
+    "FileAPI/reading-data-section/filereader_readAsBinaryString.any.html",
+    "FileAPI/reading-data-section/filereader_readAsBinaryString.any.js",
+    "FileAPI/reading-data-section/filereader_readAsDataURL.any.html",
+    "FileAPI/reading-data-section/filereader_readAsDataURL.any.js"
+  ],
+  "baselinePassCount": 0
+}

@@ -1,0 +1,11 @@
+{
+  "name": "imported-svg-aam",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "svg-aam/name/comp_host_language_label.html",
+    "svg-aam/role/roles-generic.html",
+    "svg-aam/role/roles.html"
+  ],
+  "baselinePassCount": 0
+}

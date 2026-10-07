@@ -18,8 +18,8 @@ test(function () {
 
   el.style.cssText = "color: rgb(9, 8, 7); width: 42px";
 
-  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7); width: 42px", "cssText reflects to the style attribute");
-  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 42px", "cssText reads back the style attribute");
+  assert_equals(el.getAttribute("style"), "color: rgb(9, 8, 7); width: 42px;", "cssText reflects to the style attribute");
+  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 42px;", "cssText reads back the style attribute");
   assert_equals(el.style.getPropertyValue("color"), "rgb(9, 8, 7)", "style declaration reads the assigned color");
   assert_equals(el.style.getPropertyValue("width"), "42px", "style declaration reads the assigned width");
 }, "cssText assignment reflects the style attribute");

@@ -24,7 +24,7 @@ test(function () {
   assert_true(el.matches("[data-on]"), "precondition: presence selector matches");
   el.removeAttribute("data-on");
   assert_false(el.matches("[data-on]"), "presence selector stops matching after removal");
-  assert_equals(getComputedStyle(el).getPropertyValue("height"), "auto", "style falls back after attribute selector stops matching");
+  assert_equals(getComputedStyle(el).getPropertyValue("height"), "16px", "style falls back after attribute selector stops matching");
 }, "removeAttribute updates selector matching and computed style");
 
 test(function () {
@@ -35,7 +35,7 @@ test(function () {
   assert_equals(el.className, "", "className reflects the missing class attribute");
   assert_false(el.matches(".hot"), "class selector stops matching");
   assert_equals(getComputedStyle(el).getPropertyValue("color"), "rgb(0, 0, 0)", "color falls back to the inherited initial");
-  assert_equals(getComputedStyle(el).getPropertyValue("width"), "auto", "layout-affecting class style falls back");
+  assert_equals(getComputedStyle(el).getPropertyValue("width"), "768px", "layout-affecting class style falls back");
 }, "removeAttribute(\"class\") updates reflected class and style");
 </script>
 </body>

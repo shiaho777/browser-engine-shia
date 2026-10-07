@@ -1,0 +1,10 @@
+{
+  "name": "imported-inert",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "inert/inert-computed-style.html",
+    "inert/inert-node-is-unfocusable.html"
+  ],
+  "baselinePassCount": 0
+}

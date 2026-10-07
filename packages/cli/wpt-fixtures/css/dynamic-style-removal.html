@@ -22,7 +22,7 @@ test(function () {
   sheet.remove();
 
   cs = getComputedStyle(document.getElementById("removal-target"));
-  assert_equals(cs.getPropertyValue("width"), "auto", "removed style no longer controls width");
+  assert_equals(cs.getPropertyValue("width"), "784px", "removed style no longer controls width");
   assert_equals(cs.getPropertyValue("color"), "rgb(0, 0, 0)", "removed style no longer controls color");
   assert_equals(cs.getPropertyValue("background-color"), "rgba(0, 0, 0, 0)", "removed style no longer controls background");
 }, "removing a dynamically inserted style element removes its cascade rules");
@@ -40,7 +40,7 @@ test(function () {
 
   var removed = head.removeChild(sheet);
   assert_equals(removed, sheet, "removeChild returns the removed style node");
-  assert_equals(getComputedStyle(target).getPropertyValue("width"), "auto", "removeChild drops the style rule");
+  assert_equals(getComputedStyle(target).getPropertyValue("width"), "784px", "removeChild drops the style rule");
   assert_equals(getComputedStyle(target).getPropertyValue("color"), "rgb(0, 0, 0)", "removeChild drops the color rule");
 }, "head.removeChild(style) removes dynamically inserted style rules");
 </script>

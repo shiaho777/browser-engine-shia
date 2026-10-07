@@ -26,6 +26,10 @@ export default tseslint.config(
       "artifacts/**",
       ".codebuddy/**",
       ".zcode/**",
+      // Vendored reference engine snapshot (read-only reference, not our code).
+      "ladybird-master/**",
+      // Imported WPT corpus copied from the reference engine snapshot.
+      "wpt-imported/**",
       // Plain-JS runtime glue outside the typed source tree (bin launchers,
       // Electron main process, preload bridge).
       "**/bin/**",

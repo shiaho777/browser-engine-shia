@@ -198,7 +198,10 @@ export const BENCHMARK_SELF_TEST_SUBSET: WptSubset = [
   {
     id: "bench/css/transition-duration-number.html",
     capability: "css-transition",
-    run: () => expect(parsed("transition-duration", "0.3") === 0.3, "transition-duration 0.3"),
+    run: () => {
+      const v = parsed("transition-duration", "0.3s");
+      return expect(Array.isArray(v) && v[0] === 0.3, "transition-duration 0.3s");
+    },
   },
   {
     id: "bench/css/animation-iteration-count-number.html",

@@ -1,0 +1,9 @@
+{
+  "name": "imported-battery-status",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "battery-status/battery-promise-window.https.html"
+  ],
+  "baselinePassCount": 0
+}

@@ -17,6 +17,8 @@ export interface SiteCheckReport {
   readonly passed: boolean;
   readonly failedCount: number;
   readonly checks: readonly SiteCheckResult[];
+  /** Guest diagnostics (console/errors/failed fetches) from the LAST page loaded. */
+  readonly diagnostics?: { readonly console: { readonly level: string; readonly message: string }[]; readonly errors: readonly string[] };
   readonly metrics: {
     readonly scriptsRun: number;
     readonly scriptsFailed: number;
@@ -184,12 +186,20 @@ export async function checkSite(
   }
 
   const failed = results.filter((r) => !r.passed).length;
-  return {
+  const liveDiag = current.runtime?.diagnostics;
+  const diagSnapshot =
+    liveDiag !== undefined
+      ? { console: [...liveDiag.console], errors: [...liveDiag.errors] }
+      : current.diagnostics !== undefined
+        ? { console: [...current.diagnostics.console], errors: [...current.diagnostics.errors] }
+        : undefined;
+  const reportBase: SiteCheckReport = {
     site: manifest.site,
     url: manifest.url,
     passed: failed === 0,
     failedCount: failed,
     checks: results,
+    ...(diagSnapshot !== undefined ? { diagnostics: diagSnapshot } : {}),
     metrics: {
       scriptsRun: current.scripts.scripts,
       scriptsFailed: current.scripts.scriptsFailed,
@@ -203,4 +213,5 @@ export async function checkSite(
       durationMs: performance.now() - started,
     },
   };
+  return reportBase;
 }

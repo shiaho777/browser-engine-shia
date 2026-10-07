@@ -552,9 +552,12 @@ void test("flex-wrap:nowrap (the default) keeps the single-line pack unchanged",
   const tree = layout(dom, styles);
   const flex = fragmentOf(tree, nodeId(1))!;
   const kids = flex.children.map((id) => tree.fragments.get(id)!);
-  // Both items overflow past 100px but stay on ONE line (same y).
+  // No wrap ⇒ both items stay on ONE line (same y). They overflow (160px in a
+  // 100px container), so the B8 shrink pass applies: each 80px item gives up
+  // 30px (equal shrink × basis) → 50px each, item2 at 50 + 10gap = 60.
   assert.equal(Number(kids[0]!.box.borderBox.y), Number(kids[1]!.box.borderBox.y), "no wrap ⇒ same line");
-  assert.equal(Number(kids[1]!.box.borderBox.x), 90, "item2 at 80+10gap (overflowing the 100px width on one line)");
+  assert.equal(Number(kids[0]!.box.width), 50, "the overflowing items shrink (flex-shrink: 1 default)");
+  assert.equal(Number(kids[1]!.box.borderBox.x), 60, "item2 at 50+10gap after shrinking");
 });
 
 // ===========================================================================
@@ -776,12 +779,12 @@ void test("table lays out rows and cells with aligned columns (Req 16.1)", () =>
   const styles = styleTable(
     new Map([
       [1, makeStyle({ display: "table", width: 200 })],
-      [2, makeStyle({ display: "block" })],
-      [3, makeStyle({ display: "block" })],
-      [4, makeStyle({ display: "block", height: 30 })],
-      [5, makeStyle({ display: "block", height: 20 })],
-      [6, makeStyle({ display: "block", height: 15 })],
-      [7, makeStyle({ display: "block", height: 25 })],
+      [2, makeStyle({ display: "table-row" })],
+      [3, makeStyle({ display: "table-row" })],
+      [4, makeStyle({ display: "table-cell", height: 30 })],
+      [5, makeStyle({ display: "table-cell", height: 20 })],
+      [6, makeStyle({ display: "table-cell", height: 15 })],
+      [7, makeStyle({ display: "table-cell", height: 25 })],
     ]),
   );
 

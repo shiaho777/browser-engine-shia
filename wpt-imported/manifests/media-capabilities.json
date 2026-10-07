@@ -1,0 +1,10 @@
+{
+  "name": "imported-media-capabilities",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "media-capabilities/decodingInfo.any.html",
+    "media-capabilities/decodingInfo.any.js"
+  ],
+  "baselinePassCount": 0
+}

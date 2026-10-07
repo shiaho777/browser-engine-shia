@@ -55,7 +55,13 @@ const IR_TYPE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Base type names exported by the generator's own value-grammar module. */
-const GRAMMAR_TYPE_NAMES: ReadonlySet<string> = new Set(["LengthOrAuto", "LengthSizing", "TransformValue"]);
+const GRAMMAR_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "LengthOrAuto",
+  "LengthSizing",
+  "TransformValue",
+  "SpecifiedLength",
+  "SpecifiedCalc",
+]);
 
 /** Extract the distinct identifier tokens that appear in a `tsType` string. */
 function typeIdentifiers(tsType: string): readonly string[] {
@@ -155,6 +161,11 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
       };
     case "color":
       return { expr: "parseColor(value)", primitive: "parseColor" };
+    case "color-or-keyword":
+      return {
+        expr: `parseColorOrKeyword(value, ${stringArrayLiteral(grammar.keywords)})`,
+        primitive: "parseColorOrKeyword",
+      };
     case "length":
       return { expr: "parseLength(value)", primitive: "parseLength" };
     case "length-or-keyword":
@@ -169,15 +180,34 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
         expr: `parseInteger(value, ${boundsLiteral(grammar.min, grammar.max)})`,
         primitive: "parseInteger",
       };
+    case "integer-or-keyword":
+      return {
+        expr: `parseIntegerOrKeyword(value, ${stringArrayLiteral(grammar.keywords)}, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseIntegerOrKeyword",
+      };
     case "number":
       return {
         expr: `parseNumber(value, ${boundsLiteral(grammar.min, grammar.max)})`,
         primitive: "parseNumber",
       };
+    case "time":
+      return {
+        expr: `parseTime(value, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseTime",
+      };
+    case "times":
+      return {
+        expr: `parseTimes(value, ${boundsLiteral(grammar.min, grammar.max)})`,
+        primitive: "parseTimes",
+      };
     case "transform":
       return { expr: "parseTransform(value)", primitive: "parseTransform" };
     case "string":
       return { expr: "parseString(value)", primitive: "parseString" };
+    case "display":
+      return { expr: "parseDisplay(value)", primitive: "parseDisplay" };
+    case "cursor":
+      return { expr: "parseCursor(value)", primitive: "parseCursor" };
     default: {
       const never: never = grammar;
       throw new Error(`unknown value grammar: ${JSON.stringify(never)}`);
@@ -210,6 +240,7 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
   const usedPrimitives = new Set<string>();
   const fnBlocks: string[] = [];
   const tableRows: string[] = [];
+  const bareZeroPx: string[] = [];
 
   for (const property of properties) {
     const call = parserCallFor(property.syntax);
@@ -224,8 +255,12 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
       ].join("\n"),
     );
     tableRows.push(`  ${quote(property.name)}: ${fn},`);
+    if (property.syntax.kind === "length" || property.syntax.kind === "length-or-keyword") {
+      bareZeroPx.push(`  ${quote(property.name)},`);
+    }
   }
 
+  usedPrimitives.add("ok");
   const runtimeImport = importLines(
     "../value-runtime.js",
     [...usedPrimitives].sort(),
@@ -236,6 +271,7 @@ export function emitCssParser(properties: readonly CssPropertyDef[]): GeneratedF
     "CSS value parsers — one per property's declarative grammar (Requirement 6.2).",
   )}
 ${runtimeImport}
+import { expandShorthand } from "../shorthand-expansion.js";
 import { notImplemented } from "@browser-engine/ir";
 
 /** A parser from a raw declaration value string to a typed parse result. */
@@ -249,6 +285,14 @@ ${tableRows.join("\n")}
 };
 
 /**
+ * Properties whose grammar is \`<length>\`-based: a bare \`0\` parses as a px
+ * length and serializes as \`0px\` (CSSOM specified-value serialization).
+ */
+export const LENGTH_BARE_ZERO_PX: ReadonlySet<string> = new Set([
+${bareZeroPx.join("\n")}
+]);
+
+/**
  * Parse the value of \`property\`. A known property returns a {@link ParseResult}
  * (\`ok\` value or \`reason\`); an unknown property is an unimplemented capability
  * and throws \`NotImplemented\` (Requirement 5.1).
@@ -257,14 +301,36 @@ export function parsePropertyValue(
   property: string,
   value: string,
 ): ParseResult<unknown> {
-  const parser = PROPERTY_PARSERS[property];
+  const parser = Object.hasOwn(PROPERTY_PARSERS, property) ? PROPERTY_PARSERS[property] : undefined;
   if (parser === undefined) {
     return notImplemented(\`css-property:\${property}\`, {
       category: "css-property",
       detail: "no parser is generated for this property (not in the data table)",
     });
   }
-  return parser(value);
+  const wide = value.trim().toLowerCase();
+  if (
+    wide === "initial" || wide === "inherit" || wide === "unset"
+    || wide === "revert" || wide === "revert-layer"
+  ) {
+    return ok(wide);
+  }
+  const first = parser(value);
+  if (first.ok) return first;
+  // A shorthand's grammar may be narrower than the union of its longhands'
+  // (e.g. margin:auto — the edges grammar is lengths-only). The spec-correct
+  // check is expansion: the shorthand is valid iff every expanded longhand is.
+  const expanded = expandShorthand(property, value);
+  if (expanded !== null) {
+    const allOk = expanded.every((d) => {
+      const p = Object.hasOwn(PROPERTY_PARSERS, d.property) ? PROPERTY_PARSERS[d.property] : undefined;
+      if (p === undefined) return false;
+      const r = p(d.value);
+      return r.ok;
+    });
+    if (allOk) return ok(value);
+  }
+  return first;
 }
 `;
 
@@ -276,13 +342,35 @@ export function parsePropertyValue(
  * keyed by ComputedStyle field name, typed by the generated field interface.
  */
 export function emitInitialValues(properties: readonly CssPropertyDef[]): GeneratedFile {
+  // Branded-length fields need `px(N)` — a bare `number` literal is not
+  // comparable to `Px` (or `Px`-containing shapes) in the `as` assertion.
+  const serializeInitial = (value: unknown, tsType: string): string => {
+    if (
+      typeof value === "number" &&
+      /\bPx\b|\bLengthOrAuto\b|\bLengthSizing\b/.test(tsType)
+    ) {
+      return `px(${serializeValue(value)})`;
+    }
+    if (
+      typeof value === "object" && value !== null && !Array.isArray(value) &&
+      /Edges<\s*Px\s*>/.test(tsType)
+    ) {
+      const parts = Object.entries(value as Record<string, unknown>).map(
+        ([k, v]) => `${objectKey(k)}: ${serializeInitial(v, "Px")}`,
+      );
+      return `{ ${parts.join(", ")} }`;
+    }
+    return serializeValue(value);
+  };
   const rows = properties.map(
-    (property) => `  ${objectKey(property.field)}: ${serializeValue(property.initial)},`,
+    (property) =>
+      `  ${objectKey(property.field)}: ${serializeInitial(property.initial, property.tsType)},`,
   );
 
   const contents = `${banner(
     "Initial computed values, one per property (Requirement 6.2).",
   )}
+import { px } from "@browser-engine/ir";
 import type { GeneratedComputedStyleFields } from "./computed-style-fields.js";
 
 /**

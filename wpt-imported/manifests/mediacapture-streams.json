@@ -1,0 +1,10 @@
+{
+  "name": "imported-mediacapture-streams",
+  "owner": "guest",
+  "root": "wpt-imported/wpt",
+  "files": [
+    "mediacapture-streams/idlharness.https.window.html",
+    "mediacapture-streams/idlharness.https.window.js"
+  ],
+  "baselinePassCount": 0
+}

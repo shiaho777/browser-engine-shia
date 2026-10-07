@@ -41,7 +41,12 @@ void test("the software device clears and draws a solid quad", () => {
 });
 
 void test("a linear-gradient fragment shader interpolates across the quad", () => {
-  const mid = shade({ kind: "linear-gradient", from: RED, to: BLUE, axis: "x" }, 0.5, 0);
+  // 90deg = "to right": t tracks u.
+  const mid = shade(
+    { kind: "linear-gradient", stops: [{ color: RED, position: 0 }, { color: BLUE, position: 1 }], angle: 90 },
+    0.5,
+    0,
+  );
   assert.ok(Math.abs(mid.r - 127.5) < 1 && Math.abs(mid.b - 127.5) < 1, "midpoint blends red↔blue");
 });
 
@@ -52,7 +57,7 @@ void test("HEADLINE: the multi-core parallel device matches the serial device by
     height: 64,
     commands: [
       { op: "clear", color: WHITE },
-      { op: "quad", x: 0, y: 0, w: 64, h: 64, fragment: { kind: "linear-gradient", from: RED, to: BLUE, axis: "y" } },
+      { op: "quad", x: 0, y: 0, w: 64, h: 64, fragment: { kind: "linear-gradient", stops: [{ color: RED, position: 0 }, { color: BLUE, position: 1 }], angle: 180 } },
       { op: "quad", x: 10, y: 10, w: 30, h: 40, fragment: { kind: "solid", color: { r: 0, g: 200, b: 0, a: 0.5 } } },
     ],
   };

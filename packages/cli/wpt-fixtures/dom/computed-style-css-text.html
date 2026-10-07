@@ -26,7 +26,9 @@ test(function () {
   var el = document.getElementById("target");
   var cs = getComputedStyle(el);
 
-  cs.cssText = "color: rgb(9, 8, 7)";
+  assert_throws_dom("NoModificationAllowedError", function () {
+    cs.cssText = "color: rgb(9, 8, 7)";
+  }, "assigning computed cssText throws on the read-only declaration");
 
   assert_equals(cs.cssText, "", "assigning computed cssText does not mutate the computed declaration object");
   assert_equals(el.getAttribute("style"), null, "assigning computed cssText does not create inline style");
@@ -39,7 +41,7 @@ test(function () {
   el.style.cssText = "color: rgb(9, 8, 7); width: 41px";
   var cs = getComputedStyle(el);
 
-  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 41px", "inline cssText remains an inline declaration block");
+  assert_equals(el.style.cssText, "color: rgb(9, 8, 7); width: 41px;", "inline cssText remains an inline declaration block");
   assert_equals(cs.cssText, "", "computed cssText stays empty even when inline style participates in the cascade");
   assert_equals(cs.getPropertyValue("width"), "41px", "computed values still reflect inline declarations");
 }, "computed cssText stays distinct from element.style cssText");
