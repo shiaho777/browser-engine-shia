@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { loadPage, pumpFrames, type PageState } from "./page.js";
+import type { Frame } from "@browser-engine/ipc";
+import { WebContentClient } from "./webcontent-client.js";
 import type { EngineViewport } from "./host-api.js";
 import { normalizeViewport } from "./host-api.js";
 
@@ -49,76 +50,83 @@ interface SiteManifest {
   readonly checks: readonly ManifestCheck[];
 }
 
-function metricOf(page: PageState, name: string): number | boolean {
+function metricOf(frame: Frame, name: string): number | boolean {
   switch (name) {
-    case "scriptsRun": return page.scripts.scripts;
-    case "scriptsFailed": return page.scripts.scriptsFailed;
-    case "modulesEvaluated": return page.scripts.modulesEvaluated;
-    case "modulesLinked": return page.scripts.modulesLinked;
-    case "mutations": return page.scripts.mutations;
-    case "networkEvents": return page.scripts.networkEvents;
-    case "esmSupported": return page.scripts.esmSupported;
-    case "contentHeight": return page.contentHeight;
+    case "scriptsRun": return frame.scriptsRun;
+    case "scriptsFailed": return frame.scriptsFailed;
+    case "modulesEvaluated": return frame.modulesEvaluated;
+    case "modulesLinked": return frame.modulesLinked;
+    case "mutations": return frame.mutations;
+    case "networkEvents": return frame.networkEvents;
+    case "esmSupported": return frame.esmSupported;
+    case "contentHeight": return frame.contentHeight;
     default: return 0;
   }
 }
 
-function runStaticCheck(page: PageState, check: ManifestCheck, viewportHeight: number): SiteCheckResult {
+function runStaticCheck(frame: Frame, check: ManifestCheck, viewportHeight: number): SiteCheckResult {
   const fail = (detail: string): SiteCheckResult => ({ id: check.id, passed: false, detail });
   const pass = (detail: string): SiteCheckResult => ({ id: check.id, passed: true, detail });
   switch (check.kind) {
     case "title-equals":
-      return page.title === check.value
-        ? pass(`title=${JSON.stringify(page.title)}`)
-        : fail(`title=${JSON.stringify(page.title)} expected ${JSON.stringify(check.value)}`);
+      return frame.title === check.value
+        ? pass(`title=${JSON.stringify(frame.title)}`)
+        : fail(`title=${JSON.stringify(frame.title)} expected ${JSON.stringify(check.value)}`);
     case "title-contains": {
       const needle = typeof check.value === "string" ? check.value : "";
-      return page.title.includes(needle)
-        ? pass(`title=${JSON.stringify(page.title)} contains ${JSON.stringify(needle)}`)
-        : fail(`title=${JSON.stringify(page.title)} missing ${JSON.stringify(needle)}`);
+      return frame.title.includes(needle)
+        ? pass(`title=${JSON.stringify(frame.title)} contains ${JSON.stringify(needle)}`)
+        : fail(`title=${JSON.stringify(frame.title)} missing ${JSON.stringify(needle)}`);
     }
     case "min-metric": {
-      const value = metricOf(page, check.metric ?? "");
+      const value = metricOf(frame, check.metric ?? "");
       if (typeof value !== "number") return fail(`metric ${check.metric} is not numeric`);
       return value >= (check.min ?? 0)
         ? pass(`${check.metric}=${value}`)
         : fail(`${check.metric}=${value} < min ${check.min}`);
     }
     case "metric-equals": {
-      const value = metricOf(page, check.metric ?? "");
+      const value = metricOf(frame, check.metric ?? "");
       return value === check.value
         ? pass(`${check.metric}=${String(value)}`)
         : fail(`${check.metric}=${String(value)} expected ${String(check.value)}`);
     }
     case "content-height-gt-viewport":
-      return page.contentHeight > viewportHeight
-        ? pass(`contentHeight=${page.contentHeight} > viewport=${viewportHeight}`)
-        : fail(`contentHeight=${page.contentHeight} <= viewport=${viewportHeight}`);
+      return frame.contentHeight > viewportHeight
+        ? pass(`contentHeight=${frame.contentHeight} > viewport=${viewportHeight}`)
+        : fail(`contentHeight=${frame.contentHeight} <= viewport=${viewportHeight}`);
     case "boot-error-free":
-      return page.scripts.error === null
+      return frame.scriptError === null
         ? pass("boot completed with no script error")
-        : fail(`boot script error: ${String(page.scripts.error).slice(0, 160)}`);
+        : fail(`boot script error: ${String(frame.scriptError).slice(0, 160)}`);
     default:
       return fail(`unknown check kind ${check.kind}`);
   }
 }
 
 /**
- * Run one site's manifest against the live engine: load the URL with
- * keepAlive, pump extra frames for continuous-rendering checks, and verify
- * every declared check. Network access is real; failures classify loudly.
+ * Run one site's manifest against the live engine — over the same IPC the
+ * shell uses, so the harness exercises the real process boundary (RFC 0004).
+ * Network access is real; failures classify loudly.
  */
 /** Load one page with one bounded retry — real sites rate-limit rapid repeated hits. */
-async function loadWithRetry(url: string, viewport: EngineViewport, attempts = 2): Promise<PageState> {
+async function loadWithRetry(
+  client: WebContentClient,
+  url: string,
+  viewport: EngineViewport,
+  attempts = 2,
+): Promise<Frame> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      const page = await loadPage(url, { viewport, keepAlive: true });
-      // Treat a rendered error page for http(s) targets as a retryable failure.
-      if (page.title === "Load error" && /^https?:\/\//i.test(url)) {
+      const { frame } = await client.navigate(url, viewport, { keepAlive: true });
+      if (frame === null) {
+        lastError = new Error("navigate produced no frame");
+      } else if (frame.title === "Load error" && /^https?:\/\//i.test(url)) {
+        // Treat a rendered error page for http(s) targets as retryable.
         lastError = new Error("page rendered the engine error page (root fetch failed)");
       } else {
-        return page;
+        return frame;
       }
     } catch (error) {
       lastError = error;
@@ -135,72 +143,76 @@ export async function checkSite(
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as SiteManifest;
   const viewport = normalizeViewport(options.viewport ?? { width: 1280, height: 800 });
   const started = performance.now();
-  let page: PageState;
+  const client = new WebContentClient();
+  const metricsOf = (frame: Frame | null) => ({
+    scriptsRun: frame?.scriptsRun ?? 0,
+    scriptsFailed: frame?.scriptsFailed ?? 0,
+    modulesEvaluated: frame?.modulesEvaluated ?? 0,
+    modulesLinked: frame?.modulesLinked ?? 0,
+    mutations: frame?.mutations ?? 0,
+    networkEvents: frame?.networkEvents ?? 0,
+    contentHeight: frame?.contentHeight ?? 0,
+    viewportHeight: viewport.height,
+    pngBytes: frame?.png.byteLength ?? 0,
+    durationMs: performance.now() - started,
+  });
   try {
-    page = await loadWithRetry(manifest.url, viewport);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    let frame: Frame;
+    try {
+      frame = await loadWithRetry(client, manifest.url, viewport);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        site: manifest.site,
+        url: manifest.url,
+        passed: false,
+        failedCount: manifest.checks.length,
+        checks: manifest.checks.map((c) => ({
+          id: c.id,
+          passed: false,
+          detail: `load failed: ${message}`,
+        })),
+        metrics: metricsOf(null),
+      };
+    }
+
+    const results: SiteCheckResult[] = [];
+    let current = frame;
+    let currentUrl = manifest.url;
+    for (const check of manifest.checks) {
+      // Page-scoped check: switch to (or load) its URL first.
+      if (check.url !== undefined && check.url !== currentUrl) {
+        try {
+          current = await loadWithRetry(client, check.url, viewport);
+          currentUrl = check.url;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({ id: check.id, passed: false, detail: `load ${check.url} failed: ${message}` });
+          continue;
+        }
+      }
+      if (check.kind === "pump-mutations") {
+        const pump = await client.pump(check.frames ?? 1, { settleMs: 250, idleStop: true });
+        if (pump.frame !== null) current = pump.frame;
+        const grew = pump.mutations >= (check.minNewMutations ?? 1);
+        results.push(grew
+          ? { id: check.id, passed: true, detail: `pump ${check.frames ?? 1} frames: +${pump.mutations} mutations` }
+          : { id: check.id, passed: false, detail: `pump ${check.frames ?? 1} frames: +${pump.mutations} < min ${check.minNewMutations}` });
+        continue;
+      }
+      results.push(runStaticCheck(current, check, viewport.height));
+    }
+
+    const failed = results.filter((r) => !r.passed).length;
     return {
       site: manifest.site,
       url: manifest.url,
-      passed: false,
-      failedCount: manifest.checks.length,
-      checks: manifest.checks.map((c) => ({ id: c.id, passed: false, detail: `load failed: ${message}` })),
-      metrics: {
-        scriptsRun: 0, scriptsFailed: 0, modulesEvaluated: 0, modulesLinked: 0,
-        mutations: 0, networkEvents: 0, contentHeight: 0, viewportHeight: viewport.height,
-        pngBytes: 0, durationMs: performance.now() - started,
-      },
+      passed: failed === 0,
+      failedCount: failed,
+      checks: results,
+      metrics: metricsOf(current),
     };
+  } finally {
+    await client.terminate();
   }
-
-  const results: SiteCheckResult[] = [];
-  let current = page;
-  let currentUrl = manifest.url;
-  for (const check of manifest.checks) {
-    // Page-scoped check: switch to (or load) its URL first.
-    if (check.url !== undefined && check.url !== currentUrl) {
-      try {
-        current = await loadWithRetry(check.url, viewport);
-        currentUrl = check.url;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        results.push({ id: check.id, passed: false, detail: `load ${check.url} failed: ${message}` });
-        continue;
-      }
-    }
-    if (check.kind === "pump-mutations") {
-      const before = current.runtime?.mutations() ?? 0;
-      const pump = await pumpFrames(current, check.frames ?? 1, { settleMs: 250, idleStop: true });
-      current = pump.page;
-      const after = current.runtime?.mutations() ?? 0;
-      const grew = after - before >= (check.minNewMutations ?? 1);
-      results.push(grew
-        ? { id: check.id, passed: true, detail: `pump ${check.frames ?? 1} frames: +${after - before} mutations` }
-        : { id: check.id, passed: false, detail: `pump ${check.frames ?? 1} frames: +${after - before} < min ${check.minNewMutations}` });
-      continue;
-    }
-    results.push(runStaticCheck(current, check, viewport.height));
-  }
-
-  const failed = results.filter((r) => !r.passed).length;
-  return {
-    site: manifest.site,
-    url: manifest.url,
-    passed: failed === 0,
-    failedCount: failed,
-    checks: results,
-    metrics: {
-      scriptsRun: current.scripts.scripts,
-      scriptsFailed: current.scripts.scriptsFailed,
-      modulesEvaluated: current.scripts.modulesEvaluated,
-      modulesLinked: current.scripts.modulesLinked,
-      mutations: current.runtime?.mutations() ?? current.scripts.mutations,
-      networkEvents: current.scripts.networkEvents,
-      contentHeight: current.contentHeight,
-      viewportHeight: viewport.height,
-      pngBytes: current.pngBytes.byteLength,
-      durationMs: performance.now() - started,
-    },
-  };
 }

@@ -22,21 +22,148 @@
 import vm from "node:vm";
 import { URL as HostURL } from "node:url";
 
-import type { DomNode, DomTree, NodeId, StyleRule } from "@browser-engine/ir";
-import { CSS_PROPERTIES, parsePropertyValue } from "@browser-engine/generator";
+import type { DecodedImage, DomNode, DomTree, Fragment, NodeId, StyleRule } from "@browser-engine/ir";
+import { Canvas2DEngine, Path2DImpl, canvas2dApi } from "./canvas2d.js";
+import { WebGLCore, type GLContextAttributes } from "@browser-engine/gpu";
+import { makeWebGLContext, webglBitmap, WebGLRenderingContextProto } from "./webgl.js";
+import { CSS_PROPERTIES, canonicalGridAreas, canonicalGridLine, canonicalTrackList, expandShorthand, isGridLineProperty, isSpecifiedCalc, isSpecifiedLength, parsePropertyValue, resolveTrackList, serializeFlexFlow, serializeGrid, serializeGridArea, serializeGridPlacement, serializeGridTemplate, shorthandLonghands } from "@browser-engine/generator";
+import { canonicalCssValue } from "./css-supports.js";
+import { serializeMediaQueryList, type MediaEnvironment } from "@browser-engine/css-parser";
 import type { CssPropertyDef } from "@browser-engine/generator";
 import { getBoundingClientRect as boundingRect } from "@browser-engine/layout";
 import { ruleMatches, parseEasing, sampleEasing, interpolateValue } from "@browser-engine/cascade";
-import type { Easing } from "@browser-engine/cascade";
+import {
+  computeValidity,
+  controlChecked as domChecked,
+  controlDisabled as domDisabled,
+  controlSelected as domSelected,
+  controlValueOf,
+  inputType,
+  radioGroupPeers,
+  selectOptions,
+  valueAsNumber,
+  willValidate as domWillValidate,
+} from "@browser-engine/cascade";
+import type { Easing, ValidityFlags } from "@browser-engine/cascade";
 import {
   coerceGuestString,
   CustomEvent as CustomEvent,
+  DOMException,
   Event as Event,
+  UIEvent as UIEvent,
   MouseEvent as MouseEvent,
+  PointerEvent as PointerEvent,
+  KeyboardEvent as KeyboardEvent,
+  FocusEvent as FocusEvent,
+  InputEvent as InputEvent,
+  WheelEvent as WheelEvent,
+  CompositionEvent as CompositionEvent,
+  MessageEvent as MessageEvent,
+  CloseEvent as CloseEvent,
+  makeWebSocketApi,
+  makeBlobClass,
+  WrapperCache,
+  type WsTransport,
+  type WebSocketApi,
 } from "@browser-engine/guest";
 
 import { parseHtml } from "@browser-engine/html-parser";
-import { FineSession } from "./fine.js";
+import { createBlankFrame, type BlankFrame } from "./blank-frame.js";
+import { createMatchMedia } from "./match-media.js";
+import { FineSession, type DomMutation } from "./fine.js";
+import { MediaEngine, mediaDescriptors, nodeMediaClock, type MediaClock } from "./media.js";
+
+function CSSMediaRule() {}
+function CSSStyleRule() {}
+
+/** `@media <prelude> {` → serialized prelude, or null when the rule is not `@media`. */
+function mediaRulePrelude(cssText: string): string | null {
+  const trimmed = cssText.trim();
+  const header = /^@media\b/i.exec(trimmed);
+  if (header === null) return null;
+  let depth = 0;
+  for (let i = header[0].length; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (ch === "{" && depth <= 0) {
+      return serializeMediaQueryList(trimmed.slice(header[0].length, i));
+    }
+  }
+  return "not all";
+}
+
+function cssRuleObject(cssText: string): object {
+  const trimmed = cssText.trim();
+  const prelude = mediaRulePrelude(trimmed);
+  if (prelude !== null) {
+    const open = trimmed.indexOf("{");
+    const close = trimmed.lastIndexOf("}");
+    const body = open >= 0 && close > open ? trimmed.slice(open + 1, close) : "";
+    return {
+      cssText: trimmed,
+      type: 4,
+      conditionText: prelude,
+      media: { mediaText: prelude },
+      cssRules: splitCssBlocks(body).map(cssRuleObject),
+      constructor: CSSMediaRule,
+    };
+  }
+  const style = /^([^{]+)\{([^}]*)\}$/.exec(trimmed);
+  if (style !== null) {
+    return {
+      cssText: trimmed,
+      selectorText: (style[1] ?? "").trim(),
+      style: declarationStyle(style[2] ?? ""),
+      constructor: CSSStyleRule,
+    };
+  }
+  return { cssText: trimmed };
+}
+
+function splitCssBlocks(text: string): string[] {
+  const rules: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const rule = text.slice(start, i + 1).trim();
+        if (rule !== "") rules.push(rule);
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j] ?? "")) j += 1;
+        start = j;
+        i = j - 1;
+      }
+    }
+  }
+  return rules;
+}
+
+function declarationStyle(body: string): Record<string, string> {
+  const style: Record<string, string> = {};
+  for (const part of body.split(";")) {
+    const colon = part.indexOf(":");
+    if (colon < 0) continue;
+    const name = part.slice(0, colon).trim();
+    const value = part.slice(colon + 1).trim();
+    if (name === "") continue;
+    style[name] = value;
+    style[name.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())] = value;
+  }
+  return style;
+}
 
 /** CSS property metadata for CSSOM serialization: css-name → { field, tsType }. */
 const CSS_NAME_TO_META = new Map(CSS_PROPERTIES.map((p) => [p.name, { field: p.field, tsType: p.tsType }]));
@@ -185,6 +312,271 @@ function sampleTrack(track: PropTrack, f: number): unknown {
   return last.value;
 }
 
+function serializeUnresolvedLength(value: unknown): string {
+  if (isSpecifiedLength(value)) return `${value.value}${value.unit}`;
+  if (isSpecifiedCalc(value)) return `calc(${serializeCalcNode(value.ast)})`;
+  return "";
+}
+
+function serializeCalcNode(node: { type: string; value?: number; unit?: string; left?: unknown; right?: unknown }): string {
+  if (node.type === "px") return `${node.value}px`;
+  if (node.type === "len") return `${node.value}${node.unit ?? ""}`;
+  if (node.type === "num") return String(node.value);
+  const left = serializeCalcNode(node.left as typeof node);
+  const right = serializeCalcNode(node.right as typeof node);
+  const op = node.type === "add" ? " + " : node.type === "sub" ? " - " : node.type === "mul" ? " * " : " / ";
+  return `${left}${op}${right}`;
+}
+
+/**
+ * Specified value of `flex` / `flex-flow`, rebuilt from the longhands the
+ * shorthand expanded into. `null` means this name is not that shorthand, or
+ * its longhands are not all present (the raw declaration, if any, still wins).
+ */
+/** `flex-grow` / `flex-shrink` accept a unitless `calc()`; fold constants to `calc(n)`. */
+function canonicalFlexComponent(property: string, value: string): string | null {
+  const text = value.trim();
+  // Specified flex-basis keeps `calc()` (the computed value resolves it later).
+  // `calc(3px)` must not collapse to `3px` at specified-value time.
+  if (property === "flex-basis" && /^calc\(/i.test(text) && text.endsWith(")")) {
+    return text.replace(/\s+/g, " ");
+  }
+  const canon = canonicalCssValue(property, value);
+  if (canon !== null) return canon;
+  if (property !== "flex-grow" && property !== "flex-shrink") return null;
+  if (!/^calc\(/i.test(text) || !text.endsWith(")")) return null;
+  const inner = text.slice(5, -1);
+  if (/[a-z%]/i.test(inner)) return null;
+  const n = evalUnitlessCalc(inner);
+  return n === null ? null : `calc(${n})`;
+}
+
+/** Evaluate a unitless `calc()` body (`2 + 1`, `-1`). Returns null if it is not pure arithmetic. */
+function evalUnitlessCalc(input: string): number | null {
+  const compact = input.replace(/\s+/g, "");
+  const tokens = compact.match(/\d*\.?\d+|[()+\-*/]/g);
+  if (tokens === null || tokens.join("") !== compact) return null;
+  let i = 0;
+  const parseExpr = (): number | null => {
+    let left = parseTerm();
+    if (left === null) return null;
+    while (tokens[i] === "+" || tokens[i] === "-") {
+      const op = tokens[i];
+      i += 1;
+      const right = parseTerm();
+      if (right === null) return null;
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  };
+  const parseTerm = (): number | null => {
+    let left = parseFactor();
+    if (left === null) return null;
+    while (tokens[i] === "*" || tokens[i] === "/") {
+      const op = tokens[i];
+      i += 1;
+      const right = parseFactor();
+      if (right === null || (op === "/" && right === 0)) return null;
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  };
+  const parseFactor = (): number | null => {
+    const tok = tokens[i];
+    if (tok === undefined) return null;
+    if (tok === "+" || tok === "-") {
+      i += 1;
+      const inner = parseFactor();
+      return inner === null ? null : tok === "-" ? -inner : inner;
+    }
+    if (tok === "(") {
+      i += 1;
+      const inner = parseExpr();
+      if (inner === null || tokens[i] !== ")") return null;
+      i += 1;
+      return inner;
+    }
+    if (/^(?:\d+\.?\d*|\.\d+)$/.test(tok)) {
+      i += 1;
+      const n = Number(tok);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+  const result = parseExpr();
+  return result === null || i !== tokens.length || !Number.isFinite(result) ? null : result;
+}
+
+/** Computed `flex-basis`: negative lengths clamp to 0; a pure percentage calc simplifies. */
+function cssLength(serialized: string): number | null {
+  const match = /^(-?\d+(?:\.\d+)?)px$/.exec(serialized.trim());
+  if (match === null) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function serializeFlexBasisComputed(raw: string): string {
+  const pxMatch = /^(-?[\d.]+)px$/.exec(raw);
+  if (pxMatch !== null) {
+    const n = Number(pxMatch[1]);
+    return Number.isFinite(n) && n < 0 ? "0px" : raw;
+  }
+  const flat = raw.replace(/\s+/g, "");
+  const onlyPct = /^calc\(([+-]?\d*\.?\d+)%\)$/.exec(flat);
+  if (onlyPct !== null) return `${onlyPct[1]}%`;
+  const pctPlusZero = /^calc\(([+-]?\d*\.?\d+)%\+0px\)$/.exec(flat);
+  if (pctPlusZero !== null) return `${pctPlusZero[1]}%`;
+  return raw;
+}
+
+function specifiedShorthand(name: string, map: ReadonlyMap<string, { value: string }>): string | null {
+  if (name === "flex") {
+    const grow = map.get("flex-grow");
+    const shrink = map.get("flex-shrink");
+    const basis = map.get("flex-basis");
+    if (grow === undefined || shrink === undefined || basis === undefined) return null;
+    return `${grow.value} ${shrink.value} ${basis.value}`;
+  }
+  if (name === "flex-flow") {
+    const direction = map.get("flex-direction");
+    const wrap = map.get("flex-wrap");
+    if (direction === undefined || wrap === undefined) return null;
+    return serializeFlexFlow(direction.value, wrap.value);
+  }
+  const read = (key: string): string | null => map.get(key)?.value ?? null;
+  if (name === "grid-column" || name === "grid-row") {
+    const axis = name === "grid-column" ? "column" : "row";
+    const start = read(`grid-${axis}-start`);
+    const end = read(`grid-${axis}-end`);
+    if (start === null || end === null) return null;
+    return serializeGridPlacement(start, end);
+  }
+  if (name === "grid-area") {
+    const rowStart = read("grid-row-start");
+    const columnStart = read("grid-column-start");
+    const rowEnd = read("grid-row-end");
+    const columnEnd = read("grid-column-end");
+    if (rowStart === null || columnStart === null || rowEnd === null || columnEnd === null) return null;
+    return serializeGridArea(rowStart, columnStart, rowEnd, columnEnd);
+  }
+  if (name === "grid-template") {
+    const rows = read("grid-template-rows");
+    const columns = read("grid-template-columns");
+    const areas = read("grid-template-areas");
+    if (rows === null || columns === null || areas === null) return null;
+    return serializeGridTemplate(rows, columns, areas);
+  }
+  if (name === "grid") {
+    const rows = read("grid-template-rows");
+    const columns = read("grid-template-columns");
+    const areas = read("grid-template-areas");
+    const autoRows = read("grid-auto-rows");
+    const autoColumns = read("grid-auto-columns");
+    const flow = read("grid-auto-flow");
+    if (rows === null || columns === null || areas === null || autoRows === null || autoColumns === null || flow === null) {
+      return null;
+    }
+    return serializeGrid(rows, columns, areas, autoRows, autoColumns, flow);
+  }
+  return null;
+}
+
+interface StyleBlockEntry {
+  value: string;
+  priority: "" | "important";
+}
+
+/** Parse a cssText declaration block, expanding shorthands into longhands. */
+function styleBlockFromCssText(text: string): Map<string, StyleBlockEntry> {
+  const map = new Map<string, StyleBlockEntry>();
+  for (const piece of text.split(";")) {
+    const idx = piece.indexOf(":");
+    if (idx <= 0) continue;
+    const name = piece.slice(0, idx).trim().toLowerCase();
+    let raw = piece.slice(idx + 1).trim();
+    let priority: "" | "important" = "";
+    const important = /!\s*important\s*$/i.exec(raw);
+    if (important !== null) {
+      priority = "important";
+      raw = raw.slice(0, important.index).trim();
+    }
+    if (name === "" || raw === "") continue;
+    const longhands = shorthandLonghands(name);
+    if (longhands !== null) {
+      const expanded = expandShorthand(name, raw);
+      if (expanded === null) continue;
+      const stored: { property: string; value: string }[] = [];
+      let ok = true;
+      for (const decl of expanded) {
+        const canon = canonicalFlexComponent(decl.property, decl.value);
+        if (canon === null) {
+          ok = false;
+          break;
+        }
+        stored.push({ property: decl.property, value: canon });
+      }
+      if (!ok) continue;
+      map.delete(name);
+      for (const longhand of longhands) map.delete(longhand);
+      for (const decl of stored) map.set(decl.property, { value: decl.value, priority });
+      continue;
+    }
+    if (isGridLineProperty(name)) {
+      const line = canonicalGridLine(name, raw);
+      if (line === null) continue;
+      map.set(name, { value: line, priority });
+      continue;
+    }
+    if (name === "grid-template-areas") {
+      const areas = canonicalGridAreas(raw);
+      if (areas === null) continue;
+      map.set(name, { value: areas, priority });
+      continue;
+    }
+    map.set(name, { value: raw, priority });
+  }
+  return map;
+}
+
+/**
+ * Declaration block text. A shorthand whose longhands round-trip is emitted in
+ * place of those longhands. A block that is only that shorthand keeps a trailing
+ * semicolon so `grid: 10px / 20px;` matches the CSSOM serialization tests.
+ */
+function serializeStyleBlock(map: ReadonlyMap<string, StyleBlockEntry>): string {
+  const skip = new Set<string>();
+  const prefix: string[] = [];
+  const tryShorthand = (name: string): void => {
+    const longhands = shorthandLonghands(name);
+    if (longhands === null || longhands.some((key) => !map.has(key) || skip.has(key))) return;
+    const serial = specifiedShorthand(name, map);
+    if (serial === null || serial === "") return;
+    const expanded = expandShorthand(name, serial);
+    if (expanded === null) return;
+    for (const longhand of longhands) {
+      const produced = expanded.find((decl) => decl.property === longhand);
+      if (produced === undefined) return;
+      const canon = canonicalFlexComponent(produced.property, produced.value);
+      if (canon !== map.get(longhand)?.value) return;
+    }
+    prefix.push(`${name}: ${serial}`);
+    for (const longhand of longhands) skip.add(longhand);
+  };
+  tryShorthand("grid");
+  tryShorthand("grid-template");
+  tryShorthand("grid-area");
+  tryShorthand("grid-column");
+  tryShorthand("grid-row");
+  tryShorthand("flex");
+  tryShorthand("flex-flow");
+  const rest = [...map]
+    .filter(([key]) => !skip.has(key))
+    .map(([key, decl]) => `${key}: ${decl.value}${decl.priority === "important" ? " !important" : ""}`);
+  if (prefix.length === 0) return rest.join("; ");
+  const body = rest.length === 0 ? prefix.join("; ") : `${prefix.join("; ")}; ${rest.join("; ")}`;
+  return body.endsWith(";") ? body : `${body};`;
+}
+
 /** Serialize a ComputedStyle value to its CSSOM string form (by declared tsType). */
 function serializeComputed(tsType: string, value: unknown): string {
   if (value === undefined || value === null) return "";
@@ -198,7 +590,9 @@ function serializeComputed(tsType: string, value: unknown): string {
     return `${e.top}px ${e.right}px ${e.bottom}px ${e.left}px`;
   }
   if (tsType === "LengthOrAuto" || tsType === "LengthSizing") {
-    return typeof value === "number" ? `${value}px` : typeof value === "string" ? value : "";
+    if (typeof value === "number") return `${value}px`;
+    if (typeof value === "string") return value;
+    return serializeUnresolvedLength(value);
   }
   if (tsType === "TransformValue") {
     return Array.isArray(value) ? `matrix(${value.join(", ")})` : typeof value === "string" ? value : "";
@@ -233,6 +627,20 @@ export function runScript(session: FineSession, source: string): ScriptResult {
  * WPT harness ({@link import("./wpt.js")}), so both drive the SAME real DOM
  * surface on real V8.
  */
+/**
+ * What activation behavior hands the navigation host (RFC 0011): link clicks
+ * carry `target`; form submissions may carry `method`/`body`/`contentType`.
+ */
+export interface ActivationInit {
+  readonly replace?: boolean;
+  readonly target?: string;
+  readonly method?: string;
+  readonly body?: string;
+  readonly contentType?: string;
+  /** Element-level `referrerpolicy` attr — overrides the document policy. */
+  readonly referrerPolicy?: string;
+}
+
 export type DocumentApiOptions = {
   readonly geometryMode?: "full" | "throttled" | "stub";
   readonly styleMode?: "full" | "fast";
@@ -244,6 +652,25 @@ export type DocumentApiOptions = {
   readonly inlineHandlerCompiler?: (body: string) => unknown;
   /** Hash-navigation sink for a/area activation (fires hashchange upstream). */
   readonly hashNavigator?: (fragment: string) => void;
+  /**
+   * RFC 0011: full-navigation sink for activation behavior — a/area clicks
+   * and form submissions resolve here. `init` carries the spec inputs the
+   * host needs: `target` (link/form target), `method`/`body`/`contentType`
+   * (form POST). Fragment hops prefer the host too when this is set — the
+   * host performs the same-document check and history entry itself.
+   */
+  readonly navigator?: (url: string, init?: ActivationInit) => void;
+  /**
+   * RFC 0013: resolves an iframe element's nested browsing context to its
+   * window proxy (for `iframe.contentWindow`). Lazily read per access — the
+   * host populates frames after child documents load.
+   */
+  readonly frameLookup?: (nodeId: NodeId) => unknown;
+  /**
+   * Animation-frame scheduler shared with `requestAnimationFrame`. Blank
+   * iframes deliver resize and media-query change events on it.
+   */
+  readonly scheduleFrame?: (cb: () => void) => void;
   /**
    * Mutable holder for the <script> element currently executing (HTML:
    * `document.currentScript`). The runner sets it before each inline source
@@ -268,6 +695,30 @@ export type DocumentApiOptions = {
    */
   readonly onDynamicScript?: (nodeId: NodeId) => void;
   /**
+   * Microtask scheduler for observer delivery (MutationObserver records and
+   * Resize/IntersectionObserver entries both ride the microtask queue). The
+   * virtual-event-loop runner injects `loop.microtask` so observer callbacks
+   * interleave with guest `queueMicrotask` calls in true FIFO order; callers
+   * on a real event loop leave this unset and get the ambient queue.
+   */
+  readonly queueMicrotask?: (fn: () => void) => void;
+  /**
+   * RFC 0033: resolves a `drawImage(imgEl)` source — the element's decoded
+   * pixels from the page's resource pass (`PageState.decodedImages`,
+   * updated lazily as images land). Absent ⇒ image sources draw nothing.
+   */
+  readonly canvasImageSource?: (nodeId: NodeId) => DecodedImage | undefined;
+  /**
+   * Live viewport geometry for IntersectionObserver root-bounds and layout —
+   * a getter because scrolling moves the viewport in document space between
+   * evaluations. Defaults to an 800×600 viewport at scroll origin.
+   */
+  readonly viewport?: () => {
+    readonly width: number;
+    readonly height: number;
+    readonly scrollY: number;
+  };
+  /**
    * Error sink for exceptions thrown by guest event listeners that the
    * document object dispatches directly (DOMContentLoaded lifecycle,
    * document.dispatchEvent): per HTML each listener error is reported as an
@@ -275,6 +726,21 @@ export type DocumentApiOptions = {
    * connects this to its uncaught-error record.
    */
   readonly onListenerError?: (error: unknown) => void;
+  /**
+   * RFC 0022: WebSocket transport — a raw duplex byte channel to ws:/wss:
+   * endpoints (`nodeWsTransport` for real sockets, `createWsLoopback` for
+   * tests). When unset, `new WebSocket(...)` still works but every
+   * connection fails the spec-shaped way (error + unclean close events).
+   */
+  readonly wsTransport?: WsTransport;
+  /**
+   * RFC 0035: the document's media engine — created by the host (engine-
+   * runtime) so scriptless pages still load/probe/frame media; here it gets
+   * bound to dispatch + the page clock and the element IDL surface.
+   */
+  readonly media?: MediaEngine;
+  /** Page-clock adapter for media timers (loop clock in the classic runner). */
+  readonly mediaClock?: MediaClock;
 };
 
 export function buildDocumentApi(
@@ -294,9 +760,45 @@ export function buildDocumentApi(
    * event; without it every dynamic chunk "times out" from the page's view.
    */
   readonly fireScriptElementEvent: (nodeId: NodeId, type: "load" | "error") => void;
+  /** RFC 0011: dispatch click + activation behavior on a node (UI clicks). */
+  readonly clickElement: (nodeId: NodeId) => void;
+  /** RFC 0013: dispatch an event at an element (iframe `load`, …). */
+  readonly dispatchElementEvent: (nodeId: NodeId, type: string, init?: Record<string, unknown>) => void;
+  /** RFC 0020: UI-input synthesis — pointer/mouse/keyboard/focus/tab. */
+  readonly ui: {
+    readonly pointerMove: (nodeId: NodeId, init?: Record<string, unknown>) => void;
+    readonly click: (nodeId: NodeId, init?: Record<string, unknown>) => void;
+    readonly contextMenu: (nodeId: NodeId, init?: Record<string, unknown>) => void;
+    readonly dblClick: (nodeId: NodeId, init?: Record<string, unknown>) => void;
+    readonly key: (detail: { key: string; code?: string; repeat?: boolean; location?: number;
+                           ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean }) => void;
+    readonly tab: (dir: 1 | -1) => void;
+    readonly focusedId: () => NodeId | null;
+  };
+  /**
+   * RFC 0022: bind the guest realm's intrinsics to the WebSocket api after
+   * `vm.createContext` — `bindWsRealm({ArrayBuffer, TypeError})`. Realm-bound
+   * objects pass guest `instanceof` checks (same pattern as fetch realm
+   * errors). Idempotent; safe to skip when no ws transport is configured.
+   */
+  readonly bindWsRealm: (realm: {
+    ArrayBuffer?: new (length: number) => ArrayBuffer;
+    TypeError?: new (message: string) => Error;
+  }) => void;
+  /**
+   * RFC 0033: rasterize every live `<canvas>`'s recorded op log to its
+   * current bitmap — pulled lazily by the paint path each frame, so canvas
+   * draws land without a mutation-cascade round-trip.
+   */
+  readonly canvasBitmaps: () => ReadonlyMap<NodeId, DecodedImage>;
 } {
   let compileInlineHandler: ((body: string) => unknown) | null = null;
   let navigateToHashFragment: ((fragment: string) => void) | null = null;
+  const navigatorSink = options.navigator ?? null;
+  const frameLookup = options.frameLookup ?? null;
+  const blankFrames = new Map<NodeId, BlankFrame>();
+  const srcdocFrames = new Map<NodeId, { readonly session: FineSession; readonly window: object }>();
+  const scheduleFrame = options.scheduleFrame ?? ((cb: () => void) => queueMicrotask(cb));
   let mutations = 0;
   const geometryMode = options.geometryMode ?? "full";
   const styleMode = options.styleMode ?? "full";
@@ -329,6 +831,53 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     }
     return layoutTreeCache;
   };
+  /**
+   * Fragment boxes are in the parent fragment's margin-origin coordinates.
+   * `getBoundingClientRect` / `offset*` need the viewport border box, so walk
+   * each ancestor's margin-box origin and add this box.
+   */
+  const viewportBorder = (
+    tree: NonNullable<ReturnType<FineSession["layoutTree"]>>,
+    nodeId: NodeId,
+  ): { x: number; y: number; width: number; height: number } | null => {
+    const byNode = new Map<NodeId, { id: number; frag: (typeof tree.fragments extends ReadonlyMap<infer _, infer V> ? V : never) }>();
+    const parentOf = new Map<number, number>();
+    for (const [id, frag] of tree.fragments) {
+      const fid = Number(id);
+      if (!byNode.has(frag.node)) byNode.set(frag.node, { id: fid, frag });
+      for (const child of frag.children) parentOf.set(Number(child), fid);
+    }
+    const target = byNode.get(nodeId);
+    if (target === undefined) return null;
+    const originOf = new Map<number, { x: number; y: number }>();
+    const origin = (id: number): { x: number; y: number } => {
+      const cached = originOf.get(id);
+      if (cached !== undefined) return cached;
+      const parentId = parentOf.get(id);
+      if (parentId === undefined) {
+        const root = { x: 0, y: 0 };
+        originOf.set(id, root);
+        return root;
+      }
+      const parent = tree.fragments.get(parentId as never);
+      const parentOrigin = origin(parentId);
+      const box = parent?.box;
+      const next = {
+        x: parentOrigin.x + Number(box?.marginBox.x ?? 0),
+        y: parentOrigin.y + Number(box?.marginBox.y ?? 0),
+      };
+      originOf.set(id, next);
+      return next;
+    };
+    const box = target.frag.box.borderBox;
+    const at = origin(target.id);
+    return {
+      x: at.x + Number(box.x),
+      y: at.y + Number(box.y),
+      width: Number(box.width),
+      height: Number(box.height),
+    };
+  };
   const rectFromTree = (
     tree: ReturnType<FineSession["layoutTree"]> | null,
     nodeId: NodeId,
@@ -336,12 +885,246 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     if (tree === null) {
       return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
     }
-    const r = boundingRect(tree, nodeId);
+    const placed = viewportBorder(tree, nodeId);
+    const r = placed ?? boundingRect(tree, nodeId);
     const x = Number(r.x);
     const y = Number(r.y);
     const w = Number(r.width);
     const h = Number(r.height);
     return { x, y, width: w, height: h, top: y, left: x, right: x + w, bottom: y + h };
+  };
+
+  /**
+   * Element scroll positions and the document (root) scroll. Layout still
+   * places sticky boxes against scroll 0; CSSOM re-applies the live scroll
+   * when reading `offset*` and `getBoundingClientRect`.
+   */
+  const elementScroll = new Map<NodeId, { top: number; left: number }>();
+  const templateFragments = new Map<NodeId, NodeId>();
+  let documentScrollX = 0;
+  let documentScrollY = 0;
+
+  const axisLength = (value: unknown): number => {
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const borderEdge = (style: Record<string, unknown> | null, key: string): number => {
+    if (style === null) return 0;
+    const v = style[key];
+    return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  };
+  const styleOf = (id: NodeId): Record<string, unknown> | null => {
+    try {
+      return session.computed(id);
+    } catch {
+      return null;
+    }
+  };
+  const paddingOriginOf = (
+    tree: NonNullable<ReturnType<FineSession["layoutTree"]>>,
+    id: NodeId,
+  ): { x: number; y: number } | null => {
+    const box = viewportBorder(tree, id);
+    if (box === null) return null;
+    const style = styleOf(id);
+    return {
+      x: box.x + borderEdge(style, "borderLeftWidth"),
+      y: box.y + borderEdge(style, "borderTopWidth"),
+    };
+  };
+  const offsetParentId = (id: NodeId): NodeId | null => {
+    let current = session.dom.nodes.get(id)?.parent ?? null;
+    while (current !== null) {
+      const node = session.dom.nodes.get(current);
+      if (node === undefined || node.kind !== "element") break;
+      const position = styleOf(current)?.["position"];
+      if (typeof position === "string" && position !== "static") return current;
+      if (node.tag === "body" || node.tag === "html") return current;
+      current = node.parent;
+    }
+    return null;
+  };
+  const scrollsOnAxis = (value: unknown): boolean =>
+    value === "auto" || value === "scroll" || value === "hidden";
+  const isScrollportNode = (id: NodeId): boolean => {
+    const style = styleOf(id);
+    if (style === null) return false;
+    // The `overflow` shorthand is not always expanded into the longhands, so a
+    // computed `overflow: hidden` must still make a scrollport.
+    if (scrollsOnAxis(style["overflow"])) return true;
+    return scrollsOnAxis(style["overflowX"]) || scrollsOnAxis(style["overflowY"]);
+  };
+  const nearestScrollport = (id: NodeId): NodeId | null => {
+    let current = session.dom.nodes.get(id)?.parent ?? null;
+    while (current !== null) {
+      const node = session.dom.nodes.get(current);
+      if (node === undefined || node.kind !== "element") break;
+      if (isScrollportNode(current)) return current;
+      current = node.parent;
+    }
+    return null;
+  };
+  const insetPx = (style: Record<string, unknown> | null, key: string): number | null => {
+    if (style === null) return null;
+    const value = style[key];
+    if (value === "auto" || value === undefined || value === null) return null;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const matched = /^(-?\d+(?:\.\d+)?)px$/.exec(value.trim());
+      return matched === null ? null : Number(matched[1]);
+    }
+    if (typeof value === "object") {
+      const box = value as { value?: unknown; unit?: unknown };
+      if (typeof box.value === "number" && Number.isFinite(box.value) && (box.unit === "px" || box.unit === undefined)) {
+        return box.value;
+      }
+    }
+    return null;
+  };
+  /**
+   * Scroll-0 layout already pins a sticky box to its inset. Adding the live
+   * scroll on top of that used position reproduces `scroll + inset`, then
+   * clamps the box inside its parent's border box.
+   */
+  const stickyContentBox = (
+    tree: NonNullable<ReturnType<FineSession["layoutTree"]>>,
+    id: NodeId,
+    flow: { x: number; y: number; width: number; height: number },
+  ): { x: number; y: number; width: number; height: number } => {
+    const style = styleOf(id);
+    if (style?.["position"] !== "sticky") return flow;
+    const port = nearestScrollport(id);
+    const scroll = port === null
+      ? { top: documentScrollY, left: documentScrollX }
+      : (elementScroll.get(port) ?? { top: 0, left: 0 });
+    const portOrigin = port === null ? { x: 0, y: 0 } : (paddingOriginOf(tree, port) ?? { x: 0, y: 0 });
+    const portBox = port === null ? null : viewportBorder(tree, port);
+    const portW = portBox?.width ?? options.viewport?.().width ?? 800;
+    const portH = portBox?.height ?? options.viewport?.().height ?? 600;
+    let visualX = flow.x - portOrigin.x - scroll.left;
+    let visualY = flow.y - portOrigin.y - scroll.top;
+    const insetL = insetPx(style, "left");
+    const insetR = insetPx(style, "right");
+    const insetT = insetPx(style, "top");
+    const insetB = insetPx(style, "bottom");
+    if (insetL !== null) visualX = Math.max(visualX, insetL);
+    if (insetT !== null) visualY = Math.max(visualY, insetT);
+    if (insetR !== null) visualX = Math.min(visualX, portW - insetR - flow.width);
+    if (insetB !== null) visualY = Math.min(visualY, portH - insetB - flow.height);
+    const parent = session.dom.nodes.get(id)?.parent ?? null;
+    if (parent !== null && parent === port) {
+      // The scrollport's padding edge stays at the visual origin. Its own
+      // scroll must not slide that edge out from under the sticky box.
+      visualX = Math.min(Math.max(visualX, 0), Math.max(0, portW - flow.width));
+      visualY = Math.min(Math.max(visualY, 0), Math.max(0, portH - flow.height));
+    } else if (parent !== null) {
+      // A nested sticky clamps to its parent's used border box, including
+      // that parent's own sticky shift.
+      const cb = contentBorder(tree, parent);
+      const cbL = cb.x - portOrigin.x - scroll.left;
+      const cbT = cb.y - portOrigin.y - scroll.top;
+      visualX = Math.min(Math.max(visualX, cbL), cbL + cb.width - flow.width);
+      visualY = Math.min(Math.max(visualY, cbT), cbT + cb.height - flow.height);
+    }
+    return {
+      x: portOrigin.x + visualX + scroll.left,
+      y: portOrigin.y + visualY + scroll.top,
+      width: flow.width,
+      height: flow.height,
+    };
+  };
+  const contentBorder = (
+    tree: ReturnType<FineSession["layoutTree"]> | null,
+    id: NodeId,
+  ): { x: number; y: number; width: number; height: number } => {
+    const flow = rectFromTree(tree, id);
+    if (tree === null) return flow;
+    return stickyContentBox(tree, id, flow);
+  };
+  const ancestorScroll = (id: NodeId): { top: number; left: number } => {
+    let top = documentScrollY;
+    let left = documentScrollX;
+    let current = session.dom.nodes.get(id)?.parent ?? null;
+    while (current !== null) {
+      if (isScrollportNode(current)) {
+        const scroll = elementScroll.get(current);
+        if (scroll !== undefined) {
+          top += scroll.top;
+          left += scroll.left;
+        }
+      }
+      current = session.dom.nodes.get(current)?.parent ?? null;
+    }
+    return { top, left };
+  };
+  const visualBorder = (
+    tree: ReturnType<FineSession["layoutTree"]> | null,
+    id: NodeId,
+  ): { x: number; y: number; width: number; height: number; top: number; left: number; right: number; bottom: number } => {
+    const content = contentBorder(tree, id);
+    const scroll = ancestorScroll(id);
+    const x = content.x - scroll.left;
+    const y = content.y - scroll.top;
+    return {
+      x, y, width: content.width, height: content.height,
+      top: y, left: x, right: x + content.width, bottom: y + content.height,
+    };
+  };
+  const scrollExtent = (
+    tree: NonNullable<ReturnType<FineSession["layoutTree"]>>,
+    id: NodeId,
+  ): { width: number; height: number } => {
+    const self = viewportBorder(tree, id);
+    if (self === null) return { width: 0, height: 0 };
+    const origin = paddingOriginOf(tree, id) ?? { x: self.x, y: self.y };
+    let maxR = self.x + self.width;
+    let maxB = self.y + self.height;
+    const descends = (node: NodeId): boolean => {
+      let cur: NodeId | null = node;
+      while (cur !== null) {
+        if (cur === id) return true;
+        cur = session.dom.nodes.get(cur)?.parent ?? null;
+      }
+      return false;
+    };
+    for (const frag of tree.fragments.values()) {
+      if (frag.node === id || !descends(frag.node)) continue;
+      const box = viewportBorder(tree, frag.node);
+      if (box === null) continue;
+      maxR = Math.max(maxR, box.x + box.width);
+      maxB = Math.max(maxB, box.y + box.height);
+    }
+    return {
+      width: Math.max(self.width, maxR - origin.x),
+      height: Math.max(self.height, maxB - origin.y),
+    };
+  };
+  const clampScroll = (id: NodeId, top: number, left: number): { top: number; left: number } => {
+    const tree = resolveLayoutTree();
+    if (tree === null) return { top: Math.max(0, top), left: Math.max(0, left) };
+    const self = viewportBorder(tree, id);
+    const extent = scrollExtent(tree, id);
+    const maxTop = Math.max(0, extent.height - (self?.height ?? 0));
+    const maxLeft = Math.max(0, extent.width - (self?.width ?? 0));
+    return {
+      top: Math.min(maxTop, Math.max(0, top)),
+      left: Math.min(maxLeft, Math.max(0, left)),
+    };
+  };
+  const setDocumentScroll = (x: number, y: number): void => {
+    documentScrollX = Math.max(0, x);
+    documentScrollY = Math.max(0, y);
+  };
+  const scrollToArgs = (x: unknown, y?: unknown): { left: number; top: number } | null => {
+    if (typeof x === "object" && x !== null) {
+      const o = x as { left?: unknown; top?: unknown };
+      return {
+        left: o.left === undefined ? documentScrollX : axisLength(o.left),
+        top: o.top === undefined ? documentScrollY : axisLength(o.top),
+      };
+    }
+    if (x === undefined && y === undefined) return null;
+    return { left: axisLength(x), top: axisLength(y) };
   };
   if (profileGeom) {
     process.once("exit", () => {
@@ -408,8 +1191,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         if (done) anim.finished = true;
       }
     }
+    // Rendering-step observers (Resize/IntersectionObserver) evaluate against
+    // the post-animation layout at every frame boundary.
+    runGeometryCheck();
   };
-  const hasActiveAnimations = (): boolean => animations.some((a) => !a.cancelled && !a.finished);
+  const hasActiveAnimations = (): boolean =>
+    animations.some((a) => !a.cancelled && !a.finished) || geometryCheckPending;
 
   /** Map a guest element/text wrapper back to its session node id. */
   const idOf = new WeakMap<object, NodeId>();
@@ -420,10 +1207,76 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   /** Registered event listeners, per node id. */
   type Listener = { readonly type: string; readonly fn: GuestFn; readonly capture: boolean };
   const listeners = new Map<NodeId, Listener[]>();
-  /** Stable CSSStyleDeclaration wrappers; element.style keeps identity and expando state. */
-  const styleWrappers = new Map<NodeId, object>();
-  /** Live per-node property state the tree does not model (checked/open). */
-  const nodeState = new Map<NodeId, { checked?: boolean; open?: boolean }>();
+  /** Stable CSSStyleDeclaration wrappers; element.style keeps identity and expando state.
+   * WeakRef-keyed (RFC 0041): a declaration nobody references may be collected;
+   * re-access mints a fresh one — identity is only observable while referenced. */
+  const styleWrappers = new WrapperCache();
+  /** Live per-node property state the tree does not model (checked/open/
+   * value/selected/indeterminate/customError/touched/selection). Fields the
+   * cascade can see mirror through {@link syncControlState} into the
+   * session's `DocControl` input; `open` and `valueDirty` stay script-local. */
+  const nodeState = new Map<NodeId, {
+    checked?: boolean;
+    open?: boolean;
+    value?: string;
+    selected?: boolean;
+    indeterminate?: boolean;
+    customError?: string;
+    touched?: boolean;
+    valueDirty?: boolean;
+    selStart?: number;
+    selEnd?: number;
+    selDir?: "forward" | "backward" | "none";
+  }>();
+
+  /** Push a control's cascade-visible fields into `DocControl` so
+   * `:checked`/`:valid`/`:placeholder-shown`/… recompute (fresh map identity
+   * → incremental invalidation + script-side gcs cache epoch bump). */
+  function syncControlState(id: NodeId): void {
+    const s = nodeState.get(id);
+    const patch =
+      s === undefined
+        ? undefined
+        : {
+            ...(s.checked !== undefined ? { checked: s.checked } : {}),
+            ...(s.selected !== undefined ? { selected: s.selected } : {}),
+            ...(s.indeterminate !== undefined ? { indeterminate: s.indeterminate } : {}),
+            ...(s.value !== undefined ? { value: s.value } : {}),
+            ...(s.customError !== undefined ? { customError: s.customError } : {}),
+            ...(s.touched !== undefined ? { touched: s.touched } : {}),
+          };
+    session.setControlState(
+      id,
+      patch !== undefined && Object.keys(patch).length > 0 ? patch : undefined,
+    );
+  }
+
+  /** Patch one control's nodeState fields and sync the cascade view. */
+  function patchControl(
+    id: NodeId,
+    fields: Partial<{
+      checked: boolean;
+      selected: boolean;
+      indeterminate: boolean;
+      value: string;
+      customError: string;
+      touched: boolean;
+      valueDirty: boolean;
+      selStart: number;
+      selEnd: number;
+      selDir: "forward" | "backward" | "none";
+    }>,
+  ): void {
+    const s = nodeState.get(id) ?? {};
+    Object.assign(s, fields);
+    nodeState.set(id, s);
+    syncControlState(id);
+  }
+
+  /** Mark a control user-committed — feeds `:user-valid`/`:user-invalid`. */
+  function markTouched(id: NodeId): void {
+    if (nodeState.get(id)?.touched !== true) patchControl(id, { touched: true });
+  }
   /**
    * Inline `on<type>` attribute handler compiler. The guest context is created
    * by the CALLER of buildDocumentApi (the WPT runner / event loop), so it
@@ -454,15 +1307,6 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   const findByIdIndexed = (want: string): NodeId | null => {
     if (idIndexEpoch !== mutations) rebuildIdIndex();
     return idIndex.get(want) ?? null;
-  };
-  const isUnderScope = (id: NodeId, scopeRoot: NodeId | null): boolean => {
-    if (scopeRoot === null) return true;
-    let cur: NodeId | null | undefined = id;
-    while (cur !== null && cur !== undefined) {
-      if (cur === scopeRoot) return true;
-      cur = session.dom.nodes.get(cur)?.parent;
-    }
-    return false;
   };
   const collectByTag = (scopeRoot: NodeId | null, want: string): NodeId[] => {
     const out: NodeId[] = [];
@@ -502,10 +1346,15 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     const trimmed = selector.trim();
     if (trimmed === "") return [];
     if (trimmed.charCodeAt(0) === 35 /* # */ && /^#[\w:-]+$/.test(trimmed)) {
-      const found = findByIdIndexed(trimmed.slice(1));
-      if (found === null) return [];
-      if (scopeRoot !== null && (found === scopeRoot || !isUnderScope(found, scopeRoot))) return [];
-      return [found];
+      const want = trimmed.slice(1);
+      if (scopeRoot !== null) {
+        // Scoped id query: walk the scope subtree — the document id index
+        // never enters shadow trees, so it cannot serve shadow scopes.
+        const found = elementIdsByAttrValue(scopeRoot, "id", want)[0];
+        return found === undefined ? [] : [found];
+      }
+      const found = findByIdIndexed(want);
+      return found === null ? [] : [found];
     }
     if (/^[a-zA-Z][\w-]*$/.test(trimmed)) {
       return collectByTag(scopeRoot, trimmed.toLowerCase());
@@ -544,6 +1393,66 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     };
     visit(scopeRoot);
     return out;
+  };
+
+  /** Element ids under `scopeRoot` with `attr === value` (shadow-scoped getElementById). */
+  const elementIdsByAttrValue = (scopeRoot: NodeId, attr: string, value: string): NodeId[] =>
+    elementIdsByTagName(scopeRoot, "*").filter(
+      (id) => session.dom.nodes.get(id)?.attrs?.get(attr) === value,
+    );
+
+  // --- Shadow DOM (RFC 0018) -------------------------------------------------
+  // The shadow root hangs off `host.shadow` — NEVER in `children` — so light-
+  // DOM queries (getElementsByTagName/querySelector) stay tree-scoped for free.
+  // ---------------------------------------------------------------------------
+
+  /** The enclosing `"#shadow-root"` node id for `id`, or undefined. */
+  const enclosingShadowRootId = (id: NodeId): NodeId | undefined => {
+    let cur: NodeId | null = session.dom.nodes.get(id)?.parent ?? null;
+    while (cur !== null) {
+      const n = session.dom.nodes.get(cur);
+      if (n === undefined) return undefined;
+      if (n.tag === "#shadow-root") return cur;
+      cur = n.parent;
+    }
+    return undefined;
+  };
+
+  /** Every `<slot>` element inside `rootId`'s subtree (tree order). */
+  const slotsInSubtree = (rootId: NodeId): NodeId[] =>
+    elementIdsByTagName(rootId, "slot");
+
+  /** The light-DOM ids assigned to `slotId` (name-matched; text → default slot). */
+  const slotAssignedIds = (slotId: NodeId): NodeId[] => {
+    const slotNode = session.dom.nodes.get(slotId);
+    if (slotNode === undefined || slotNode.tag !== "slot") return [];
+    const srId = enclosingShadowRootId(slotId);
+    if (srId === undefined) return [];
+    const hostId = session.dom.nodes.get(srId)?.parent;
+    if (hostId === undefined || hostId === null) return [];
+    const host = session.dom.nodes.get(hostId);
+    if (host === undefined) return [];
+    const name = slotNode.attrs?.get("name") ?? "";
+    return host.children.filter((cid) => {
+      const c = session.dom.nodes.get(cid);
+      if (c?.kind === "element") return (c.attrs?.get("slot") ?? "") === name;
+      return c?.kind === "text" && name === "";
+    });
+  };
+
+  /** The slot `id` is currently assigned to (its parent must be a shadow host). */
+  const assignedSlotFor = (id: NodeId): NodeId | undefined => {
+    const node = session.dom.nodes.get(id);
+    const parentId = node?.parent;
+    if (node === undefined || parentId === null || parentId === undefined) return undefined;
+    const shadowId = session.dom.nodes.get(parentId)?.shadow;
+    if (shadowId === undefined) return undefined;
+    const name = node.kind === "element" ? (node.attrs?.get("slot") ?? "") : "";
+    for (const sid of slotsInSubtree(shadowId)) {
+      const s = session.dom.nodes.get(sid);
+      if ((s?.attrs?.get("name") ?? "") === name) return sid;
+    }
+    return undefined;
   };
 
   /** Element ids under `scopeRoot` whose class attribute contains every token. */
@@ -926,8 +1835,24 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   };
 
   /** Convert ParentNode variadic arguments into nodes, using Text nodes for strings. */
-  const nodeIdsFromParentNodeArgs = (values: unknown[]): NodeId[] =>
-    values.map((value) => idFromWrapper(value) ?? session.createTextNode(String(value)));
+  const nodeIdsFromParentNodeArgs = (values: unknown[]): NodeId[] => {
+    const out: NodeId[] = [];
+    for (const value of values) {
+      const id = idFromWrapper(value);
+      if (id === undefined) {
+        out.push(session.createTextNode(String(value)));
+        continue;
+      }
+      const node = session.dom.nodes.get(id);
+      // Appending a DocumentFragment inserts its children, not the fragment.
+      if (node?.kind === "element" && node.tag === "#document-fragment") {
+        out.push(...node.children);
+      } else {
+        out.push(id);
+      }
+    }
+    return out;
+  };
 
   /**
    * After any tree insertion, <script> elements inserted from guest script
@@ -1063,230 +1988,70 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   let documentRef: object | null = null;
   let cookieJar = "";
   const canvasContexts = new Map<NodeId, object>();
-  const makeCanvas2dContext = (canvasId: NodeId): object => {
-    const state = {
-      fillStyle: "#000000",
-      strokeStyle: "#000000",
-      lineWidth: 1,
-      lineCap: "butt",
-      lineJoin: "miter",
-      miterLimit: 10,
-      globalAlpha: 1,
-      globalCompositeOperation: "source-over",
-      font: "10px sans-serif",
-      textAlign: "start",
-      textBaseline: "alphabetic",
-      direction: "inherit",
-      shadowBlur: 0,
-      shadowColor: "rgba(0, 0, 0, 0)",
-      shadowOffsetX: 0,
-      shadowOffsetY: 0,
-      imageSmoothingEnabled: true,
-      imageSmoothingQuality: "low",
+  /** Which context mode a canvas is locked into (first getContext wins). */
+  const canvasKinds = new Map<NodeId, "2d" | "webgl">();
+  const canvasEngines = new Map<NodeId, Canvas2DEngine>();
+  const webglCores = new Map<NodeId, WebGLCore>();
+  // drawImage(canvasElement)/OffscreenCanvas source resolution — guest-facing
+  // objects map back to their engine through this registry.
+  const canvasObjects = new WeakMap<object, Canvas2DEngine>();
+  const makeCanvas2dContext = (canvasId: NodeId, opts?: { opaque?: boolean }): object => {
+    const attrNum = (name: string, dflt: number): number => {
+      const raw = session.dom.nodes.get(canvasId)?.attrs?.get(name);
+      const n = raw !== undefined ? Number(raw) : NaN;
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : dflt;
     };
-    const measure = {
-      width: 0,
-      actualBoundingBoxLeft: 0,
-      actualBoundingBoxRight: 0,
-      actualBoundingBoxAscent: 0,
-      actualBoundingBoxDescent: 0,
-      fontBoundingBoxAscent: 0,
-      fontBoundingBoxDescent: 0,
-      emHeightAscent: 0,
-      emHeightDescent: 0,
-      hangingBaseline: 0,
-      alphabeticBaseline: 0,
-      ideographicBaseline: 0,
-    };
-    const ctx: Record<string, unknown> = {
-      canvas: null,
-      get fillStyle() {
-        return state.fillStyle;
+    let engine = canvasEngines.get(canvasId);
+    if (engine === undefined) {
+      engine = new Canvas2DEngine(attrNum("width", 300), attrNum("height", 150), opts);
+      canvasEngines.set(canvasId, engine);
+      // The element wrapper → engine mapping lets drawImage(canvasEl) pull the
+      // peer bitmap; registered lazily on ctx.canvas access as well.
+      canvasObjects.set(makeElementCached(canvasId), engine);
+    }
+    return canvas2dApi(engine, {
+      canvasRef: () => makeElementCached(canvasId),
+      resolveImage: (source) => {
+        const id = idOf.get(source as object);
+        if (id === undefined) return undefined;
+        return options.canvasImageSource?.(id);
       },
-      set fillStyle(v: unknown) {
-        state.fillStyle = String(v);
-      },
-      get strokeStyle() {
-        return state.strokeStyle;
-      },
-      set strokeStyle(v: unknown) {
-        state.strokeStyle = String(v);
-      },
-      get lineWidth() {
-        return state.lineWidth;
-      },
-      set lineWidth(v: unknown) {
-        state.lineWidth = Number(v) || 0;
-      },
-      get lineCap() {
-        return state.lineCap;
-      },
-      set lineCap(v: unknown) {
-        state.lineCap = String(v);
-      },
-      get lineJoin() {
-        return state.lineJoin;
-      },
-      set lineJoin(v: unknown) {
-        state.lineJoin = String(v);
-      },
-      get miterLimit() {
-        return state.miterLimit;
-      },
-      set miterLimit(v: unknown) {
-        state.miterLimit = Number(v) || 0;
-      },
-      get globalAlpha() {
-        return state.globalAlpha;
-      },
-      set globalAlpha(v: unknown) {
-        state.globalAlpha = Number(v) || 0;
-      },
-      get globalCompositeOperation() {
-        return state.globalCompositeOperation;
-      },
-      set globalCompositeOperation(v: unknown) {
-        state.globalCompositeOperation = String(v);
-      },
-      get font() {
-        return state.font;
-      },
-      set font(v: unknown) {
-        state.font = String(v);
-      },
-      get textAlign() {
-        return state.textAlign;
-      },
-      set textAlign(v: unknown) {
-        state.textAlign = String(v);
-      },
-      get textBaseline() {
-        return state.textBaseline;
-      },
-      set textBaseline(v: unknown) {
-        state.textBaseline = String(v);
-      },
-      get direction() {
-        return state.direction;
-      },
-      set direction(v: unknown) {
-        state.direction = String(v);
-      },
-      get shadowBlur() {
-        return state.shadowBlur;
-      },
-      set shadowBlur(v: unknown) {
-        state.shadowBlur = Number(v) || 0;
-      },
-      get shadowColor() {
-        return state.shadowColor;
-      },
-      set shadowColor(v: unknown) {
-        state.shadowColor = String(v);
-      },
-      get shadowOffsetX() {
-        return state.shadowOffsetX;
-      },
-      set shadowOffsetX(v: unknown) {
-        state.shadowOffsetX = Number(v) || 0;
-      },
-      get shadowOffsetY() {
-        return state.shadowOffsetY;
-      },
-      set shadowOffsetY(v: unknown) {
-        state.shadowOffsetY = Number(v) || 0;
-      },
-      get imageSmoothingEnabled() {
-        return state.imageSmoothingEnabled;
-      },
-      set imageSmoothingEnabled(v: unknown) {
-        state.imageSmoothingEnabled = Boolean(v);
-      },
-      get imageSmoothingQuality() {
-        return state.imageSmoothingQuality;
-      },
-      set imageSmoothingQuality(v: unknown) {
-        state.imageSmoothingQuality = String(v);
-      },
-      save() {},
-      restore() {},
-      beginPath() {},
-      closePath() {},
-      moveTo(_x: unknown, _y: unknown) {},
-      lineTo(_x: unknown, _y: unknown) {},
-      bezierCurveTo(_a: unknown, _b: unknown, _c: unknown, _d: unknown, _e: unknown, _f: unknown) {},
-      quadraticCurveTo(_a: unknown, _b: unknown, _c: unknown, _d: unknown) {},
-      arc(_x: unknown, _y: unknown, _r: unknown, _a0: unknown, _a1: unknown, _ccw?: unknown) {},
-      arcTo(_x1: unknown, _y1: unknown, _x2: unknown, _y2: unknown, _r: unknown) {},
-      ellipse(_x: unknown, _y: unknown, _rx: unknown, _ry: unknown, _rot: unknown, _a0: unknown, _a1: unknown, _ccw?: unknown) {},
-      rect(_x: unknown, _y: unknown, _w: unknown, _h: unknown) {},
-      fill(_a?: unknown, _b?: unknown) {},
-      stroke(_path?: unknown) {},
-      clip(_a?: unknown, _b?: unknown) {},
-      clearRect(_x: unknown, _y: unknown, _w: unknown, _h: unknown) {},
-      fillRect(_x: unknown, _y: unknown, _w: unknown, _h: unknown) {},
-      strokeRect(_x: unknown, _y: unknown, _w: unknown, _h: unknown) {},
-      fillText(_t: unknown, _x: unknown, _y: unknown, _mw?: unknown) {},
-      strokeText(_t: unknown, _x: unknown, _y: unknown, _mw?: unknown) {},
-      measureText(text: unknown): object {
-        const s = coerceGuestString(text);
-        const width = Math.max(0, s.length * 6);
-        return { ...measure, width };
-      },
-      drawImage(_img: unknown, ..._rest: unknown[]) {},
-      createImageData(w: unknown, h?: unknown): object {
-        const width = typeof w === "object" && w !== null && "width" in (w)
-          ? Number((w).width) || 0
-          : Number(w) || 0;
-        const height = typeof w === "object" && w !== null && "height" in (w)
-          ? Number((w).height) || 0
-          : Number(h) || 0;
-        return {
-          width,
-          height,
-          data: new Uint8ClampedArray(Math.max(0, Math.floor(width) * Math.floor(height) * 4)),
-        };
-      },
-      getImageData(this: { createImageData: (w: unknown, h?: unknown) => object }, _x: unknown, _y: unknown, w: unknown, h: unknown): object {
-        return this.createImageData(w, h);
-      },
-      putImageData(_data: unknown, _x: unknown, _y: unknown, ..._rest: unknown[]) {},
-      createLinearGradient(_x0: unknown, _y0: unknown, _x1: unknown, _y1: unknown): object {
-        return { addColorStop(_o: unknown, _c: unknown) {} };
-      },
-      createRadialGradient(_x0: unknown, _y0: unknown, _r0: unknown, _x1: unknown, _y1: unknown, _r1: unknown): object {
-        return { addColorStop(_o: unknown, _c: unknown) {} };
-      },
-      createPattern(_img: unknown, _rep: unknown): object | null {
-        return { setTransform(_m: unknown) {} };
-      },
-      scale(_x: unknown, _y: unknown) {},
-      rotate(_a: unknown) {},
-      translate(_x: unknown, _y: unknown) {},
-      transform(_a: unknown, _b: unknown, _c: unknown, _d: unknown, _e: unknown, _f: unknown) {},
-      setTransform(_a?: unknown, _b?: unknown, _c?: unknown, _d?: unknown, _e?: unknown, _f?: unknown) {},
-      resetTransform() {},
-      getTransform(): object {
-        return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-      },
-      setLineDash(_seg: unknown) {},
-      getLineDash(): number[] {
-        return [];
-      },
-      lineDashOffset: 0,
-      isPointInPath(..._args: unknown[]): boolean {
-        return false;
-      },
-      isPointInStroke(..._args: unknown[]): boolean {
-        return false;
-      },
-      drawFocusIfNeeded(_el?: unknown) {},
-    };
-    Object.defineProperty(ctx, "canvas", {
-      get: () => makeElementCached(canvasId),
-      enumerable: true,
+      resolveCanvas: (source) =>
+        typeof source === "object" && source !== null ? canvasObjects.get(source) : undefined,
     });
-    return ctx;
+  };
+  /**
+   * `canvas.getContext("webgl")` — RFC 0036 software-GL context. The core IS
+   * the drawing buffer; `webglBitmap` snapshots it into the canvas paint
+   * channel. `texImage2D(source)` resolves img/canvas/OffscreenCanvas sources
+   * through the same registries drawImage uses.
+   */
+  const makeWebGLCtx = (canvasId: NodeId, attrs?: GLContextAttributes): object => {
+    const attrNum = (name: string, dflt: number): number => {
+      const raw = session.dom.nodes.get(canvasId)?.attrs?.get(name);
+      const n = raw !== undefined ? Number(raw) : NaN;
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : dflt;
+    };
+    let core = webglCores.get(canvasId);
+    if (core === undefined) {
+      core = new WebGLCore(attrNum("width", 300), attrNum("height", 150), attrs);
+      webglCores.set(canvasId, core);
+    }
+    return makeWebGLContext(core, makeElementCached(canvasId), {
+      imageSource: (source) => {
+        const id = idOf.get(source as object);
+        if (id !== undefined) {
+          const glPeer = webglCores.get(id);
+          if (glPeer !== undefined) return glPeer.snapshot();
+          const e2d = canvasEngines.get(id);
+          if (e2d !== undefined) return e2d.rasterize();
+          return options.canvasImageSource?.(id);
+        }
+        const offscreen = typeof source === "object" && source !== null
+          ? canvasObjects.get(source) : undefined;
+        return offscreen?.rasterize();
+      },
+    });
   };
   /**
    * URL decomposition IDL attributes (HTML §2.6 "URL decomposition IDL
@@ -1376,10 +2141,29 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         const node = session.dom.nodes.get(nodeId);
         return node?.attrs?.get(htmlAttributeName(name)) ?? null;
       },
+      getAttributeNS(ns: unknown, name: unknown): string | null {
+        // Nullable namespace: null and undefined both mean the null namespace.
+        // This engine stores HTML attributes in that namespace only.
+        if (ns !== null && ns !== undefined) return null;
+        const node = session.dom.nodes.get(nodeId);
+        return node?.attrs?.get(String(name)) ?? null;
+      },
       setAttribute(name: unknown, value: unknown): void {
         const attr = htmlAttributeName(name);
         session.setAttribute(nodeId, attr, String(value));
         mutations += 1;
+        // RFC 0033: writing canvas width/height resets the backing bitmap
+        // (HTML §"concept-canvas-set-bitmap-dimensions").
+        const node0 = session.dom.nodes.get(nodeId);
+        if (node0?.tag === "canvas" && (attr === "width" || attr === "height")) {
+          const dims = node0.attrs;
+          const w = Number(dims?.get("width"));
+          const h = Number(dims?.get("height"));
+          canvasEngines.get(nodeId)?.resize(
+            Number.isFinite(w) && w >= 0 ? w : 300,
+            Number.isFinite(h) && h >= 0 ? h : 150,
+          );
+        }
         // HTML script-element semantics: setting `src` on a CONNECTED script
         // element triggers the fetch-and-run steps (the classic SPA loader
         // pattern: append first, then set src).
@@ -1388,6 +2172,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           if (node?.kind === "element" && node.tag === "script" && isConnectedToDocument(session.dom, nodeId)) {
             options.onDynamicScript(nodeId);
           }
+        }
+        // RFC 0035: `setAttribute("src")` on a media element re-runs resource
+        // selection — the same trigger the `src` IDL setter uses.
+        if (attr === "src" && options.media !== undefined) {
+          const tag = session.dom.nodes.get(nodeId)?.tag;
+          if (tag === "video" || tag === "audio") options.media.srcChanged(nodeId);
         }
       },
       // a/area href: the activation behavior reads this attribute, and tests
@@ -1582,6 +2372,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       get style(): object {
         return makeStyleDeclarationCached(nodeId);
       },
+      set style(value: unknown) {
+        // `el.style = "left: 50px"` assigns cssText. A string replaces the
+        // declaration; the CSSStyleDeclaration object itself stays put.
+        session.setAttribute(nodeId, "style", value == null ? "" : cssomString(value));
+        mutations += 1;
+      },
       get textContent(): string {
         return textContentOf(session.dom, nodeId);
       },
@@ -1635,11 +2431,17 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         ).length;
       },
       get parentNode(): object | null {
-        const p = session.dom.nodes.get(nodeId)?.parent ?? null;
+        const node = session.dom.nodes.get(nodeId);
+        // A shadow root's DOM parent is null — the host is only its
+        // shadow-including parent (getRootNode/events use that chain).
+        if (node === undefined || node.tag === "#shadow-root") return null;
+        const p = node.parent ?? null;
         return p === null ? null : makeElementCached(p);
       },
       get parentElement(): object | null {
-        const p = session.dom.nodes.get(nodeId)?.parent ?? null;
+        const node = session.dom.nodes.get(nodeId);
+        if (node === undefined || node.tag === "#shadow-root") return null;
+        const p = node.parent ?? null;
         return p !== null && session.dom.nodes.get(p)?.kind === "element" ? makeElementCached(p) : null;
       },
       get isConnected(): boolean {
@@ -1695,17 +2497,22 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       get content(): object | null {
         const node = session.dom.nodes.get(nodeId);
-        if (node?.kind === "element" && node.tag === "template") {
-          return makeElementCached(nodeId);
-        }
-        return null;
-      },
-      remove(): void {
-        const parent = session.dom.nodes.get(nodeId)?.parent ?? null;
-        if (parent !== null) {
-          session.removeChild(parent, nodeId);
+        if (node?.kind !== "element" || node.tag !== "template") return null;
+        // HTMLTemplateElement.content is a DocumentFragment. The parser stores
+        // the template's markup as its children; the first read moves them
+        // into the fragment so they are not rendered (template is display:none).
+        let fragId = templateFragments.get(nodeId);
+        if (fragId === undefined) {
+          fragId = session.createElement("#document-fragment");
+          templateFragments.set(nodeId, fragId);
+          const children = [...(session.dom.nodes.get(nodeId)?.children ?? [])];
+          for (const child of children) {
+            session.removeChild(nodeId, child);
+            session.appendChild(fragId, child);
+          }
           mutations += 1;
         }
+        return makeElementCached(fragId);
       },
       appendChild(child: unknown): unknown {
         const childId = idFromWrapper(child);
@@ -1713,6 +2520,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           session.appendChild(nodeId, childId);
           mutations += 1;
           notifyDynamicScripts([childId]);
+          connectBlankIframes(childId);
         }
         return child;
       },
@@ -1820,6 +2628,55 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         }
         return null;
       },
+      // --- Shadow DOM (RFC 0018) -------------------------------------------
+      attachShadow(init: unknown): object {
+        const mode = (init as { mode?: unknown } | null)?.mode === "closed" ? "closed" : "open";
+        const node = session.dom.nodes.get(nodeId);
+        const tag = node?.tag ?? "";
+        const SHADOW_HOST_TAGS = new Set([
+          "article", "aside", "blockquote", "body", "div", "footer",
+          "h1", "h2", "h3", "h4", "h5", "h6", "header", "main", "nav", "p", "section", "span",
+        ]);
+        // Any valid custom-element name may host a shadow root — defined or
+        // not (HTML §4.13.6 "shadow host" list + potential CE hosts).
+        const isCeHost = isValidCustomElementName(tag);
+        if (node?.kind !== "element" || (!SHADOW_HOST_TAGS.has(tag) && !isCeHost)) {
+          throw new DOMException(`'${tag || "node"}' does not support shadow roots`, "NotSupportedError");
+        }
+        if (node.shadow !== undefined) {
+          throw new DOMException("Shadow root cannot be created on a host which already hosts a shadow tree", "NotSupportedError");
+        }
+        const sid = session.attachShadow(nodeId, mode);
+        if (sid === null) {
+          throw new DOMException("Shadow root cannot be created on a host which already hosts a shadow tree", "NotSupportedError");
+        }
+        mutations += 1;
+        return makeElementCached(sid);
+      },
+      get shadowRoot(): object | null {
+        const sid = session.dom.nodes.get(nodeId)?.shadow;
+        if (sid === undefined) return null;
+        // Closed roots exist internally but are hidden from page script.
+        if ((session.dom.nodes.get(sid)?.attrs?.get("mode") ?? "open") !== "open") return null;
+        return makeElementCached(sid);
+      },
+      getRootNode(opts?: unknown): object {
+        const composed = (opts as { composed?: unknown } | null)?.composed === true;
+        let cur: NodeId | null = nodeId;
+        let top: NodeId = nodeId;
+        while (cur !== null) {
+          const n = session.dom.nodes.get(cur);
+          if (n === undefined) break;
+          if (!composed && n.tag === "#shadow-root") return makeElementCached(cur);
+          top = cur;
+          cur = n.parent;
+        }
+        return top === session.dom.root ? (document) : makeElementCached(top);
+      },
+      get assignedSlot(): object | null {
+        const sid = assignedSlotFor(nodeId);
+        return sid === undefined ? null : makeElementCached(sid);
+      },
       addEventListener(type: unknown, fn: unknown, options: unknown): void {
         if (typeof fn !== "function") return;
         const capture = options === true || (typeof options === "object" && options !== null && (options as { capture?: unknown }).capture === true);
@@ -1840,28 +2697,692 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return dispatch(nodeId, event as GuestEvent);
       },
       click(): void {
-        const event = makeEvent("click", { bubbles: true, cancelable: true });
-        // Activation behavior runs only when the click was not default-prevented.
+        // HTMLElement.click() dispatches a PointerEvent (Pointer Events
+        // §5.2.5); activation behavior runs only when it was not
+        // default-prevented. Script-initiated clicks do not move focus.
+        const event = makeEvent("click", { bubbles: true, cancelable: true, composed: true });
         if (dispatch(nodeId, event)) runActivationBehavior(nodeId);
       },
+      focus(): void {
+        if (isFocusable(nodeId)) setFocused(nodeId, isTextEditingControl(nodeId));
+      },
+      blur(): void {
+        if (focusedId === nodeId) setFocused(null, false);
+      },
+      get tabIndex(): number {
+        const attr = elementAttr(nodeId, "tabindex");
+        if (attr !== undefined) {
+          const parsed = Number(attr);
+          return Number.isNaN(parsed) ? -1 : Math.trunc(parsed);
+        }
+        // Natively focusable elements default to 0, others to -1.
+        return isFocusable(nodeId) ? 0 : -1;
+      },
+      set tabIndex(v: unknown) {
+        session.setAttribute(nodeId, "tabindex", String(Math.trunc(Number(v) || 0)));
+        mutations += 1;
+      },
+      get value(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        const tag = node?.tag;
+        if (tag === "input" || tag === "textarea") return controlValue(nodeId);
+        if (tag === "output" || tag === "select") return controlValueOf(session.dom, node!);
+        if (tag === "option") return optionValue(nodeId);
+        if (tag === "button") return node?.attrs?.get("value") ?? "";
+        return undefined;
+      },
+      set value(v: unknown) {
+        const node = session.dom.nodes.get(nodeId);
+        const tag = node?.tag;
+        const str = coerceGuestString(v);
+        if (tag === "input" || tag === "textarea") {
+          setTextValue(nodeId, str);
+          mutations += 1;
+          return;
+        }
+        if (tag === "output") {
+          patchControl(nodeId, { value: str });
+          return;
+        }
+        if (tag === "option") {
+          session.setAttribute(nodeId, "value", str);
+          mutations += 1;
+          return;
+        }
+        if (tag === "button") {
+          session.setAttribute(nodeId, "value", str);
+          mutations += 1;
+          return;
+        }
+        if (tag === "select" && node !== undefined) {
+          // select.value = pick the first option whose value matches
+          // (multiple: every match); no match ⇒ all deselected.
+          const multiple = node.attrs?.has("multiple") === true;
+          let found = false;
+          for (const opt of selectOptions(session.dom, node)) {
+            const hit = optionValue(opt.id) === str && (multiple || !found);
+            patchControl(opt.id, { selected: hit });
+            if (hit) found = true;
+          }
+        }
+      },
+      // RFC 0011: form element methods — submit() skips the submit event per
+      // spec; requestSubmit() runs it (cancelable). No-ops on non-forms.
+      submit(): void {
+        if (session.dom.nodes.get(nodeId)?.tag === "form") {
+          submitForm(nodeId, null, true);
+        }
+      },
+      requestSubmit(submitter?: unknown): void {
+        if (session.dom.nodes.get(nodeId)?.tag !== "form") return;
+        const subId = idFromWrapper(submitter) ?? null;
+        submitForm(nodeId, subId);
+      },
+      reset(): void {
+        if (session.dom.nodes.get(nodeId)?.tag === "form") resetForm(nodeId);
+      },
+      /**
+       * RFC 0013: `iframe.contentWindow` — the child context's window proxy
+       * (postMessage-capable); null until the frame loads / on non-iframes.
+       */
+      get srcdoc(): string {
+        if (session.dom.nodes.get(nodeId)?.tag !== "iframe") return "";
+        return session.dom.nodes.get(nodeId)?.attrs?.get("srcdoc") ?? "";
+      },
+      set srcdoc(value: unknown) {
+        if (session.dom.nodes.get(nodeId)?.tag !== "iframe") return;
+        session.setAttribute(nodeId, "srcdoc", String(value));
+        mutations += 1;
+        navigateSrcdoc(nodeId);
+      },
+      get media(): string {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag !== "style" && tag !== "link") return "";
+        return session.dom.nodes.get(nodeId)?.attrs?.get("media") ?? "";
+      },
+      set media(value: unknown) {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag !== "style" && tag !== "link") return;
+        session.setAttribute(nodeId, "media", coerceGuestString(value));
+        mutations += 1;
+      },
+      get contentWindow(): object | null {
+        if (session.dom.nodes.get(nodeId)?.tag !== "iframe") return null;
+        const w = frameLookup?.(nodeId) ?? srcdocFrames.get(nodeId)?.window ?? blankFrames.get(nodeId)?.window;
+        return typeof w === "object" && w !== null ? w : null;
+      },
+      /**
+       * `iframe.contentDocument` — `contentWindow.document` per spec: the
+       * child's document wrapper when the two contexts are same-origin,
+       * null otherwise (cross-origin frames only expose the proxy).
+       */
+      get contentDocument(): object | null {
+        if (session.dom.nodes.get(nodeId)?.tag !== "iframe") return null;
+        const w = (frameLookup?.(nodeId) ?? srcdocFrames.get(nodeId)?.window ?? blankFrames.get(nodeId)?.window) as { document?: unknown } | null | undefined;
+        const doc = w?.document;
+        return typeof doc === "object" && doc !== null ? doc : null;
+      },
+      /** `control.form` — the owning form element (form=-attr aware). */
+      get form(): object | null {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.kind !== "element") return null;
+        const explicit = node.attrs?.get("form");
+        if (explicit !== undefined) {
+          for (const [id, n] of session.dom.nodes) {
+            if (n?.kind === "element" && n.tag === "form" && n.attrs?.get("id") === explicit) {
+              return makeElementCached(id);
+            }
+          }
+          return null;
+        }
+        const owner = ownerForm(nodeId);
+        return owner !== null ? makeElementCached(owner) : null;
+      },
       get checked(): boolean {
-        const state = nodeState.get(nodeId);
-        if (state?.checked !== undefined) return state.checked;
-        const initial = session.dom.nodes.get(nodeId)?.attrs?.get("checked") !== undefined;
-        nodeState.set(nodeId, { ...state, checked: initial });
-        return initial;
+        return controlChecked(nodeId);
       },
       set checked(value: unknown) {
-        const state = nodeState.get(nodeId) ?? {};
-        state.checked = Boolean(value);
-        nodeState.set(nodeId, state);
+        patchControl(nodeId, { checked: Boolean(value) });
+        // Checking a radio unchecks its group (same name, same form owner).
+        if (value === true) {
+          const n = session.dom.nodes.get(nodeId);
+          if (n?.tag === "input" && inputType(n) === "radio") radioGroupUncheck(nodeId);
+        }
+      },
+      /**
+       * RFC 0021: `input.indeterminate` — the visual tri-state flag (property
+       * only, never an attribute). Feeds `:indeterminate` via DocControl.
+       */
+      get indeterminate(): boolean {
+        return nodeState.get(nodeId)?.indeterminate === true;
+      },
+      set indeterminate(value: unknown) {
+        patchControl(nodeId, { indeterminate: Boolean(value) });
+      },
+
+      // ---- RFC 0021: form-control IDL surface -------------------------------
+
+      /** Sanitized `type`: input falls back to "text" for unknown values,
+       * button to "submit"; select reports "select-one"/"select-multiple";
+       * textarea/fieldset/output report their tag. */
+      get type(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        const tag = node?.tag;
+        if (tag === "input" && node !== undefined) return inputType(node);
+        if (tag === "button") {
+          const raw = (node?.attrs?.get("type") ?? "submit").toLowerCase();
+          return raw === "submit" || raw === "reset" || raw === "button" ? raw : "submit";
+        }
+        if (tag === "select") return node?.attrs?.has("multiple") === true ? "select-multiple" : "select-one";
+        if (tag === "textarea") return "textarea";
+        if (tag === "fieldset") return "fieldset";
+        if (tag === "output") return "output";
+        return undefined;
+      },
+      set type(v: unknown) {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag === "input" || tag === "button") {
+          session.setAttribute(nodeId, "type", coerceGuestString(v));
+          mutations += 1;
+        }
+      },
+      /** `disabled` reflects the ATTRIBUTE (fieldset-inherited disablement
+       * is visible via `:disabled`/`willValidate`, not this property). */
+      get disabled(): boolean {
+        return hasElementAttr(nodeId, "disabled");
+      },
+      set disabled(v: unknown) {
+        reflectBool.set(nodeId, "disabled", v);
+      },
+      get name(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("name") ?? "";
+      },
+      set name(v: unknown) {
+        reflectStr.set(nodeId, "name", v);
+      },
+      get required(): boolean {
+        return hasElementAttr(nodeId, "required");
+      },
+      set required(v: unknown) {
+        reflectBool.set(nodeId, "required", v);
+      },
+      get readOnly(): boolean {
+        return hasElementAttr(nodeId, "readonly");
+      },
+      set readOnly(v: unknown) {
+        reflectBool.set(nodeId, "readonly", v);
+      },
+      get placeholder(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("placeholder") ?? "";
+      },
+      set placeholder(v: unknown) {
+        reflectStr.set(nodeId, "placeholder", v);
+      },
+      get pattern(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("pattern") ?? "";
+      },
+      set pattern(v: unknown) {
+        reflectStr.set(nodeId, "pattern", v);
+      },
+      get min(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("min") ?? "";
+      },
+      set min(v: unknown) {
+        reflectStr.set(nodeId, "min", v);
+      },
+      get max(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("max") ?? "";
+      },
+      set max(v: unknown) {
+        reflectStr.set(nodeId, "max", v);
+      },
+      get step(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("step") ?? "";
+      },
+      set step(v: unknown) {
+        reflectStr.set(nodeId, "step", v);
+      },
+      get minLength(): number {
+        return reflectLong.get(nodeId, "minlength", -1);
+      },
+      set minLength(v: unknown) {
+        reflectLong.set(nodeId, "minlength", v);
+      },
+      get maxLength(): number {
+        return reflectLong.get(nodeId, "maxlength", -1);
+      },
+      set maxLength(v: unknown) {
+        reflectLong.set(nodeId, "maxlength", v);
+      },
+      get multiple(): boolean {
+        return hasElementAttr(nodeId, "multiple");
+      },
+      set multiple(v: unknown) {
+        reflectBool.set(nodeId, "multiple", v);
+      },
+      get size(): number {
+        return reflectLong.get(nodeId, "size", 20);
+      },
+      set size(v: unknown) {
+        reflectLong.set(nodeId, "size", v);
+      },
+      get autocomplete(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("autocomplete") ?? "";
+      },
+      set autocomplete(v: unknown) {
+        reflectStr.set(nodeId, "autocomplete", v);
+      },
+      get autofocus(): boolean {
+        return hasElementAttr(nodeId, "autofocus");
+      },
+      set autofocus(v: unknown) {
+        reflectBool.set(nodeId, "autofocus", v);
+      },
+      /** defaultValue — the `value` attribute (input) / text children
+       * (textarea/output). Setting it also updates the live value when the
+       * value isn't dirty (HTML §4.10.19.3 dirty-value flag). */
+      get defaultValue(): string {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag === "textarea" || node?.tag === "output") {
+          return node.children
+            .map((c) => session.dom.nodes.get(c))
+            .filter((c) => c?.kind === "text")
+            .map((c) => (c as { text: string }).text)
+            .join("");
+        }
+        return node?.attrs?.get("value") ?? "";
+      },
+      set defaultValue(v: unknown) {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag === "textarea" || node?.tag === "output") {
+          replaceTextContent(session, nodeId, coerceGuestString(v));
+        } else {
+          session.setAttribute(nodeId, "value", coerceGuestString(v));
+        }
+        if (nodeState.get(nodeId)?.valueDirty !== true) {
+          patchControl(nodeId, { value: coerceGuestString(v) });
+        }
+        mutations += 1;
+      },
+      get defaultChecked(): boolean {
+        return hasElementAttr(nodeId, "checked");
+      },
+      set defaultChecked(v: unknown) {
+        reflectBool.set(nodeId, "checked", v);
+      },
+      /** `input.valueAsNumber` — value in the type's numeric domain; NaN
+       * when empty/unparsable; only number/date-family types may set. */
+      get valueAsNumber(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "input") return undefined;
+        const n = valueAsNumber(inputType(node), controlValue(nodeId));
+        return n === null ? NaN : n;
+      },
+      set valueAsNumber(v: unknown) {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "input") return;
+        const t = inputType(node);
+        if (!["number", "range", "date", "month", "week", "time", "datetime-local"].includes(t)) {
+          throw new DOMException("valueAsNumber: not allowed for this input type", "InvalidStateError");
+        }
+        const n = Number(v);
+        if (!Number.isFinite(n)) {
+          setTextValue(nodeId, "");
+        } else if (t === "number" || t === "range") {
+          setTextValue(nodeId, String(n));
+        } else if (t === "date") {
+          const d = new Date(n);
+          setTextValue(nodeId, Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10));
+        } else {
+          setTextValue(nodeId, String(n));
+        }
+        mutations += 1;
+      },
+      stepUp(n?: unknown): void {
+        stepBy(nodeId, Math.trunc(Number(n ?? 1) || 1), 1);
+      },
+      stepDown(n?: unknown): void {
+        stepBy(nodeId, Math.trunc(Number(n ?? 1) || 1), -1);
+      },
+
+      // ---- Constraint-validation IDL (shared flags engine) ----------------
+      get validity(): object {
+        return validityObject(nodeId);
+      },
+      get validationMessage(): string {
+        return validationMessageOf(nodeId);
+      },
+      get willValidate(): boolean {
+        return controlWillValidate(nodeId);
+      },
+      checkValidity(): boolean {
+        return checkControlValidity(nodeId);
+      },
+      reportValidity(): boolean {
+        return checkControlValidity(nodeId);
+      },
+      setCustomValidity(msg: unknown): void {
+        patchControl(nodeId, { customError: coerceGuestString(msg) });
+      },
+
+      // ---- Selection (text-entry controls; the rest reject per spec) -------
+      get selectionStart(): unknown {
+        if (!isTextEditingControl(nodeId)) return null;
+        return selOf(nodeId).start;
+      },
+      set selectionStart(v: unknown) {
+        if (!isTextEditingControl(nodeId)) return;
+        const len = [...controlValue(nodeId)].length;
+        patchControl(nodeId, { selStart: Math.max(0, Math.min(Math.trunc(Number(v) || 0), len)) });
+      },
+      get selectionEnd(): unknown {
+        if (!isTextEditingControl(nodeId)) return null;
+        return selOf(nodeId).end;
+      },
+      set selectionEnd(v: unknown) {
+        if (!isTextEditingControl(nodeId)) return;
+        const len = [...controlValue(nodeId)].length;
+        patchControl(nodeId, { selEnd: Math.max(0, Math.min(Math.trunc(Number(v) || 0), len)) });
+      },
+      get selectionDirection(): unknown {
+        if (!isTextEditingControl(nodeId)) return null;
+        return selOf(nodeId).dir;
+      },
+      set selectionDirection(v: unknown) {
+        if (!isTextEditingControl(nodeId)) return;
+        const d = String(v);
+        if (d === "forward" || d === "backward" || d === "none") {
+          patchControl(nodeId, { selDir: d });
+        }
+      },
+      setSelectionRange(start: unknown, end: unknown, dir?: unknown): void {
+        if (!isTextEditingControl(nodeId)) return;
+        const len = [...controlValue(nodeId)].length;
+        const s = Math.max(0, Math.min(Math.trunc(Number(start) || 0), len));
+        const e = Math.max(0, Math.min(Math.trunc(Number(end) || 0), len));
+        const d = coerceGuestString(dir);
+        patchControl(nodeId, {
+          selStart: s, selEnd: Math.max(s, e),
+          selDir: d === "forward" || d === "backward" || d === "none" ? d : "none",
+        });
+      },
+      select(): void {
+        if (!isTextEditingControl(nodeId)) return;
+        const len = [...controlValue(nodeId)].length;
+        patchControl(nodeId, { selStart: 0, selEnd: len, selDir: "none" });
+      },
+      setRangeText(replacement: unknown, start?: unknown, end?: unknown, mode?: unknown): void {
+        if (!isTextEditingControl(nodeId)) return;
+        const value = controlValue(nodeId);
+        const cps = [...value];
+        const sel = selOf(nodeId);
+        const s = start === undefined ? sel.start : Math.max(0, Math.min(Math.trunc(Number(start) || 0), cps.length));
+        const e = end === undefined ? sel.end : Math.max(0, Math.min(Math.trunc(Number(end) || 0), cps.length));
+        const rep = coerceGuestString(replacement);
+        const next = cps.slice(0, s).join("") + rep + cps.slice(e).join("");
+        const caret = s + [...rep].length;
+        setTextValue(nodeId, next);
+        const m = coerceGuestString(mode === undefined ? "preserve" : mode);
+        patchControl(nodeId, m === "select" ? { selStart: s, selEnd: caret } :
+          m === "start" ? { selStart: s, selEnd: s } :
+          m === "end" ? { selStart: caret, selEnd: caret } : {});
+      },
+
+      // ---- select / option / datalist collections -------------------------
+      /** select.options / datalist.options — a LIVE collection proxy. */
+      get options(): unknown {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag !== "select" && tag !== "datalist") return undefined;
+        return controlCollection(() => optionIdsOf(nodeId));
+      },
+      get selectedOptions(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "select") return undefined;
+        return controlCollection(() =>
+          optionIdsOf(nodeId).filter((oid) => {
+            const n = session.dom.nodes.get(oid);
+            return n !== undefined && domSelected(session.dom, n);
+          }),
+        );
+      },
+      get selectedIndex(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "select") return undefined;
+        return optionIdsOf(nodeId).findIndex((oid) => {
+          const n = session.dom.nodes.get(oid);
+          return n !== undefined && domSelected(session.dom, n);
+        });
+      },
+      set selectedIndex(v: unknown) {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "select") return;
+        const idx = Math.trunc(Number(v));
+        const ids = optionIdsOf(nodeId);
+        ids.forEach((oid, i) => patchControl(oid, { selected: i === idx }));
+      },
+      add(element?: unknown, before?: unknown): void {
+        // select.add(option, before?) — insert; `before` may be an index or node.
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "select") return;
+        const el = idFromWrapper(element);
+        if (el === undefined) return;
+        const ids = optionIdsOf(nodeId);
+        let beforeId: NodeId | null = null;
+        if (typeof before === "number") {
+          beforeId = ids[Math.trunc(before)] ?? null;
+        } else if (before !== null && before !== undefined) {
+          beforeId = idFromWrapper(before) ?? null;
+        }
+        if (beforeId !== null) {
+          session.insertBefore(nodeId, el, beforeId);
+        } else {
+          session.appendChild(nodeId, el);
+        }
+        mutations += 1;
+      },
+      remove(index?: unknown): void {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag === "select" && index !== undefined) {
+          // select.remove(i) — drop the i-th option (HTML §4.10.7).
+          const target = optionIdsOf(nodeId)[Math.trunc(Number(index))];
+          if (target === undefined) return;
+          const parent = session.dom.nodes.get(target)?.parent;
+          if (parent !== null && parent !== undefined) session.removeChild(parent, target);
+          mutations += 1;
+          return;
+        }
+        const parent = session.dom.nodes.get(nodeId)?.parent ?? null;
+        if (parent !== null) {
+          session.removeChild(parent, nodeId);
+          mutations += 1;
+        }
+      },
+      item(index: unknown): unknown {
+        const ids = optionIdsOf(nodeId);
+        const id = ids[Math.trunc(Number(index))];
+        return id === undefined ? null : makeElementCached(id);
+      },
+      namedItem(name: unknown): unknown {
+        const key = String(name);
+        const id = optionIdsOf(nodeId).find((oid) => {
+          const n = session.dom.nodes.get(oid);
+          return n?.attrs?.get("id") === key || n?.attrs?.get("name") === key;
+        });
+        return id === undefined ? null : makeElementCached(id);
+      },
+
+      // ---- option IDL ------------------------------------------------------
+      get selected(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "option") return undefined;
+        return domSelected(session.dom, node);
+      },
+      set selected(v: unknown) {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "option") return;
+        patchControl(nodeId, { selected: Boolean(v) });
+        // In a non-multiple select, selecting one deselects the siblings.
+        if (v === true) {
+          const sel = ownerSelect(nodeId);
+          if (sel !== null && session.dom.nodes.get(sel)?.attrs?.has("multiple") !== true) {
+            for (const oid of optionIdsOf(sel)) {
+              if (oid !== nodeId) patchControl(oid, { selected: false });
+            }
+          }
+        }
+      },
+      get defaultSelected(): boolean {
+        return hasElementAttr(nodeId, "selected");
+      },
+      set defaultSelected(v: unknown) {
+        reflectBool.set(nodeId, "selected", v);
+      },
+      get index(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "option") return undefined;
+        const sel = ownerSelect(nodeId);
+        if (sel === null) return -1;
+        return optionIdsOf(sel).indexOf(nodeId);
+      },
+      get text(): string {
+        return controlTextOf(nodeId).trim().replace(/\s+/g, " ");
+      },
+      set text(v: unknown) {
+        if (session.dom.nodes.get(nodeId)?.tag !== "option") return;
+        replaceTextContent(session, nodeId, coerceGuestString(v));
+        mutations += 1;
+      },
+      get label(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("label") ??
+          controlTextOf(nodeId).trim().replace(/\s+/g, " ");
+      },
+      set label(v: unknown) {
+        reflectStr.set(nodeId, "label", v);
+      },
+
+      // ---- textarea IDL ----------------------------------------------------
+      get textLength(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "textarea") return undefined;
+        return [...controlValue(nodeId)].length;
+      },
+      get rows(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "textarea") return undefined;
+        return reflectLong.get(nodeId, "rows", 2);
+      },
+      set rows(v: unknown) {
+        reflectLong.set(nodeId, "rows", v);
+      },
+      get cols(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "textarea") return undefined;
+        return reflectLong.get(nodeId, "cols", 20);
+      },
+      set cols(v: unknown) {
+        reflectLong.set(nodeId, "cols", v);
+      },
+      get wrap(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "textarea") return undefined;
+        return session.dom.nodes.get(nodeId)?.attrs?.get("wrap") ?? "soft";
+      },
+      set wrap(v: unknown) {
+        reflectStr.set(nodeId, "wrap", v);
+      },
+
+      // ---- label / output / fieldset / datalist / form ----------------------
+      get htmlFor(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("for") ?? "";
+      },
+      set htmlFor(v: unknown) {
+        reflectStr.set(nodeId, "for", v);
+      },
+      get control(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "label") return undefined;
+        const c = labeledControlOf(nodeId);
+        return c === null ? null : makeElementCached(c);
+      },
+      /** label.labels is meaningless; controls expose `labels` — the
+       * HTMLLabelElement set pointing at this control. */
+      get labels(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.kind !== "element") return undefined;
+        return controlCollection(() => labelsOf(nodeId));
+      },
+      /** `input[list]` → the referenced datalist element (or null). */
+      get list(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "input") return undefined;
+        const d = listDatalist(nodeId);
+        return d === null ? null : makeElementCached(d);
+      },
+      get files(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "input") return undefined;
+        if (inputType(node) !== "file") return null;
+        // No file picker exists — an honest empty FileList-shaped object.
+        return { length: 0, item: () => null };
+      },
+      /** form.elements / fieldset.elements — live named/indexed collection. */
+      get elements(): unknown {
+        const node = session.dom.nodes.get(nodeId);
+        if (node?.tag !== "form" && node?.tag !== "fieldset") return undefined;
+        return controlCollection(() => associatedControls(nodeId));
+      },
+      get length(): unknown {
+        const tag = session.dom.nodes.get(nodeId)?.tag;
+        if (tag === "form") return associatedControls(nodeId).length;
+        if (tag === "select") return optionIdsOf(nodeId).length;
+        return undefined;
+      },
+      get noValidate(): boolean {
+        return hasElementAttr(nodeId, "novalidate");
+      },
+      set noValidate(v: unknown) {
+        reflectBool.set(nodeId, "novalidate", v);
+      },
+      get acceptCharset(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("accept-charset") ?? "";
+      },
+      set acceptCharset(v: unknown) {
+        reflectStr.set(nodeId, "accept-charset", v);
+      },
+      get action(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("action") ?? "";
+      },
+      set action(v: unknown) {
+        reflectStr.set(nodeId, "action", v);
+      },
+      /** form.method — sanitized get/post/dialog (missing/invalid ⇒ "get"). */
+      get method(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "form") return undefined;
+        const raw = (session.dom.nodes.get(nodeId)?.attrs?.get("method") ?? "").toLowerCase();
+        return raw === "post" || raw === "dialog" ? raw : "get";
+      },
+      set method(v: unknown) {
+        if (session.dom.nodes.get(nodeId)?.tag === "form") {
+          reflectStr.set(nodeId, "method", v);
+        }
+      },
+      get enctype(): unknown {
+        if (session.dom.nodes.get(nodeId)?.tag !== "form") return undefined;
+        const raw = (session.dom.nodes.get(nodeId)?.attrs?.get("enctype") ?? "").toLowerCase();
+        return raw === "text/plain" || raw === "multipart/form-data"
+          ? raw
+          : "application/x-www-form-urlencoded";
+      },
+      set enctype(v: unknown) {
+        if (session.dom.nodes.get(nodeId)?.tag === "form") {
+          reflectStr.set(nodeId, "enctype", v);
+        }
+      },
+      get target(): string {
+        return session.dom.nodes.get(nodeId)?.attrs?.get("target") ?? "";
+      },
+      set target(v: unknown) {
+        reflectStr.set(nodeId, "target", v);
       },
       getBoundingClientRect(): object {
         gBcrCalls += 1;
         if (geometryMode === "stub") {
           return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
         }
-        return rectFromTree(resolveLayoutTree(), nodeId);
+        return visualBorder(resolveLayoutTree(), nodeId);
       },
       getClientRects(): object {
         gBcrCalls += 1;
@@ -1892,10 +3413,33 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return Math.round(rectFromTree(resolveLayoutTree(), nodeId).height);
       },
       get offsetTop(): number {
-        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).top);
+        const tree = resolveLayoutTree();
+        const content = contentBorder(tree, nodeId);
+        const parent = offsetParentId(nodeId);
+        if (parent === null || tree === null) return Math.round(content.y);
+        const parentNode = session.dom.nodes.get(parent);
+        // Root sticky is measured from the viewport: `scrollY + top`. The
+        // body's padding edge sits below its margin, so subtracting it here
+        // would miss that sum.
+        if (nearestScrollport(nodeId) === null && (parentNode?.tag === "body" || parentNode?.tag === "html")) {
+          return Math.round(content.y);
+        }
+        const parentBox = contentBorder(tree, parent);
+        const originY = parentBox.y + borderEdge(styleOf(parent), "borderTopWidth");
+        return Math.round(content.y - originY);
       },
       get offsetLeft(): number {
-        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).left);
+        const tree = resolveLayoutTree();
+        const content = contentBorder(tree, nodeId);
+        const parent = offsetParentId(nodeId);
+        if (parent === null || tree === null) return Math.round(content.x);
+        const parentNode = session.dom.nodes.get(parent);
+        if (nearestScrollport(nodeId) === null && (parentNode?.tag === "body" || parentNode?.tag === "html")) {
+          return Math.round(content.x);
+        }
+        const parentBox = contentBorder(tree, parent);
+        const originX = parentBox.x + borderEdge(styleOf(parent), "borderLeftWidth");
+        return Math.round(content.x - originX);
       },
       get offsetParent(): unknown {
         // CSSOM View: nearest ancestor with non-static position; body/html fallback.
@@ -1924,41 +3468,103 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return Math.max(0, Math.round(rectFromTree(resolveLayoutTree(), nodeId).height));
       },
       get scrollWidth(): number {
-        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).width);
+        const tree = resolveLayoutTree();
+        if (tree === null) return 0;
+        return Math.round(scrollExtent(tree, nodeId).width);
       },
       get scrollHeight(): number {
-        return Math.round(rectFromTree(resolveLayoutTree(), nodeId).height);
+        const tree = resolveLayoutTree();
+        if (tree === null) return 0;
+        return Math.round(scrollExtent(tree, nodeId).height);
       },
       get scrollTop(): number {
-        return 0;
+        return elementScroll.get(nodeId)?.top ?? 0;
       },
-      set scrollTop(_v: unknown) {},
+      set scrollTop(v: unknown) {
+        const prev = elementScroll.get(nodeId) ?? { top: 0, left: 0 };
+        elementScroll.set(nodeId, clampScroll(nodeId, axisLength(v), prev.left));
+      },
       get scrollLeft(): number {
-        return 0;
+        return elementScroll.get(nodeId)?.left ?? 0;
       },
-      set scrollLeft(_v: unknown) {},
-      getContext(type: unknown, _opts?: unknown): object | null {
+      set scrollLeft(v: unknown) {
+        const prev = elementScroll.get(nodeId) ?? { top: 0, left: 0 };
+        elementScroll.set(nodeId, clampScroll(nodeId, prev.top, axisLength(v)));
+      },
+      scrollTo(x?: unknown, y?: unknown): void {
+        const prev = elementScroll.get(nodeId) ?? { top: 0, left: 0 };
+        const next = typeof x === "object" && x !== null
+          ? {
+              left: (x as { left?: unknown }).left === undefined ? prev.left : axisLength((x as { left?: unknown }).left),
+              top: (x as { top?: unknown }).top === undefined ? prev.top : axisLength((x as { top?: unknown }).top),
+            }
+          : { left: x === undefined ? prev.left : axisLength(x), top: y === undefined ? prev.top : axisLength(y) };
+        elementScroll.set(nodeId, clampScroll(nodeId, next.top, next.left));
+      },
+      scrollBy(x?: unknown, y?: unknown): void {
+        const prev = elementScroll.get(nodeId) ?? { top: 0, left: 0 };
+        const delta = typeof x === "object" && x !== null
+          ? {
+              left: axisLength((x as { left?: unknown }).left),
+              top: axisLength((x as { top?: unknown }).top),
+            }
+          : { left: axisLength(x), top: axisLength(y) };
+        elementScroll.set(nodeId, clampScroll(nodeId, prev.top + delta.top, prev.left + delta.left));
+      },
+      getContext(type: unknown, opts?: unknown): object | null {
         const tag = session.dom.nodes.get(nodeId)?.tag ?? "";
         if (tag !== "canvas") return null;
         const kind = coerceGuestString(type).toLowerCase();
-        if (kind !== "2d") return null;
+        if (kind !== "2d" && kind !== "webgl" && kind !== "experimental-webgl") return null;
+        const want = kind === "2d" ? "2d" : "webgl";
+        // Spec: the FIRST getContext fixes the context mode — a later call for
+        // a different mode on the same canvas returns null.
+        const locked = canvasKinds.get(nodeId);
+        if (locked !== undefined && locked !== want) return null;
         let ctx = canvasContexts.get(nodeId);
         if (ctx === undefined) {
-          ctx = makeCanvas2dContext(nodeId);
+          if (want === "webgl") {
+            const attrs =
+              typeof opts === "object" && opts !== null ? (opts as GLContextAttributes) : undefined;
+            ctx = makeWebGLCtx(nodeId, attrs);
+          } else {
+            const opaque =
+              typeof opts === "object" && opts !== null && (opts as { alpha?: unknown }).alpha === false;
+            ctx = makeCanvas2dContext(nodeId, opaque ? { opaque: true } : undefined);
+          }
           canvasContexts.set(nodeId, ctx);
+          canvasKinds.set(nodeId, want);
         }
         return ctx;
       },
-      toDataURL(..._args: unknown[]): string {
-        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      toDataURL(type?: unknown, _quality?: unknown): string {
+        const engine = canvasEngines.get(nodeId);
+        const bytes = engine?.toPngBytes();
+        if (bytes === undefined) {
+          // Cold CanvasKit / empty canvas → the 1×1 transparent PNG fallback
+          // (spec: zero-size canvases still produce a valid PNG).
+          return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        }
+        void type; // PNG only — jpeg/webp encode is a documented boundary.
+        return `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
       },
-      toBlob(callback: unknown, _type?: unknown, _quality?: unknown): void {
-        if (typeof callback === "function") {
-          try {
-            (callback as (blob: null) => void)(null);
-          } catch {
-            // Guest/page code may throw here; swallowed by design.
-          }
+      toBlob(callback: unknown, type?: unknown, _quality?: unknown): void {
+        if (typeof callback !== "function") return;
+        const engine = canvasEngines.get(nodeId);
+        const bytes = engine?.toPngBytes();
+        void type;
+        const blob =
+          bytes === undefined
+            ? null
+            : {
+                type: "image/png",
+                size: bytes.length,
+                arrayBuffer: () => Promise.resolve(bytes.slice().buffer),
+              };
+        try {
+          (callback as (blob: unknown) => void)(blob);
+        } catch {
+          // Guest/page code may throw here; swallowed by design.
         }
       },
       get width(): number {
@@ -1973,8 +3579,25 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       set width(value: unknown) {
         const tag = session.dom.nodes.get(nodeId)?.tag ?? "";
+        if (tag === "iframe") {
+          const n = Number(value);
+          if (Number.isFinite(n)) {
+            session.setAttribute(nodeId, "width", String(n));
+            mutations += 1;
+            refreshIframeViewport(nodeId);
+          }
+          return;
+        }
         if (tag === "canvas" || tag === "img" || tag === "video") {
-          session.setAttribute(nodeId, "width", String(Number(value) || 0));
+          const n = Number(value) || 0;
+          session.setAttribute(nodeId, "width", String(n));
+          // Spec: setting canvas dims resets the bitmap AND the context state.
+          if (tag === "canvas") {
+            const h = session.dom.nodes.get(nodeId)?.attrs?.get("height");
+            const hh = Number.isFinite(Number(h)) ? Number(h) : 150;
+            canvasEngines.get(nodeId)?.resize(n, hh);
+            webglCores.get(nodeId)?.resize(n, hh);
+          }
           mutations += 1;
         }
       },
@@ -1990,8 +3613,24 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
       set height(value: unknown) {
         const tag = session.dom.nodes.get(nodeId)?.tag ?? "";
+        if (tag === "iframe") {
+          const n = Number(value);
+          if (Number.isFinite(n)) {
+            session.setAttribute(nodeId, "height", String(n));
+            mutations += 1;
+            refreshIframeViewport(nodeId);
+          }
+          return;
+        }
         if (tag === "canvas" || tag === "img" || tag === "video") {
-          session.setAttribute(nodeId, "height", String(Number(value) || 0));
+          const n = Number(value) || 0;
+          session.setAttribute(nodeId, "height", String(n));
+          if (tag === "canvas") {
+            const w = session.dom.nodes.get(nodeId)?.attrs?.get("width");
+            const ww = Number.isFinite(Number(w)) ? Number(w) : 300;
+            canvasEngines.get(nodeId)?.resize(ww, n);
+            webglCores.get(nodeId)?.resize(ww, n);
+          }
           mutations += 1;
         }
       },
@@ -2029,6 +3668,36 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       },
     };
     idOf.set(wrapper, nodeId);
+    // HTMLFormElement named getter (HTML §4.10.3): `form.foo` resolves the
+    // associated control named `foo` (or a RadioNodeList for a group). The
+    // wrapper is a plain object, so a Proxy supplies the dynamic named-getter
+    // trap; real properties keep winning (`in` check first).
+    if (session.dom.nodes.get(nodeId)?.tag === "form") {
+      const proxied = new Proxy(wrapper, {
+        get(t, prop, recv) {
+          if (Reflect.has(t, prop)) return Reflect.get(t, prop, recv) as unknown;
+          if (typeof prop !== "string" || prop === "") return undefined;
+          const hits = associatedControls(nodeId).filter((cid) => {
+            const n = session.dom.nodes.get(cid);
+            return n?.attrs?.get("name") === prop || n?.attrs?.get("id") === prop;
+          });
+          if (hits.length === 0) return undefined;
+          if (hits.length === 1) return makeElementCached(hits[0]!);
+          // RadioNodeList shape: the group with a live `value` accessor.
+          return radioNodeList(hits);
+        },
+        has(t, prop) {
+          if (Reflect.has(t, prop)) return true;
+          if (typeof prop !== "string" || prop === "") return false;
+          return associatedControls(nodeId).some((cid) => {
+            const n = session.dom.nodes.get(cid);
+            return n?.attrs?.get("name") === prop || n?.attrs?.get("id") === prop;
+          });
+        },
+      });
+      idOf.set(proxied, nodeId);
+      return proxied;
+    }
     return wrapper;
   };
 
@@ -2075,11 +3744,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     };
     const serialize = (map: Map<string, StyleDeclarationEntry>): string =>
       [...map]
-        .map(([k, decl]) => `${k}: ${decl.value}${decl.priority === "important" ? " !important" : ""}`)
+        .map(([key, decl]) => `${key}: ${decl.value}${decl.priority === "important" ? " !important" : ""}`)
         .join("; ");
     const commit = (map: Map<string, StyleDeclarationEntry>): void => {
       session.setAttribute(nodeId, "style", serialize(map));
       mutations += 1;
+      refreshIframeViewport(nodeId);
     };
     const declaredAliases = (map: Map<string, StyleDeclarationEntry>): string[] => {
       const keys: string[] = [];
@@ -2107,7 +3777,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return [...parse().keys()][n] ?? "";
       },
       getPropertyValue(prop: unknown): string {
-        return parse().get(String(prop))?.value ?? "";
+        const map = parse();
+        const name = String(prop);
+        const flex = specifiedShorthand(name, map);
+        if (flex !== null) return flex;
+        return map.get(name)?.value ?? "";
       },
       getPropertyPriority(prop: unknown): string {
         return parse().get(String(prop))?.priority ?? "";
@@ -2116,14 +3790,56 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         const map = parse();
         const name = String(prop);
         const text = value === undefined ? "" : cssomString(value);
+        const priorityText = priority === undefined ? "" : cssomString(priority);
+        const flag: StylePriority = priorityText.toLowerCase() === "important" ? "important" : "";
+        const longhands = shorthandLonghands(name);
+        // An empty value removes the declaration before priority is checked.
         if (text === "") {
           map.delete(name);
+          if (longhands !== null) for (const longhand of longhands) map.delete(longhand);
           commit(map);
           return;
         }
-        const priorityText = priority === undefined ? "" : cssomString(priority);
-        if (priorityText !== "" && priorityText.toLowerCase() !== "important") return;
-        map.set(name, { value: text, priority: priorityText === "" ? "" : "important" });
+        if (priorityText !== "" && flag !== "important") return;
+        const gridLine = canonicalGridLine(name, text);
+        if (isGridLineProperty(name)) {
+          if (gridLine === null) return;
+          map.set(name, { value: gridLine, priority: flag });
+          commit(map);
+          return;
+        }
+        if (name === "grid-template-columns" || name === "grid-template-rows") {
+          const canon = canonicalTrackList(text);
+          if (canon === null) return;
+          map.set(name, { value: canon, priority: flag });
+          commit(map);
+          return;
+        }
+        if (name === "grid-template-areas") {
+          const areas = canonicalGridAreas(text);
+          if (areas === null) return;
+          map.set(name, { value: areas, priority: flag });
+          commit(map);
+          return;
+        }
+        if (longhands !== null) {
+          const expanded = expandShorthand(name, text);
+          if (expanded === null) return;
+          const stored: { property: string; value: string }[] = [];
+          for (const decl of expanded) {
+            const canon = canonicalFlexComponent(decl.property, decl.value);
+            if (canon === null) return;
+            stored.push({ property: decl.property, value: canon });
+          }
+          map.delete(name);
+          for (const longhand of longhands) map.delete(longhand);
+          for (const decl of stored) map.set(decl.property, { value: decl.value, priority: flag });
+          commit(map);
+          return;
+        }
+        const stored = canonicalCssValue(name, text);
+        if (stored === null) return;
+        map.set(name, { value: stored, priority: flag });
         commit(map);
       },
       removeProperty(prop: unknown): string {
@@ -2134,11 +3850,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         return oldValue;
       },
       get cssText(): string {
-        return session.dom.nodes.get(nodeId)?.attrs?.get("style") ?? "";
+        return serializeStyleBlock(parse());
       },
       set cssText(value: unknown) {
-        session.setAttribute(nodeId, "style", String(value));
-        mutations += 1;
+        commit(styleBlockFromCssText(value == null ? "" : cssomString(value)));
       },
     };
     const ownKeys = (target: StyleDeclarationObject): Array<string | symbol> => {
@@ -2259,6 +3974,10 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       let start = 0;
       for (let i = 0; i < text.length; i += 1) {
         const ch = text[i];
+        if (ch === "\\") {
+          i += 1;
+          continue;
+        }
         if (ch === "{") depth += 1;
         else if (ch === "}") {
           depth -= 1;
@@ -2281,13 +4000,14 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       rewriteStyleText(rules.map((r) => r.cssText).join("\n"));
       rulesFromText = rules.map((r) => r.cssText).join("\n");
     };
+    const ruleView = (cssText: string): object => cssRuleObject(cssText);
     const sheet: Record<string, unknown> = {
       get ownerNode(): object {
         return makeElementCached(nodeId);
       },
       get cssRules(): object[] {
         ensureRulesParsed();
-        return rules.map((r) => ({ cssText: r.cssText }));
+        return rules.map((r) => ruleView(r.cssText));
       },
       get rules(): object[] {
         return sheet["cssRules"] as object[];
@@ -2355,8 +4075,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return sheets;
   };
 
-  /** Cache wrappers per node id so repeated lookups return a stable object. */
-  const wrapperCache = new Map<NodeId, object>();
+  /** Cache wrappers per node id so repeated lookups return a stable object.
+   * WeakRef + FinalizationRegistry (RFC 0041): the map must never pin a
+   * wrapper — guest code holding nothing means the wrapper (and the node's
+   * JS-side state) is collectible, which is what makes wrapper caches
+   * leak-free across long sessions and navigations. */
+  const wrapperCache = new WrapperCache();
   const makeElementCached = (id: NodeId): object => {
     const cached = wrapperCache.get(id);
     if (cached !== undefined) return cached;
@@ -2388,6 +4112,8 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       tag === "foreignObject";
     if (node?.kind === "text" || node?.kind === "comment") {
       Object.setPrototypeOf(w, NodeCtor.prototype as object);
+    } else if (tag === "#shadow-root") {
+      Object.setPrototypeOf(w, ShadowRootCtor.prototype as object);
     } else if (isSvg) {
       Object.setPrototypeOf(w, SVGElementCtor.prototype as object);
     } else {
@@ -2402,6 +4128,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     if (tag === "a" || tag === "area") {
       Object.defineProperties(w, urlDecompositionDescriptors(id, session));
     }
+    // RFC 0035: the HTMLMediaElement/HTMLVideoElement surface — state lives
+    // in the shared MediaEngine (scriptless pages still load/probe/frame it).
+    if ((tag === "video" || tag === "audio") && options.media !== undefined) {
+      Object.defineProperties(w, mediaDescriptors(options.media, id));
+    }
     if (tag === "style" || tag === "link") {
       Object.defineProperty(w, "sheet", {
         get: () => makeStyleSheetObject(id),
@@ -2409,7 +4140,54 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
         configurable: true,
       });
     }
+    if (tag === "#shadow-root") {
+      // ShadowRoot surface: host, mode, and a getElementById scoped to the
+      // shadow tree (document.getElementById must never reach inside — the
+      // shadow root is not in `children`, so document walks never see it).
+      Object.defineProperties(w, {
+        host: {
+          get: () => {
+            const p = session.dom.nodes.get(id)?.parent;
+            return p === null || p === undefined ? null : makeElementCached(p);
+          },
+          enumerable: true,
+        },
+        mode: {
+          get: () => session.dom.nodes.get(id)?.attrs?.get("mode") ?? "open",
+          enumerable: true,
+        },
+        getElementById: {
+          value: (idAttr: unknown) => {
+            const want = coerceGuestString(idAttr);
+            const found = elementIdsByAttrValue(id, "id", want)[0];
+            return found === undefined ? null : makeElementCached(found);
+          },
+        },
+      });
+    }
+    if (tag === "slot") {
+      Object.defineProperties(w, {
+        name: {
+          get: () => session.dom.nodes.get(id)?.attrs?.get("name") ?? "",
+          set: (v: unknown) => session.setAttribute(id, "name", coerceGuestString(v)),
+          enumerable: true,
+        },
+        assignedNodes: {
+          value: (_opts?: unknown) =>
+            slotAssignedIds(id).map((n) => makeElementCached(n)),
+        },
+        assignedElements: {
+          value: (_opts?: unknown) =>
+            slotAssignedIds(id)
+              .filter((n) => session.dom.nodes.get(n)?.kind === "element")
+              .map((n) => makeElementCached(n)),
+        },
+      });
+    }
     wrapperCache.set(id, w);
+    // Custom Elements: a defined tag/`is=` upgrades on first wrapper creation —
+    // the ctor runs with the wrapper as `this` (HTMLElement.super() yields it).
+    ceUpgradeIfDefined(id);
     return w;
   };
 
@@ -2577,38 +4355,28 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     stopImmediatePropagation(): void;
   }
 
-  function makeEvent(type: string, opts?: { bubbles?: boolean; cancelable?: boolean }): GuestEvent {
-    const evt: GuestEvent = {
-      type,
-      bubbles: opts?.bubbles ?? false,
-      cancelable: opts?.cancelable ?? false,
-      target: null,
-      currentTarget: null,
-      eventPhase: 0,
-      defaultPrevented: false,
-      __stop: false,
-      __stopImmediate: false,
-      preventDefault(): void {
-        if (evt.cancelable) evt.defaultPrevented = true;
-      },
-      stopPropagation(): void {
-        evt.__stop = true;
-      },
-      stopImmediatePropagation(): void {
-        evt.__stop = true;
-        evt.__stopImmediate = true;
-      },
-    };
-    return evt;
+  /**
+   * An engine-created event. RFC 0020: platform events are real guest event
+   * class instances (typed by name via {@link classForEventType}) marked
+   * trusted — `e instanceof MouseEvent` and `e.isTrusted` hold inside
+   * listeners, while guest `new Event(...)` yields the same class untrusted.
+   */
+  function makeEvent(type: string, opts?: { bubbles?: boolean; cancelable?: boolean; composed?: boolean }): GuestEvent {
+    return platformEvent(type, { ...opts });
   }
 
-  /** The ancestor path of `id` from the node up to the root (inclusive of node). */
+  /**
+   * The DOM ancestor path of `id` (node → root, inclusive). Stops at a
+   * `"#shadow-root"` — its DOM parent is null (the host is only its
+   * SHADOW-INCLUDING parent). Event dispatch uses {@link shadowPath} instead.
+   */
   function ancestorPath(id: NodeId): NodeId[] {
     const path: NodeId[] = [];
     let cur: NodeId | null = id;
     while (cur !== null) {
       path.push(cur);
-      cur = session.dom.nodes.get(cur)?.parent ?? null;
+      const n = session.dom.nodes.get(cur);
+      cur = n === undefined || n.tag === "#shadow-root" ? null : (n.parent ?? null);
     }
     return path;
   }
@@ -2621,6 +4389,7 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     _setTarget?: (v: object | null) => void;
     _setCurrentTarget?: (v: object | null) => void;
     _setPhase?: (p: number) => void;
+    _setComposedPath?: (path: object[]) => void;
     _propagationStopped?: () => boolean;
     _immediatePropagationStopped?: () => boolean;
   };
@@ -2655,11 +4424,102 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return evt.__stopImmediate === true;
   }
 
+  /** `el.onload = fn` is an own property of the wrapper, not an attribute. */
+  function invokePropertyHandler(node: NodeId, evt: GuestEvent): void {
+    if (propagationStopped(evt)) return;
+    const host = makeElementCached(node) as Record<string, unknown>;
+    const handler = host[`on${evt.type}`];
+    if (typeof handler !== "function") return;
+    const result = (handler as (this: unknown, event: GuestEvent) => unknown).call(host, evt);
+    if (result === false) evt.preventDefault();
+  }
+
+  function iframeCssPx(style: string, name: string): number | undefined {
+    const match = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*(-?\\d+(?:\\.\\d+)?)px`, "i").exec(style);
+    if (match === null) return undefined;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  function iframeViewport(nodeId: NodeId): { width: number; height: number } {
+    const node = session.dom.nodes.get(nodeId);
+    const style = node?.attrs?.get("style") ?? "";
+    const widthAttr = Number(node?.attrs?.get("width"));
+    const heightAttr = Number(node?.attrs?.get("height"));
+    return {
+      width: iframeCssPx(style, "width") ?? (Number.isFinite(widthAttr) && widthAttr > 0 ? widthAttr : 300),
+      height: iframeCssPx(style, "height") ?? (Number.isFinite(heightAttr) && heightAttr > 0 ? heightAttr : 150),
+    };
+  }
+
+  function iframeMedia(nodeId: NodeId): MediaEnvironment {
+    const box = iframeViewport(nodeId);
+    return { type: "screen", widthPx: box.width, heightPx: box.height };
+  }
+
+  /** `srcdoc` iframe: a child session whose `@media` viewport is this element's size. */
+  function navigateSrcdoc(nodeId: NodeId): void {
+    const node = session.dom.nodes.get(nodeId);
+    if (node?.tag !== "iframe" || frameLookup !== null) return;
+    if (!isConnectedToDocument(session.dom, nodeId)) return;
+    const srcdoc = node.attrs?.get("srcdoc");
+    if (srcdoc === undefined) return;
+    const childSession = new FineSession(srcdoc, session.url);
+    childSession.setMedia(iframeMedia(nodeId));
+    const child = buildDocumentApi(childSession, { scheduleFrame });
+    const frameWindow = {
+      document: child.document,
+      getComputedStyle: child.globals["getComputedStyle"] as (el: unknown) => object,
+      get innerWidth(): number {
+        return iframeViewport(nodeId).width;
+      },
+      get innerHeight(): number {
+        return iframeViewport(nodeId).height;
+      },
+      matchMedia: createMatchMedia(() => iframeMedia(nodeId)),
+      addEventListener(): void {},
+      removeEventListener(): void {},
+    };
+    srcdocFrames.set(nodeId, { session: childSession, window: frameWindow });
+    blankFrames.delete(nodeId);
+    dispatch(nodeId, makeEvent("load"));
+  }
+
+  function refreshIframeViewport(nodeId: NodeId): void {
+    srcdocFrames.get(nodeId)?.session.setMedia(iframeMedia(nodeId));
+    blankFrames.get(nodeId)?.viewportChanged();
+  }
+
+  /** about:blank iframe: a child window whose media viewport is this element's size. */
+  function connectBlankIframes(nodeId: NodeId): void {
+    const node = session.dom.nodes.get(nodeId);
+    if (node === undefined) return;
+    if (node.kind === "element" && node.tag === "iframe" && frameLookup === null) {
+      const srcdoc = node.attrs?.get("srcdoc");
+      const src = node.attrs?.get("src");
+      if (srcdoc !== undefined) {
+        navigateSrcdoc(nodeId);
+      } else if (!blankFrames.has(nodeId) && !srcdocFrames.has(nodeId) && (src === undefined || src === "" || src === "about:blank")) {
+        blankFrames.set(nodeId, createBlankFrame({
+          viewport: () => iframeViewport(nodeId),
+          scheduleFrame,
+        }));
+        dispatch(nodeId, makeEvent("load"));
+      }
+    }
+    for (const child of node.children) connectBlankIframes(child);
+  }
+
   /** Run the element's inline `on<type>` attribute handler (if any) at target. */
   function invokeInlineHandler(node: NodeId, evt: GuestEvent): void {
     if (propagationStopped(evt)) return;
     const body = session.dom.nodes.get(node)?.attrs?.get(`on${evt.type}`);
     if (body === undefined || compileInlineHandler === null) return;
+    // RFC 0027: inline event handlers are `script-src-attr` inline blocks —
+    // a refused policy blocks BOTH the compile and the dispatch (the handler
+    // simply does not exist for this event).
+    const csp = session.csp;
+    if (csp !== null && !csp.checkInline("script", { text: body }, "attr").allowed) return;
     const key = `${node}:${evt.type}`;
     let handler = inlineHandlerCache.get(key);
     if (handler === undefined) {
@@ -2682,12 +4542,22 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return null;
   }
 
-  /** The first labelable descendant of a <label> (tree order). */
+  /** The labeled control (HTML §4.10.4): `label[for=id]` resolves by id;
+   * otherwise the first labelable descendant in tree order. */
   function labeledControlOf(labelId: NodeId): NodeId | null {
+    const forAttr = session.dom.nodes.get(labelId)?.attrs?.get("for");
+    if (forAttr !== undefined && forAttr !== "") {
+      for (const [id, n] of session.dom.nodes) {
+        if (n?.kind === "element" && n.attrs?.get("id") === forAttr) {
+          return labelable(n) ? id : null;
+        }
+      }
+      return null;
+    }
     const visit = (id: NodeId): NodeId | null => {
       for (const childId of session.dom.nodes.get(id)?.children ?? []) {
         const n = session.dom.nodes.get(childId);
-        if (n?.kind === "element" && (n.tag === "input" || n.tag === "button" || n.tag === "select" || n.tag === "textarea")) {
+        if (n?.kind === "element" && labelable(n)) {
           return childId;
         }
         const found = visit(childId);
@@ -2698,24 +4568,595 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     return visit(labelId);
   }
 
+  /** The labelable elements (HTML §4.10.4): the controls a label forwards to. */
+  function labelable(n: DomNode): boolean {
+    return (
+      n.tag === "input" ||
+      n.tag === "button" ||
+      n.tag === "select" ||
+      n.tag === "textarea" ||
+      n.tag === "meter" ||
+      n.tag === "output" ||
+      n.tag === "progress"
+    );
+  }
+
+  /** The owning `<select>` of an option/optgroup (nearest ancestor). */
+  function ownerSelect(id: NodeId): NodeId | null {
+    let cur = session.dom.nodes.get(id)?.parent ?? null;
+    const seen = new Set<NodeId>();
+    while (cur !== null && seen.add(cur)) {
+      const n = session.dom.nodes.get(cur);
+      if (n?.tag === "select") return cur;
+      cur = n?.parent ?? null;
+    }
+    return null;
+  }
+
   function activateCheckboxRadio(id: NodeId, radio: boolean): void {
-    const state = nodeState.get(id) ?? {};
-    const previously = state.checked ?? session.dom.nodes.get(id)?.attrs?.get("checked") !== undefined;
-    state.checked = radio ? true : !previously;
-    nodeState.set(id, state);
+    // Clicking a checked radio is a no-op (radios don't uncheck on click).
+    if (radio && controlChecked(id)) return;
+    patchControl(id, { checked: radio ? true : !controlChecked(id), touched: true });
+    if (radio) radioGroupUncheck(id);
     dispatch(id, makeEvent("input", { bubbles: true }));
     dispatch(id, makeEvent("change", { bubbles: true }));
   }
 
-  function activateFormControl(id: NodeId, type: string): void {
-    const form = ownerForm(id);
-    if (form !== null) dispatch(form, makeEvent(type, { bubbles: true, cancelable: true }));
+  /** Uncheck every other radio in `id`'s group (same name + form owner —
+   * HTML §4.10.5.1.17 radio-button-group semantics). */
+  function radioGroupUncheck(id: NodeId): void {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return;
+    for (const peer of radioGroupPeers(session.dom, node)) {
+      if (controlChecked(peer)) patchControl(peer, { checked: false });
+    }
   }
 
-  function activateHashLink(id: NodeId): void {
-    const href = session.dom.nodes.get(id)?.attrs?.get("href") ?? "";
+  function activateFormControl(id: NodeId, type: string): void {
+    const form = ownerForm(id);
+    if (form === null) return;
+    if (type === "submit") submitForm(form, id);
+    else if (type === "reset") resetForm(form);
+  }
+
+  /**
+   * a/area activation (RFC 0011, HTML §4.8.11): resolve `href` against the
+   * document and navigate — full navigations via the host navigator (which
+   * itself detects same-document fragment hops), falling back to the harness
+   * hashNavigator for test paths without a session host. No `href` ⇒ the
+   * element isn't a link; `download` ⇒ no navigation.
+   */
+  function activateLink(id: NodeId): void {
+    const node = session.dom.nodes.get(id);
+    if (node?.kind !== "element") return;
+    const href = node.attrs?.get("href");
+    if (href === undefined) return;
+    let abs: string | null = null;
+    try {
+      abs = new HostURL(href, session.baseUrl).href;
+    } catch {
+      abs = null;
+    }
+    if (abs === null) return;
+    const target = node.attrs?.get("target") ?? "";
+    const download = node.attrs?.get("download");
+    const referrerPolicy = node.attrs?.get("referrerpolicy");
+    if (navigatorSink !== null) {
+      const init: { target?: string; download?: string; referrerPolicy?: string } = {};
+      if (target !== "") init.target = target;
+      // The attr is a filename HINT (empty string ⇒ server/URL decides).
+      if (download !== undefined) init.download = download;
+      if (referrerPolicy !== undefined) init.referrerPolicy = referrerPolicy;
+      if (
+        init.target !== undefined ||
+        init.download !== undefined ||
+        init.referrerPolicy !== undefined
+      ) {
+        navigatorSink(abs, init);
+      } else {
+        navigatorSink(abs, undefined);
+      }
+      return;
+    }
+    if (download !== undefined) return; // harness path: still suppress nav
+    // Harness path (no session host): same-document fragment hops only.
     const hashIndex = href.indexOf("#");
-    navigateToHashFragment?.(hashIndex >= 0 ? href.slice(hashIndex + 1) : "");
+    if (hashIndex >= 0 && sameDocumentHref(abs, session.url)) {
+      navigateToHashFragment?.(href.slice(hashIndex + 1));
+    }
+  }
+
+  function sameDocumentHref(a: string, b: string): boolean {
+    try {
+      const ua = new HostURL(a);
+      const ub = new HostURL(b);
+      ua.hash = "";
+      ub.hash = "";
+      return ua.href === ub.href;
+    } catch {
+      return a.split("#")[0] === b.split("#")[0];
+    }
+  }
+
+  // ---- Form submission (RFC 0011, HTML §4.10.21) -----------------------------
+
+  /** Live control value: nodeState override (script/keyboard edits) wins;
+   * otherwise textarea text / the `value` attribute seed. */
+  function controlValue(id: NodeId): string {
+    const state = nodeState.get(id);
+    if (state?.value !== undefined) return state.value;
+    const node = session.dom.nodes.get(id);
+    if (node?.kind !== "element") return "";
+    if (node.tag === "textarea") {
+      return (node.children ?? [])
+        .map((c) => session.dom.nodes.get(c))
+        .filter((c) => c?.kind === "text")
+        .map((c) => (c as { text: string }).text)
+        .join("");
+    }
+    return node.attrs?.get("value") ?? "";
+  }
+
+  function controlChecked(id: NodeId): boolean {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return false;
+    return domChecked(session.dom, node);
+  }
+
+  /** "Actually disabled" — attr OR `fieldset[disabled]` ancestor (HTML
+   * §4.10.18.1), shared with `:disabled` matching via cascade/form-state. */
+  function controlDisabled(id: NodeId): boolean {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return false;
+    return domDisabled(node, session.dom);
+  }
+
+  /** Node text via the module helper (select option default value). */
+  const controlTextOf = (id: NodeId): string => textContentOf(session.dom, id);
+
+  // ---- RFC 0021: form-control surface helpers -------------------------------
+
+  /** option.value — the `value` attribute, else the option's label text
+   * (HTML §4.10.11 option value rule). */
+  function optionValue(id: NodeId): string {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return "";
+    return node.attrs?.get("value") ?? controlTextOf(id).trim().replace(/\s+/g, " ");
+  }
+
+  /** boolean content-attribute reflector (`el.disabled = x` ⇄ attr). */
+  const reflectBool = {
+    get: (id: NodeId, attr: string): boolean => hasElementAttr(id, attr),
+    set: (id: NodeId, attr: string, v: unknown): void => {
+      if (v === true || (typeof v !== "boolean" && Boolean(v))) {
+        session.setAttribute(id, attr, "");
+      } else {
+        session.removeAttribute(id, attr);
+      }
+      mutations += 1;
+    },
+  };
+  /** string content-attribute reflector. */
+  const reflectStr = {
+    get: (id: NodeId, attr: string): string =>
+      session.dom.nodes.get(id)?.attrs?.get(attr) ?? "",
+    set: (id: NodeId, attr: string, v: unknown): void => {
+      session.setAttribute(id, attr, coerceGuestString(v));
+      mutations += 1;
+    },
+  };
+  /** integer content-attribute reflector (min -2147483648 clamp per IDL). */
+  const reflectLong = {
+    get: (id: NodeId, attr: string, dflt: number): number => {
+      const raw = session.dom.nodes.get(id)?.attrs?.get(attr);
+      const n = raw === undefined ? NaN : parseInt(raw, 10);
+      return Number.isFinite(n) ? n : dflt;
+    },
+    set: (id: NodeId, attr: string, v: unknown): void => {
+      session.setAttribute(id, attr, String(Math.trunc(Number(v) || 0)));
+      mutations += 1;
+    },
+  };
+
+  // ---- Constraint validation (HTML §4.10.21.2 — flags computed by the
+  // shared cascade/form-state module so `:valid` and `checkValidity` agree)
+
+  function validityFlagsOf(id: NodeId): ValidityFlags {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined || node.kind !== "element") {
+      return { valueMissing: false, typeMismatch: false, patternMismatch: false,
+        tooLong: false, tooShort: false, rangeUnderflow: false, rangeOverflow: false,
+        stepMismatch: false, badInput: false, customError: false };
+    }
+    return computeValidity(session.dom, node);
+  }
+
+  /** A ValidityState snapshot: all ten flags + `valid`. */
+  function validityObject(id: NodeId): object {
+    const f = validityFlagsOf(id);
+    return {
+      ...f,
+      get valid(): boolean {
+        return Object.values(f).every((v) => !v);
+      },
+    };
+  }
+
+  /** Spec-shape default validation messages per failing flag. */
+  const VALIDATION_MESSAGES: Readonly<Record<keyof ValidityFlags, string>> = {
+    valueMissing: "Please fill out this field.",
+    typeMismatch: "Please enter a valid value.",
+    patternMismatch: "Please match the requested format.",
+    tooLong: "Please shorten this text.",
+    tooShort: "Please lengthen this text.",
+    rangeUnderflow: "Value must be greater than or equal to the minimum.",
+    rangeOverflow: "Value must be less than or equal to the maximum.",
+    stepMismatch: "Please enter a valid value.",
+    badInput: "Please enter a number.",
+    customError: "",
+  };
+
+  function validationMessageOf(id: NodeId): string {
+    const f = validityFlagsOf(id);
+    if (f.customError) return nodeState.get(id)?.customError ?? "";
+    for (const key of Object.keys(VALIDATION_MESSAGES) as (keyof ValidityFlags)[]) {
+      if (f[key]) return VALIDATION_MESSAGES[key];
+    }
+    return "";
+  }
+
+  /** checkValidity/reportValidity (HTML §4.10.21.3): return the validity
+   * verdict; on failure fire the cancelable `invalid` event (the bubble UI
+   * of reportValidity has no harness surface — event semantics only). */
+  function checkControlValidity(id: NodeId): boolean {
+    const f = validityFlagsOf(id);
+    if (Object.values(f).every((v) => !v)) return true;
+    dispatch(id, makeEvent("invalid", { cancelable: true }));
+    return false;
+  }
+
+  function controlWillValidate(id: NodeId): boolean {
+    const node = session.dom.nodes.get(id);
+    return node !== undefined && domWillValidate(session.dom, node);
+  }
+
+  /** The option elements of a select/datalist (DOM order, ids). */
+  function optionIdsOf(id: NodeId): NodeId[] {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return [];
+    return selectOptions(session.dom, node).map((o) => o.id);
+  }
+
+  /**
+   * A live HTMLCollection-like view over a computed id list — numeric
+   * indices, `length`, `item`, `namedItem`, and named-property lookup
+   * resolve against the CURRENT dom on every access (a Proxy, so indices
+   * stay live without re-materializing).
+   */
+  function controlCollection(ids: () => readonly NodeId[]): object {
+    const target: Record<string | symbol, unknown> = {};
+    return new Proxy(target, {
+      get(_t, prop) {
+        const list = ids();
+        if (prop === "length") return list.length;
+        if (prop === "item") return (i: unknown) => {
+          const n = Math.trunc(Number(i));
+          const id = Number.isFinite(n) && n >= 0 ? list[n] : undefined;
+          return id === undefined ? null : makeElementCached(id);
+        };
+        if (prop === "namedItem") return (name: unknown) => {
+          const key = String(name);
+          const hits = list.filter((c) => {
+            const n = session.dom.nodes.get(c);
+            return n?.attrs?.get("id") === key || n?.attrs?.get("name") === key;
+          });
+          if (hits.length === 0) return null;
+          // HTMLFormControlsCollection.namedItem: multiple hits ⇒ RadioNodeList.
+          return hits.length === 1 ? makeElementCached(hits[0]!) : radioNodeList(hits);
+        };
+        if (prop === Symbol.iterator) {
+          return function* () {
+            for (const c of ids()) yield makeElementCached(c);
+          };
+        }
+        if (typeof prop === "string") {
+          if (/^\d+$/.test(prop)) {
+            const id = list[Number(prop)];
+            return id === undefined ? undefined : makeElementCached(id);
+          }
+          const hits = list.filter((c) => {
+            const n = session.dom.nodes.get(c);
+            return n?.attrs?.get("id") === prop || n?.attrs?.get("name") === prop;
+          });
+          if (hits.length === 1) return makeElementCached(hits[0]!);
+          if (hits.length > 1) return radioNodeList(hits);
+        }
+        return (target)[prop];
+      },
+      has(_t, prop) {
+        if (typeof prop !== "string") return false;
+        const list = ids();
+        if (/^\d+$/.test(prop)) return Number(prop) < list.length;
+        return list.some((c) => {
+          const n = session.dom.nodes.get(c);
+          return n?.attrs?.get("id") === prop || n?.attrs?.get("name") === prop;
+        });
+      },
+    });
+  }
+
+  /**
+   * RadioNodeList: a control collection over a same-named group plus the
+   * live `value` accessor (HTML §4.10.5 — reads the checked member's value,
+   * setting checks the member whose value matches).
+   */
+  function radioNodeList(hitIds: readonly NodeId[]): object {
+    const list = controlCollection(() => hitIds);
+    Object.defineProperty(list, "value", {
+      configurable: true,
+      get: () => {
+        const sel = hitIds.find((cid) => controlChecked(cid));
+        return sel === undefined ? "" : controlValue(sel);
+      },
+      set: (v: unknown) => {
+        const wanted = String(v);
+        const hit = hitIds.find((cid) => {
+          const n = session.dom.nodes.get(cid);
+          if (n === undefined) return false;
+          const kind = n.tag === "input" ? (n.attrs?.get("type") ?? "text").toLowerCase() : "";
+          return (kind === "radio" || kind === "checkbox") && controlValue(cid) === wanted;
+        });
+        if (hit !== undefined) patchControl(hit, { checked: true });
+      },
+    });
+    return list;
+  }
+
+  /** Elements labeling `id` — `label[for=id]` plus wrapping ancestors. */
+  function labelsOf(id: NodeId): NodeId[] {
+    const out: NodeId[] = [];
+    for (const [lid, n] of session.dom.nodes) {
+      if (n?.tag !== "label") continue;
+      if (labeledControlOf(lid) === id) out.push(lid);
+    }
+    return out;
+  }
+
+  /** Selection state for text-entry controls (caret at end by default). */
+  function selOf(id: NodeId): { start: number; end: number; dir: string } {
+    const s = nodeState.get(id);
+    const len = [...controlValue(id)].length;
+    return {
+      start: Math.min(s?.selStart ?? len, len),
+      end: Math.min(s?.selEnd ?? len, len),
+      dir: s?.selDir ?? "none",
+    };
+  }
+
+  /** The datalist element an `input[list]` resolves to (or null). */
+  function listDatalist(id: NodeId): NodeId | null {
+    const listAttr = session.dom.nodes.get(id)?.attrs?.get("list");
+    if (listAttr === undefined) return null;
+    for (const [lid, n] of session.dom.nodes) {
+      if (n?.kind === "element" && n.tag === "datalist" && n.attrs?.get("id") === listAttr) {
+        return lid;
+      }
+    }
+    return null;
+  }
+
+  /** `input.stepUp`/`stepDown` (number/range — HTML §4.10.5.3.10/11). */
+  function stepBy(id: NodeId, n: number, dir: 1 | -1): void {
+    const node = session.dom.nodes.get(id);
+    if (node?.tag !== "input") return;
+    const t = inputType(node);
+    if (t !== "number" && t !== "range") {
+      throw new DOMException("stepUp: not allowed for this input type", "InvalidStateError");
+    }
+    const stepRaw = node.attrs?.get("step");
+    const step = stepRaw === undefined ? 1 : Number(stepRaw);
+    const unit = Number.isFinite(step) && step > 0 ? step : 1;
+    const cur = valueAsNumber(t, controlValue(id));
+    const base = Number(node.attrs?.get("min") ?? "") || 0;
+    const next = cur === null ? base + n * dir * unit : cur + n * dir * unit;
+    const min = Number(node.attrs?.get("min"));
+    const max = Number(node.attrs?.get("max"));
+    let v = next;
+    if (Number.isFinite(min) && v < min) v = min;
+    if (Number.isFinite(max) && v > max) v = max;
+    setTextValue(id, String(v));
+    mutations += 1;
+  }
+
+  /** All form-associated elements belonging to `formId` (descendants + `form=`). */
+  function associatedControls(formId: NodeId): NodeId[] {
+    const formNode = session.dom.nodes.get(formId);
+    const formAttrId = formNode?.attrs?.get("id");
+    const out: NodeId[] = [];
+    // HTML §4.10.3 "listed elements" — what form.elements exposes.
+    const isControl = (tag: string | undefined): boolean =>
+      tag === "input" || tag === "textarea" || tag === "select" ||
+      tag === "button" || tag === "fieldset" || tag === "output";
+    const walk = (id: NodeId): void => {
+      for (const c of session.dom.nodes.get(id)?.children ?? []) {
+        const n = session.dom.nodes.get(c);
+        if (n?.kind === "element" && isControl(n.tag)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(formId);
+    if (formAttrId !== undefined) {
+      for (const [id, n] of session.dom.nodes) {
+        if (n?.kind === "element" && isControl(n.tag) && n.attrs?.get("form") === formAttrId && !out.includes(id)) {
+          out.push(id);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Successful controls (HTML §4.10.21.7): named, enabled; checkable controls
+   * only when checked; only the activating submitter contributes a name.
+   */
+  function successfulControls(formId: NodeId, submitterId: NodeId | null): [string, string][] {
+    const pairs: [string, string][] = [];
+    for (const id of associatedControls(formId)) {
+      const node = session.dom.nodes.get(id);
+      if (node?.kind !== "element" || controlDisabled(id)) continue;
+      const name = node.attrs?.get("name");
+      const tag = node.tag;
+      const type = (node.attrs?.get("type") ?? "").toLowerCase();
+      if (tag === "select") {
+        if (name === undefined) continue;
+        const multiple = node.attrs?.has("multiple") === true;
+        let picked = false;
+        const options = selectOptions(session.dom, node);
+        for (const opt of options) {
+          const selected = domSelected(session.dom, opt);
+          // Nothing selected in a single-select ⇒ the FIRST option submits.
+          if (selected || (!picked && !multiple && options[0] === opt)) {
+            pairs.push([name, optionValue(opt.id)]);
+            picked = true;
+            if (!multiple) break;
+          }
+        }
+        continue;
+      }
+      if (tag === "output") {
+        if (name !== undefined) pairs.push([name, controlValue(id)]);
+        continue;
+      }
+      if (tag === "fieldset") continue; // fieldsets are listed, not submittable.
+      if (tag === "textarea") {
+        if (name !== undefined) pairs.push([name, controlValue(id)]);
+        continue;
+      }
+      if (tag === "button") {
+        const btype = type === "" ? "submit" : type;
+        if (btype === "submit" && id === submitterId && name !== undefined) {
+          pairs.push([name, node.attrs?.get("value") ?? ""]);
+        }
+        continue;
+      }
+      if (tag === "input") {
+        if (type === "checkbox" || type === "radio") {
+          if (name !== undefined && controlChecked(id)) {
+            pairs.push([name, node.attrs?.get("value") ?? "on"]);
+          }
+          continue;
+        }
+        if (type === "submit" || type === "image") {
+          if (id === submitterId && name !== undefined) {
+            pairs.push([name, controlValue(id)]);
+          }
+          continue;
+        }
+        if (type === "button" || type === "reset" || type === "file") continue;
+        // hidden/text/…/empty/unknown — text semantics submit the value.
+        if (name !== undefined) pairs.push([name, controlValue(id)]);
+      }
+    }
+    return pairs;
+  }
+
+  /** application/x-www-form-urlencoded — space is "+", everything else %XX. */
+  function encodeUrlencoded(pairs: readonly [string, string][]): string {
+    const enc = (s: string): string => encodeURIComponent(s).replace(/%20/g, "+");
+    return pairs.map(([n, v]) => `${enc(n)}=${enc(v)}`).join("&");
+  }
+
+  /**
+   * Form submission (HTML §4.10.21): dispatch `submit` (cancelable — aborts),
+   * then mutate-or-navigate per method. `form.submit()` skips the event per
+   * spec (`skipEvent`). Submitter `formaction`/`formmethod`/`formenctype`
+   * override the form's attributes.
+   */
+  function submitForm(formId: NodeId, submitterId: NodeId | null, skipEvent = false): void {
+    const form = session.dom.nodes.get(formId);
+    if (form?.kind !== "element") return;
+    if (!skipEvent && !dispatch(formId, makeEvent("submit", { bubbles: true, cancelable: true }))) {
+      return;
+    }
+    // Interactive validation (HTML §4.10.21.6): unless the form/submitter
+    // opts out, invalid controls abort the submission — each gets a
+    // cancelable `invalid` event and the first invalid control takes focus.
+    const subNode = submitterId !== null ? session.dom.nodes.get(submitterId) : undefined;
+    const novalidate =
+      form.attrs?.has("novalidate") === true ||
+      subNode?.attrs?.has("formnovalidate") === true;
+    if (!novalidate) {
+      const invalid: NodeId[] = [];
+      for (const cid of associatedControls(formId)) {
+        const cn = session.dom.nodes.get(cid);
+        if (cn === undefined || !domWillValidate(session.dom, cn)) continue;
+        const flags = computeValidity(session.dom, cn);
+        if (Object.values(flags).some((v) => v)) invalid.push(cid);
+      }
+      if (invalid.length > 0) {
+        for (const cid of invalid) {
+          dispatch(cid, makeEvent("invalid", { cancelable: true }));
+        }
+        const first = invalid.find((cid) => isFocusable(cid));
+        if (first !== undefined) setFocused(first, false);
+        return;
+      }
+    }
+    const sub = submitterId !== null ? session.dom.nodes.get(submitterId) : undefined;
+    const subAttrs = sub?.kind === "element" ? sub.attrs : undefined;
+    const action = subAttrs?.get("formaction") ?? form.attrs?.get("action") ?? session.url;
+    const method = (subAttrs?.get("formmethod") ?? form.attrs?.get("method") ?? "get").toLowerCase();
+    const enctype = (subAttrs?.get("formenctype") ?? form.attrs?.get("enctype") ?? "application/x-www-form-urlencoded").toLowerCase();
+    const target = subAttrs?.get("formtarget") ?? form.attrs?.get("target") ?? "";
+    // Element-level Referrer-Policy: submitter's `formreferrerpolicy` wins
+    // over the form's `referrerpolicy` (HTML §4.10.21 submission rules).
+    const referrerPolicy = subAttrs?.get("formreferrerpolicy") ?? form.attrs?.get("referrerpolicy");
+    const rpInit =
+      referrerPolicy === undefined ? {} : { referrerPolicy };
+    let abs: string;
+    try {
+      abs = new HostURL(action, session.baseUrl).href;
+    } catch {
+      return;
+    }
+    if (method === "dialog") return; // dialog closes a <dialog> — out of scope.
+    const pairs = successfulControls(formId, submitterId);
+    if (method === "post") {
+      let body: string;
+      let contentType = enctype;
+      if (enctype === "text/plain") {
+        body = pairs.map(([n, v]) => `${n}=${v}`).join("\r\n") + "\r\n";
+      } else {
+        body = encodeUrlencoded(pairs);
+        contentType = "application/x-www-form-urlencoded";
+      }
+      navigatorSink?.(abs, {
+        method: "POST",
+        body,
+        contentType,
+        ...(target === "" ? {} : { target }),
+        ...rpInit,
+      });
+      return;
+    }
+    // GET (and anything else): query replaces action's existing query.
+    const url = new HostURL(abs);
+    url.search = "";
+    const encoded = encodeUrlencoded(pairs);
+    navigatorSink?.(encoded === "" ? url.href : `${url.href}?${encoded}`, {
+      ...(target === "" ? {} : { target }),
+      ...rpInit,
+    });
+  }
+
+  /** `reset` activation: cancelable event first, then controls revert to markup defaults. */
+  function resetForm(formId: NodeId): void {
+    if (!dispatch(formId, makeEvent("reset", { bubbles: true, cancelable: true }))) return;
+    for (const id of associatedControls(formId)) {
+      nodeState.delete(id); // checked/open overrides drop — attrs govern again.
+      syncControlState(id);
+    }
+    mutations += 1;
   }
 
   function toggleDetails(summaryId: NodeId): void {
@@ -2759,8 +5200,8 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
           activateFormControl(cur, "reset");
           return;
         }
-        if (tag === "a" || tag === "area") {
-          activateHashLink(cur);
+        if ((tag === "a" || tag === "area") && node.attrs?.has("href") === true) {
+          activateLink(cur);
           return;
         }
         if (tag === "summary") {
@@ -2777,12 +5218,75 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     }
   }
 
+  /**
+   * The shadow-including parent of `id` (DOM §"shadow-including tree"):
+   * a slotted light DOM child routes through its assigned `<slot>`; a shadow
+   * root's parent is its host; anything else falls back to the DOM parent.
+   * This is the parent relation EVENT paths follow — the flattened tree.
+   */
+  const shadowParentOf = (id: NodeId): NodeId | null => {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return null;
+    if (node.tag === "#shadow-root") return node.parent ?? null;
+    const slot = assignedSlotFor(id);
+    if (slot !== undefined) return slot;
+    return node.parent ?? null;
+  };
+
+  /** The shadow-including ancestor path `[id, ...ancestors, topmost]`. */
+  const shadowPath = (id: NodeId): NodeId[] => {
+    const path: NodeId[] = [id];
+    let cur = shadowParentOf(id);
+    let guard = 0;
+    while (cur !== null && guard < 4096) {
+      path.push(cur);
+      cur = shadowParentOf(cur);
+      guard += 1;
+    }
+    return path;
+  };
+
+  /**
+   * The event-dispatch SCOPE of `id` for retargeting: a shadow root is its
+   * own scope; other nodes take the first enclosing shadow root in their
+   * shadow-including parent chain (so a slotted light child belongs to the
+   * shadow tree it lands in); document-scope nodes return the topmost.
+   */
+  const eventScopeOf = (id: NodeId): NodeId => {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return id;
+    if (node.tag === "#shadow-root") return id;
+    let cur: NodeId | null = id;
+    let top: NodeId = id;
+    while (cur !== null) {
+      const n = session.dom.nodes.get(cur);
+      if (n === undefined) break;
+      if (n.tag === "#shadow-root") return cur;
+      top = cur;
+      cur = shadowParentOf(cur);
+    }
+    return top;
+  };
+
   /** Invoke the listeners registered on `node` for this phase; honour stop flags. */
   function invokeAt(node: NodeId, evt: GuestEvent, capturePhase: boolean): void {
     const list = listeners.get(node);
     if (list === undefined) return;
     const cached = makeElementCached(node);
     setEventCurrentTarget(evt, cached);
+    // Shadow-DOM retargeting (DOM §2.9): a listener outside the event's tree
+    // sees the deepest path node that shares ITS scope as `target`.
+    if (activeDispatchPath !== null && evt.eventPhase !== 2) {
+      const want = eventScopeOf(node);
+      let adjusted: NodeId | null = null;
+      for (const n of activeDispatchPath) {
+        if (eventScopeOf(n) === want) {
+          adjusted = n;
+          break;
+        }
+      }
+      if (adjusted !== null) setEventTarget(evt, makeElementCached(adjusted));
+    }
     for (const l of [...list]) {
       if (l.type !== evt.type) continue;
       const isTargetNode = idOf.get(cached) === node && evt.eventPhase === 2;
@@ -2792,40 +5296,431 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     }
   }
 
+  /**
+   * The full (untruncated, unretargeted) propagation path of the in-flight
+   * dispatch — consumed by {@link invokeAt} to compute each listener's
+   * retargeted `event.target`. Saved/restored so nested dispatches compose.
+   */
+  let activeDispatchPath: NodeId[] | null = null;
+
   /** Dispatch `event` to `targetId` through capture/target/bubble phases. */
   function dispatch(targetId: NodeId, event: GuestEvent): boolean {
-    const path = ancestorPath(targetId); // [target, ...ancestors, root]
-    setEventTarget(event, makeElementCached(targetId));
-    // Capture phase: root → just above target.
-    setEventPhase(event, 1);
-    for (let i = path.length - 1; i >= 1; i -= 1) {
-      invokeAt(path[i] as NodeId, event, true);
-      if (propagationStopped(event)) {
-        setEventPhase(event, 0);
-        return !event.defaultPrevented;
+    const fullPath = shadowPath(targetId); // [target, ...ancestors, root] — flattened-tree
+    // Shadow DOM (DOM §2.9): a non-composed event never crosses the shadow
+    // boundary — the propagation path truncates at the shadow root. Composed
+    // events keep the full path, and `target` retargets per listener scope.
+    const composed = (event as { composed?: boolean }).composed === true;
+    const shadowIdx = fullPath.findIndex((id) => session.dom.nodes.get(id)?.tag === "#shadow-root");
+    const path = !composed && shadowIdx >= 0 ? fullPath.slice(0, shadowIdx + 1) : fullPath;
+    (event as { __composedPath?: NodeId[] }).__composedPath = fullPath;
+    const impl = event as DispatchableEvent;
+    if (typeof impl._setComposedPath === "function") impl._setComposedPath(fullPath.map((id) => makeElementCached(id)));
+    const prevPath = activeDispatchPath;
+    activeDispatchPath = fullPath;
+    try {
+      setEventTarget(event, makeElementCached(targetId));
+      // Capture phase: root → just above target.
+      setEventPhase(event, 1);
+      for (let i = path.length - 1; i >= 1; i -= 1) {
+        invokeAt(path[i] as NodeId, event, true);
+        if (propagationStopped(event)) {
+          setEventPhase(event, 0);
+          return !event.defaultPrevented;
+        }
       }
-    }
-    // Target phase.
-    setEventPhase(event, 2);
-    invokeAt(targetId, event, false);
-    invokeInlineHandler(targetId, event);
-    // Bubble phase: just above target → root.
-    if (event.bubbles && !propagationStopped(event)) {
-      setEventPhase(event, 3);
-      for (let i = 1; i < path.length; i += 1) {
-        invokeAt(path[i] as NodeId, event, false);
-        if (propagationStopped(event)) break;
+      // Target phase.
+      setEventPhase(event, 2);
+      setEventTarget(event, makeElementCached(targetId));
+      invokeAt(targetId, event, false);
+      invokeInlineHandler(targetId, event);
+      invokePropertyHandler(targetId, event);
+      // Bubble phase: just above target → root.
+      if (event.bubbles && !propagationStopped(event)) {
+        setEventPhase(event, 3);
+        for (let i = 1; i < path.length; i += 1) {
+          invokeAt(path[i] as NodeId, event, false);
+          if (propagationStopped(event)) break;
+        }
       }
+      setEventPhase(event, 0);
+      setEventCurrentTarget(event, null);
+      return !event.defaultPrevented;
+    } finally {
+      activeDispatchPath = prevPath;
     }
-    setEventPhase(event, 0);
-    setEventCurrentTarget(event, null);
-    return !event.defaultPrevented;
   }
 
-  /** The guest `Event` constructor (`new Event(type, { bubbles, cancelable })`). */
-  function EventCtor(this: unknown, type: unknown, opts: unknown): GuestEvent {
-    const o = typeof opts === "object" && opts !== null ? (opts as { bubbles?: boolean; cancelable?: boolean }) : {};
-    return makeEvent(String(type), { bubbles: o.bubbles === true, cancelable: o.cancelable === true });
+  /**
+   * RFC 0020 — typed platform events. `dispatch` drives any object with the
+   * {@link DispatchableEvent} hooks, and every guest event class implements
+   * them, so engine-dispatched events are REAL class instances: `e instanceof
+   * MouseEvent` / `e instanceof PointerEvent` / `e instanceof Event` hold,
+   * and the engine marks them trusted (guest-constructed ones are not).
+   */
+  type AnyEventCtor = new (type: string, init?: unknown) => Event;
+  function classForEventType(type: string): AnyEventCtor {
+    // Pointer Events §5.2.5: click/auxclick/dblclick/contextmenu are
+    // PointerEvent in a pointer-capable UA.
+    if (type === "click" || type === "auxclick" || type === "dblclick" || type === "contextmenu" ||
+        type === "gotpointercapture" || type === "lostpointercapture" || type.startsWith("pointer")) {
+      return PointerEvent as unknown as AnyEventCtor;
+    }
+    if (type.startsWith("mouse")) return MouseEvent as unknown as AnyEventCtor;
+    if (type.startsWith("key")) return KeyboardEvent as unknown as AnyEventCtor;
+    if (type === "focus" || type === "blur" || type === "focusin" || type === "focusout") {
+      return FocusEvent as unknown as AnyEventCtor;
+    }
+    if (type === "input" || type === "beforeinput") return InputEvent as unknown as AnyEventCtor;
+    if (type === "wheel") return WheelEvent as unknown as AnyEventCtor;
+    if (type.startsWith("composition")) return CompositionEvent as unknown as AnyEventCtor;
+    return Event as unknown as AnyEventCtor;
+  }
+
+  /** Build a trusted, typed platform event for `type` carrying `init`. */
+  function platformEvent(type: string, init?: Record<string, unknown>): GuestEvent {
+    const evt = new (classForEventType(type))(type, init ?? {});
+    evt._setTrusted(true);
+    return evt as unknown as GuestEvent;
+  }
+
+  // -----------------------------------------------------------------------
+  // Focus machinery (UI Events §focus + HTML §6.5)
+  // -----------------------------------------------------------------------
+
+  let focusedId: NodeId | null = null;
+  let focusVisibleNow = false;
+  let activeId: NodeId | null = null;
+  let hoverId: NodeId | null = null;
+
+  const elementAttr = (id: NodeId, name: string): string | undefined =>
+    session.dom.nodes.get(id)?.attrs?.get(name);
+
+  const hasElementAttr = (id: NodeId, name: string): boolean =>
+    elementAttr(id, name) !== undefined;
+
+  /** Text-editing controls — the subset that can receive inserted text and
+   * always renders `:focus-visible` per the UA heuristic. */
+  const isTextEditingControl = (id: NodeId): boolean => {
+    const tag = session.dom.nodes.get(id)?.tag;
+    return tag === "textarea" || (tag === "input" &&
+      !["checkbox", "radio", "submit", "reset", "button", "image", "file", "hidden", "range", "color"]
+        .includes((elementAttr(id, "type") ?? "text").toLowerCase()));
+  };
+
+  /** HTML §"focusable area": natively focusable tags + valid tabindex. */
+  function isFocusable(id: NodeId): boolean {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined || node.kind !== "element") return false;
+    if (!isConnectedToDocument(session.dom, id)) return false;
+    // `inert` subtrees and `hidden` elements cannot take focus.
+    if (hasElementAttr(id, "inert") || hasElementAttr(id, "hidden")) return false;
+    const tabindex = elementAttr(id, "tabindex");
+    if (tabindex !== undefined && !Number.isNaN(Number(tabindex)) && Number(tabindex) >= 0) {
+      return !hasElementAttr(id, "disabled");
+    }
+    const tag = node.tag ?? "";
+    switch (tag) {
+      case "a": case "area":
+        return hasElementAttr(id, "href");
+      case "button":
+      case "select":
+      case "textarea":
+        return !hasElementAttr(id, "disabled");
+      case "input": {
+        const t = (elementAttr(id, "type") ?? "text").toLowerCase();
+        return t !== "hidden" && !hasElementAttr(id, "disabled");
+      }
+      case "iframe":
+        return true;
+      case "audio": case "video":
+        return hasElementAttr(id, "controls");
+      case "body": case "html":
+        return true;
+      default:
+        return hasElementAttr(id, "contenteditable") && !hasElementAttr(id, "disabled");
+    }
+  }
+
+  function setTextValue(id: NodeId, v: string): void {
+    // Setting the value IDL marks dirty (so defaultValue writes stop
+    // tracking it) and resets the caret to end (HTML §4.10.19.3).
+    patchControl(id, { value: v, valueDirty: true, selStart: [...v].length, selEnd: [...v].length });
+  }
+
+  /**
+   * Move focus (UI Events §5.3.1 event order): blur → focusout on the old
+   * element, then focus → focusin on the new. `visible` feeds
+   * `:focus-visible` — true for keyboard modality, autofocus, and
+   * text-editing controls; false for pointer and programmatic `.focus()`.
+   */
+  function setFocused(id: NodeId | null, visible: boolean): void {
+    if (id === focusedId) {
+      if (id !== null && visible !== focusVisibleNow) {
+        focusVisibleNow = visible;
+        session.setUiState({ focusVisible: visible });
+      }
+      return;
+    }
+    const oldId = focusedId;
+    if (oldId !== null && session.dom.nodes.has(oldId)) {
+      const rel = id !== null && session.dom.nodes.has(id) ? makeElementCached(id) : null;
+      dispatch(oldId, platformEvent("blur", { bubbles: false, cancelable: false, relatedTarget: rel }));
+      dispatch(oldId, platformEvent("focusout", { bubbles: true, cancelable: false, relatedTarget: rel }));
+    }
+    focusedId = id;
+    focusVisibleNow = id !== null && visible;
+    session.setUiState(id !== null
+      ? { focus: id, focusVisible: focusVisibleNow }
+      : { focus: undefined, focusVisible: false });
+    if (id !== null) {
+      const rel = oldId !== null && session.dom.nodes.has(oldId) ? makeElementCached(oldId) : null;
+      dispatch(id, platformEvent("focus", { bubbles: false, cancelable: false, relatedTarget: rel }));
+      dispatch(id, platformEvent("focusin", { bubbles: true, cancelable: false, relatedTarget: rel }));
+    }
+  }
+
+  /** Focus may move during a mousedown's default action (UI Events §5.2.2.1).
+   * `preventDefault()` on mousedown suppresses it — browsers key off that. */
+  function focusFromPointer(targetId: NodeId): void {
+    let cur: NodeId | null = targetId;
+    while (cur !== null) {
+      if (isFocusable(cur)) {
+        const isEditable = isTextEditingControl(cur);
+        setFocused(cur, isEditable);
+        return;
+      }
+      cur = session.dom.nodes.get(cur)?.parent ?? null;
+    }
+    // Chrome moves focus to nothing when a mousedown lands on unfocusable
+    // content — a plain-div click blurs the old field.
+    setFocused(null, false);
+  }
+
+  /** Insert `text` into the focused editable control via the input-event
+   * pipeline (beforeinput cancelable → mutate → input). Returns false when
+   * the element can't take text. */
+  function insertText(id: NodeId, text: string): boolean {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return false;
+    if (!isTextEditingControl(id) || hasElementAttr(id, "disabled") || hasElementAttr(id, "readonly")) {
+      return false;
+    }
+    const before = platformEvent("beforeinput", {
+      bubbles: true, cancelable: true, data: text, inputType: "insertText",
+    });
+    if (!dispatch(id, before)) return true;
+    setTextValue(id, controlValue(id) + text);
+    markTouched(id);
+    mutations += 1;
+    dispatch(id, platformEvent("input", { bubbles: true, cancelable: false, data: text, inputType: "insertText" }));
+    return true;
+  }
+
+  function deleteBackwards(id: NodeId): boolean {
+    if (!isTextEditingControl(id) || hasElementAttr(id, "disabled") || hasElementAttr(id, "readonly")) {
+      return false;
+    }
+    const before = platformEvent("beforeinput", {
+      bubbles: true, cancelable: true, data: null, inputType: "deleteContentBackward",
+    });
+    if (!dispatch(id, before)) return true;
+    const v = controlValue(id);
+    if (v.length > 0) {
+      setTextValue(id, v.slice(0, -1));
+      mutations += 1;
+    }
+    // A delete attempt on an empty field still counts as interaction for
+    // :user-invalid — the user did try to edit.
+    markTouched(id);
+    dispatch(id, platformEvent("input", { bubbles: true, cancelable: false, data: null, inputType: "deleteContentBackward" }));
+    return true;
+  }
+
+  // -----------------------------------------------------------------------
+  // UI input sequences (UI Events §5) — the host's event-synthesis surface.
+  // -----------------------------------------------------------------------
+
+  type PointerInit = {
+    button?: number; buttons?: number;
+    clientX?: number; clientY?: number; screenX?: number; screenY?: number;
+    ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean;
+    pointerId?: number; pointerType?: string; isPrimary?: boolean;
+  };
+
+  const pointerInit = (raw: Record<string, unknown> | undefined, button: number, buttons: number): Record<string, unknown> => {
+    const i = raw as PointerInit | undefined;
+    return {
+    bubbles: true, cancelable: true, composed: true,
+    pointerId: i?.pointerId ?? 1,
+    pointerType: i?.pointerType ?? "mouse",
+    isPrimary: i?.isPrimary ?? true,
+    width: 1, height: 1,
+    pressure: buttons !== 0 ? 0.5 : 0,
+    button, buttons,
+    clientX: i?.clientX ?? 0, clientY: i?.clientY ?? 0,
+    screenX: i?.screenX ?? i?.clientX ?? 0, screenY: i?.screenY ?? i?.clientY ?? 0,
+    ctrlKey: i?.ctrlKey === true, shiftKey: i?.shiftKey === true,
+    altKey: i?.altKey === true, metaKey: i?.metaKey === true,
+    };
+  };
+
+  /**
+   * Boundary-crossing sequence for a family ("pointer" | "mouse"), in UA
+   * order: `<name>over/out` bubbles at the target, then `<name>enter/leave`
+   * (non-bubbling) fires on every path node — enter top-down, leave
+   * bottom-up (UI Events §5.3.3, Pointer Events §10).
+   */
+  function fireCrossing(targetId: NodeId, enter: boolean, family: "pointer" | "mouse",
+                        init: Record<string, unknown>): void {
+    dispatch(targetId, platformEvent(
+      family + (enter ? "over" : "out"), init));
+    const path = shadowPath(targetId);
+    const order = enter ? [...path].reverse() : path;
+    for (const node of order) {
+      if (session.dom.nodes.get(node)?.kind !== "element" && node !== session.dom.root) continue;
+      dispatch(node, platformEvent(
+        family + (enter ? "enter" : "leave"),
+        { ...init, bubbles: false, cancelable: false }));
+    }
+  }
+
+  function setHover(id: NodeId | null): void {
+    hoverId = id;
+    session.setUiState({ hover: id ?? undefined });
+  }
+
+  function setActive(id: NodeId | null): void {
+    activeId = id;
+    session.setUiState({ active: id ?? undefined });
+  }
+
+  function uiPointerMove(targetId: NodeId, init?: Record<string, unknown>): void {
+    const pi = pointerInit(init, -1, 0);
+    if (hoverId !== targetId) {
+      if (hoverId !== null) {
+        fireCrossing(hoverId, false, "pointer", pi);
+        fireCrossing(hoverId, false, "mouse", pi);
+      }
+      fireCrossing(targetId, true, "pointer", pi);
+      fireCrossing(targetId, true, "mouse", pi);
+      setHover(targetId);
+    }
+    dispatch(targetId, platformEvent("pointermove", pi));
+    dispatch(targetId, platformEvent("mousemove", pi));
+  }
+
+  /** A full primary/secondary button click sequence ending in click or
+   * auxclick. Right-button context menus ride {@link uiContextMenu}. */
+  function uiClick(targetId: NodeId, init?: Record<string, unknown>): void {
+    const button = typeof init?.["button"] === "number" ? init["button"] : 0;
+    const downInit = pointerInit(init, button, 1 << button);
+    const upInit = pointerInit(init, button, 0);
+    if (hoverId !== targetId) {
+      // A pointer arriving already over the element fires the crossing chain
+      // once before the press — movement events carry button=-1/buttons=0.
+      const moveInit = pointerInit(init, -1, 0);
+      if (hoverId !== null) {
+        fireCrossing(hoverId, false, "pointer", moveInit);
+        fireCrossing(hoverId, false, "mouse", moveInit);
+      }
+      fireCrossing(targetId, true, "pointer", moveInit);
+      fireCrossing(targetId, true, "mouse", moveInit);
+      setHover(targetId);
+    }
+    let allowed = dispatch(targetId, platformEvent("pointerdown", downInit));
+    allowed = dispatch(targetId, platformEvent("mousedown", downInit)) && allowed;
+    if (allowed) focusFromPointer(targetId);
+    setActive(targetId);
+    dispatch(targetId, platformEvent("pointerup", upInit));
+    dispatch(targetId, platformEvent("mouseup", upInit));
+    setActive(null);
+    if (button === 0) {
+      const clickAllowed = dispatch(targetId, platformEvent("click", upInit));
+      if (clickAllowed) runActivationBehavior(targetId);
+    } else {
+      dispatch(targetId, platformEvent("auxclick", upInit));
+    }
+  }
+
+  function uiContextMenu(targetId: NodeId, init?: Record<string, unknown>): void {
+    const down = pointerInit(init, 2, 2);
+    const up = pointerInit(init, 2, 0);
+    dispatch(targetId, platformEvent("pointerdown", down));
+    let allowed = dispatch(targetId, platformEvent("mousedown", down));
+    if (allowed) focusFromPointer(targetId);
+    setActive(targetId);
+    // UI Events §5.4.4: contextmenu dispatches after mousedown, before
+    // pointerup on right-button presses (Windows convention).
+    allowed = dispatch(targetId, platformEvent("contextmenu", up)) && allowed;
+    dispatch(targetId, platformEvent("pointerup", up));
+    dispatch(targetId, platformEvent("mouseup", up));
+    setActive(null);
+  }
+
+  function uiDblClick(targetId: NodeId, init?: Record<string, unknown>): void {
+    uiClick(targetId, { ...init, button: 0 });
+    uiClick(targetId, { ...init, button: 0 });
+    const pi = pointerInit(init, 0, 0);
+    dispatch(targetId, platformEvent("dblclick", { ...pi, detail: 2 }));
+  }
+
+  /** Key synthesis on the focused element (body when nothing focused):
+   * keydown → [keypress for printable] → beforeinput/input value editing →
+   * keyup. preventDefault on keydown suppresses the text default action. */
+  function uiKey(detail: { key: string; code?: string; repeat?: boolean; location?: number;
+                          ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean }): void {
+    const targetId = focusedId ?? session.dom.root;
+    const init: Record<string, unknown> = {
+      bubbles: true, cancelable: true, composed: true,
+      key: detail.key, code: detail.code ?? "", repeat: detail.repeat === true,
+      location: detail.location ?? 0,
+      ctrlKey: detail.ctrlKey === true, shiftKey: detail.shiftKey === true,
+      altKey: detail.altKey === true, metaKey: detail.metaKey === true,
+      charCode: detail.key.length === 1 ? detail.key.charCodeAt(0) : 0,
+      keyCode: detail.key.length === 1 ? detail.key.toUpperCase().charCodeAt(0) : 0,
+    };
+    const allowed = dispatch(targetId, platformEvent("keydown", init));
+    if (allowed) {
+      if (detail.key.length === 1) {
+        dispatch(targetId, platformEvent("keypress", init));
+        if (isTextEditingControl(targetId)) insertText(targetId, detail.key);
+      } else if (detail.key === "Backspace") {
+        if (isTextEditingControl(targetId)) deleteBackwards(targetId);
+      } else if (detail.key === "Tab") {
+        uiTab(detail.shiftKey === true ? -1 : 1);
+      }
+    }
+    dispatch(targetId, platformEvent("keyup", init));
+  }
+
+  /** Focus traversal: Tab order = positive tabindex (sorted) then natural
+   * order of the remaining focusable set, flattened-tree preorder. */
+  function uiTab(dir: 1 | -1): void {
+    const candidates: NodeId[] = [];
+    forEachElementPreorder(session.dom.root, (id) => {
+      const tag = session.dom.nodes.get(id)?.tag;
+      if (tag !== "body" && tag !== "html" && isFocusable(id)) candidates.push(id);
+    });
+    if (candidates.length === 0) { setFocused(null, false); return; }
+    const ranked = (id: NodeId): { group: 0 | 1; order: number } => {
+      const ti = Number(elementAttr(id, "tabindex") ?? "0");
+      return ti > 0 && !Number.isNaN(ti) ? { group: 0, order: ti } : { group: 1, order: 0 };
+    };
+    const sorted = [...candidates].sort((a, b) => {
+      const ra = ranked(a), rb = ranked(b);
+      if (ra.group !== rb.group) return ra.group - rb.group;
+      if (ra.order !== rb.order) return ra.order - rb.order;
+      return 0; // stable sort keeps document order within a group
+    });
+    const idx = focusedId === null ? -1 : sorted.indexOf(focusedId);
+    let next: NodeId | null;
+    if (idx === -1) next = dir === 1 ? sorted[0]! : sorted[sorted.length - 1]!;
+    else {
+      const n = sorted[idx + dir];
+      next = n === undefined ? (dir === 1 ? sorted[0]! : sorted[sorted.length - 1]!) : n;
+    }
+    // Keyboard modality → :focus-visible applies.
+    setFocused(next, true);
   }
 
   function NodeCtor(): never {
@@ -2837,10 +5732,78 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     throw new Error("Illegal constructor");
   }
   Object.setPrototypeOf(ElementCtor.prototype as object, NodeCtor.prototype as object);
-  function HTMLElementCtor(): never {
+  /** Set while a custom element's constructor runs: `super()` (extends
+   * HTMLElement) must yield the wrapper being upgraded instead of throwing. */
+  let pendingCeUpgrade: object | null = null;
+  function HTMLElementCtor(this: unknown): object {
+    // Custom Elements §"upgrade": constructing the element returns the
+    // platform-created wrapper; only reachable while pendingCeUpgrade is set.
+    if (pendingCeUpgrade !== null) return pendingCeUpgrade;
     throw new Error("Illegal constructor");
   }
   Object.setPrototypeOf(HTMLElementCtor.prototype as object, ElementCtor.prototype as object);
+  // AriaMixin string reflection (ARIA in HTML). Each IDL attribute reflects a
+  // content attribute and therefore queues a custom element attribute reaction.
+  const ariaStringReflect: ReadonlyArray<readonly [string, string]> = [
+    ["ariaAtomic", "aria-atomic"],
+    ["ariaAutoComplete", "aria-autocomplete"],
+    ["ariaBrailleLabel", "aria-braillelabel"],
+    ["ariaBrailleRoleDescription", "aria-brailleroledescription"],
+    ["ariaBusy", "aria-busy"],
+    ["ariaChecked", "aria-checked"],
+    ["ariaColCount", "aria-colcount"],
+    ["ariaColIndex", "aria-colindex"],
+    ["ariaColSpan", "aria-colspan"],
+    ["ariaCurrent", "aria-current"],
+    ["ariaDisabled", "aria-disabled"],
+    ["ariaExpanded", "aria-expanded"],
+    ["ariaHasPopup", "aria-haspopup"],
+    ["ariaHidden", "aria-hidden"],
+    ["ariaInvalid", "aria-invalid"],
+    ["ariaKeyShortcuts", "aria-keyshortcuts"],
+    ["ariaLabel", "aria-label"],
+    ["ariaLevel", "aria-level"],
+    ["ariaLive", "aria-live"],
+    ["ariaModal", "aria-modal"],
+    ["ariaMultiLine", "aria-multiline"],
+    ["ariaMultiSelectable", "aria-multiselectable"],
+    ["ariaOrientation", "aria-orientation"],
+    ["ariaPlaceholder", "aria-placeholder"],
+    ["ariaPosInSet", "aria-posinset"],
+    ["ariaPressed", "aria-pressed"],
+    ["ariaReadOnly", "aria-readonly"],
+    ["ariaRelevant", "aria-relevant"],
+    ["ariaRequired", "aria-required"],
+    ["ariaRoleDescription", "aria-roledescription"],
+    ["ariaRowCount", "aria-rowcount"],
+    ["ariaRowIndex", "aria-rowindex"],
+    ["ariaRowSpan", "aria-rowspan"],
+    ["ariaSelected", "aria-selected"],
+    ["ariaSetSize", "aria-setsize"],
+    ["ariaSort", "aria-sort"],
+    ["ariaValueMax", "aria-valuemax"],
+    ["ariaValueMin", "aria-valuemin"],
+    ["ariaValueNow", "aria-valuenow"],
+    ["ariaValueText", "aria-valuetext"],
+  ];
+  for (const [prop, attr] of ariaStringReflect) {
+    Object.defineProperty(ElementCtor.prototype, prop, {
+      configurable: true,
+      enumerable: true,
+      get(this: unknown): string | null {
+        const id = idFromWrapper(this);
+        if (id === undefined) return null;
+        return session.dom.nodes.get(id)?.attrs?.get(attr) ?? null;
+      },
+      set(this: unknown, value: unknown): void {
+        const id = idFromWrapper(this);
+        if (id === undefined) return;
+        if (value === null) session.removeAttribute(id, attr);
+        else session.setAttribute(id, attr, textContentString(value));
+        mutations += 1;
+      },
+    });
+  }
 
   function SVGElementCtor(): never {
     throw new Error("Illegal constructor");
@@ -2854,6 +5817,11 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     throw new Error("Illegal constructor");
   }
   Object.setPrototypeOf(DocumentFragmentCtor.prototype as object, NodeCtor.prototype as object);
+  /** Shadow DOM (RFC 0018): shadow roots are `DocumentFragment` subclasses. */
+  function ShadowRootCtor(): never {
+    throw new Error("Illegal constructor");
+  }
+  Object.setPrototypeOf(ShadowRootCtor.prototype as object, DocumentFragmentCtor.prototype as object);
 
   /** `window.getComputedStyle(el)` — a read-only CSSOM declaration over the
    * node's resolved {@link ComputedStyle} (the cascade product). */
@@ -2971,8 +5939,8 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       }
       return fastGcsShared;
     }
-    if (gcsMutEpoch !== mutations) {
-      gcsMutEpoch = mutations;
+    if (gcsMutEpoch !== mutations + session.uiEpoch + session.mediaEpoch) {
+      gcsMutEpoch = mutations + session.uiEpoch + session.mediaEpoch;
       gcsProxyCache.clear();
       gcsValueCache.clear();
       gcsSerializedCache.clear();
@@ -3015,6 +5983,119 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     };
 
     const resolveCssName = (cssName: string): string => {
+      // Shorthand computed values are the longhands, not the shorthand's own
+      // initial string. `flex: none` expands to grow/shrink/basis and must
+      // read back as `0 0 auto`.
+      if (cssName === "flex") {
+        const grow = Math.max(0, Number(fieldString("flexGrow", "number")));
+        const shrink = Math.max(0, Number(fieldString("flexShrink", "number")));
+        const basis = serializeFlexBasisComputed(fieldString("flexBasis", "LengthOrAuto"));
+        const growText = Number.isFinite(grow) ? String(grow) : "0";
+        const shrinkText = Number.isFinite(shrink) ? String(shrink) : "1";
+        return `${growText} ${shrinkText} ${basis}`;
+      }
+      if (cssName === "flex-basis") {
+        return serializeFlexBasisComputed(fieldString("flexBasis", "LengthOrAuto"));
+      }
+      if (cssName === "flex-flow") {
+        const direction = fieldString("flexDirection", "string");
+        const wrap = fieldString("flexWrap", "string");
+        return serializeFlexFlow(direction === "" ? "row" : direction, wrap === "" ? "nowrap" : wrap);
+      }
+      if (cssName === "grid-column" || cssName === "grid-row") {
+        const axis = cssName === "grid-column" ? "Column" : "Row";
+        return serializeGridPlacement(
+          fieldString(`grid${axis}Start`, "string"),
+          fieldString(`grid${axis}End`, "string"),
+        );
+      }
+      if (cssName === "grid-area") {
+        return serializeGridArea(
+          fieldString("gridRowStart", "string"),
+          fieldString("gridColumnStart", "string"),
+          fieldString("gridRowEnd", "string"),
+          fieldString("gridColumnEnd", "string"),
+        );
+      }
+      if (cssName === "grid-template-columns" || cssName === "grid-template-rows") {
+        const field = cssName === "grid-template-columns" ? "gridTemplateColumns" : "gridTemplateRows";
+        const specified = fieldString(field, "string");
+        const display = fieldString("display", "string");
+        const axis = cssName === "grid-template-columns" ? "width" : "height";
+        const breadth = cssLength(fieldString(axis, "LengthOrAuto"));
+        const em = cssLength(fieldString("fontSize", "Px"));
+        // A subgrid declaration on a grid container whose parent is not a
+        // grid computes to the initial value. The specified value stays put.
+        // This does not depend on a definite size: an auto-width grid still
+        // has to drop the subgrid.
+        if (/^subgrid\b/i.test(specified.trim()) && (display === "grid" || display === "inline-grid") && id !== undefined) {
+          const node = session.dom.nodes.get(id);
+          const parentId = node?.parent ?? null;
+          const parent = parentId === null ? undefined : session.dom.nodes.get(parentId);
+          const parentComputed = parentId !== null && parent?.kind === "element"
+            ? (session.computed(parentId) as { display?: unknown }).display
+            : undefined;
+          const parentDisplay = typeof parentComputed === "string" ? parentComputed : "";
+          if (parentDisplay !== "grid" && parentDisplay !== "inline-grid") return "none";
+          return specified.trim();
+        }
+        if ((display === "grid" || display === "inline-grid") && id !== undefined && breadth !== null && em !== null && breadth > 0) {
+          const node = session.dom.nodes.get(id);
+          const kids = (node?.children ?? []).filter((childId) => session.dom.nodes.get(childId)?.kind === "element");
+          let content = 0;
+          const first = kids[0];
+          let leadingImplicit = false;
+          if (first !== undefined) {
+            const childStyle = session.computed(first) as Record<string, unknown>;
+            const childSize = childStyle[axis];
+            if (typeof childSize === "number" && childSize > 0) content = childSize;
+            // `auto / 1` ends on the first explicit line, so the item sits in one
+            // leading implicit track and does not occupy the explicit list.
+            const startKey = axis === "width" ? "gridColumnStart" : "gridRowStart";
+            const endKey = axis === "width" ? "gridColumnEnd" : "gridRowEnd";
+            const start = childStyle[startKey];
+            const end = childStyle[endKey];
+            leadingImplicit = (start === "auto" || start === "") && typeof end === "string" && Number(end) === 1;
+          }
+          const px = (n: number): string => `${Math.round(Math.max(0, n) * 1000) / 1000}px`;
+          if (specified.trim().toLowerCase() === "none") {
+            if (kids.length === 0) return "none";
+            // One implicit auto track. It stretches to the container, and it
+            // does not shrink below the item's contribution.
+            return px(Math.max(content, breadth));
+          }
+          // Layout's unset template is the sentinel "0", not an author length of 0px.
+          if (specified.trim() === "0") return specified;
+          const resolved = resolveTrackList(specified, {
+            breadth,
+            em,
+            items: leadingImplicit ? 0 : kids.length,
+            content: leadingImplicit ? 0 : content,
+          });
+          if (resolved === null) return specified;
+          if (!leadingImplicit) return resolved;
+          const explicitSum = [...resolved.matchAll(/(\d+(?:\.\d+)?)px/g)].reduce((sum, match) => sum + Number(match[1] ?? 0), 0);
+          return `${px(Math.max(content, breadth - explicitSum))} ${resolved}`;
+        }
+        return specified;
+      }
+      if (cssName === "grid-template" || cssName === "grid") {
+        const rows = fieldString("gridTemplateRows", "string");
+        const columns = fieldString("gridTemplateColumns", "string");
+        const areas = fieldString("gridTemplateAreas", "string");
+        // Unset templates stay at the layout initial "0", not an author `none`.
+        if (cssName === "grid-template") {
+          if (rows === "0" && columns === "0" && (areas === "none" || areas === "")) return "none";
+          return serializeGridTemplate(rows, columns, areas);
+        }
+        const autoRows = fieldString("gridAutoRows", "string");
+        const autoColumns = fieldString("gridAutoColumns", "string");
+        const flow = fieldString("gridAutoFlow", "string");
+        if (rows === "0" && columns === "0" && (areas === "none" || areas === "") && autoRows === "auto" && autoColumns === "auto" && flow === "row") {
+          return "none";
+        }
+        return serializeGrid(rows, columns, areas, autoRows, autoColumns, flow);
+      }
       const meta = CSS_NAME_TO_META.get(cssName);
       if (meta === undefined) return "";
       return fieldString(meta.field, meta.tsType);
@@ -3188,6 +6269,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       }
       return wrap(session.dom.root);
     },
+    get children(): object {
+      return makeLiveCollection(() =>
+        (session.dom.nodes.get(session.dom.root)?.children ?? []).filter(
+          (childId) => session.dom.nodes.get(childId)?.kind === "element",
+        ),
+      );
+    },
     get head(): object | null {
       for (const [id, n] of session.dom.nodes) {
         if (n.kind === "element" && n.tag === "head") return makeElementCached(id);
@@ -3284,6 +6372,16 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     getElementById(id: unknown): object | null {
       return wrap(findByIdIndexed(String(id)));
     },
+    /** HTML §6.5.2: the focused element, falling back to <body>/<html>. */
+    get activeElement(): object | null {
+      if (focusedId !== null && session.dom.nodes.has(focusedId)) return makeElementCached(focusedId);
+      const body = elementIdsByTagName(session.dom.root, "body")[0];
+      return body !== undefined ? makeElementCached(body) : null;
+    },
+    hasFocus(): boolean {
+      // Single-document harness: the document always owns the focus ring.
+      return true;
+    },
     querySelector(selector: unknown): object | null {
       const ids = queryAll(String(selector), null);
       return ids.length > 0 ? makeElementCached(ids[0] as NodeId) : null;
@@ -3307,9 +6405,13 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       const tokens = coerceGuestString(names).trim().split(/\s+/).filter((t) => t.length > 0);
       return makeLiveCollection(() => elementIdsByClassName(session.dom.root, tokens));
     },
-    createElement(tag: unknown): object {
+    createElement(tag: unknown, opts?: unknown): object {
       const id = session.createElement(String(tag));
       mutations += 1;
+      // Custom Elements §4.5.1: `{ is: "x-foo" }` marks a customized built-in —
+      // the `is` attribute lands before the upgrade check resolves it.
+      const is = (opts as Record<string, unknown> | undefined)?.["is"];
+      if (typeof is === "string") session.setAttribute(id, "is", is);
       return makeElementCached(id);
     },
     createElementNS(_ns: unknown, tag: unknown): object {
@@ -3341,6 +6443,12 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       const kind = coerceGuestString(eventType);
       if (kind === "CustomEvent") return new CustomEvent("");
       if (kind === "MouseEvent" || kind === "MouseEvents") return new MouseEvent("");
+      if (kind === "PointerEvent") return new PointerEvent("");
+      if (kind === "KeyboardEvent") return new KeyboardEvent("");
+      if (kind === "FocusEvent") return new FocusEvent("");
+      if (kind === "InputEvent") return new InputEvent("");
+      if (kind === "WheelEvent") return new WheelEvent("");
+      if (kind === "CompositionEvent") return new CompositionEvent("");
       return new Event("");
     },
     createEventObject(): { data: unknown; type: string } {
@@ -3368,6 +6476,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
 
   Object.setPrototypeOf(document, DocumentCtor.prototype as object);
   const HTMLCanvasElementCtor = function HTMLCanvasElement() {} as unknown as new () => object;
+  // RFC 0035: HTMLMediaElement — the common <video>/<audio> base interface.
+  const HTMLMediaElementCtor = function HTMLMediaElement() {} as unknown as new () => object;
+  Object.setPrototypeOf(HTMLMediaElementCtor.prototype as object, HTMLElementCtor.prototype as object);
+  // WebIDL interface constants live on the constructor too (instances get
+  // the same names from mediaDescriptors' own-property `consts`).
+  Object.defineProperties(HTMLMediaElementCtor, {
+    NETWORK_EMPTY: { value: 0 }, NETWORK_IDLE: { value: 1 },
+    NETWORK_LOADING: { value: 2 }, NETWORK_NO_SOURCE: { value: 3 },
+    HAVE_NOTHING: { value: 0 }, HAVE_METADATA: { value: 1 },
+    HAVE_CURRENT_DATA: { value: 2 }, HAVE_FUTURE_DATA: { value: 3 },
+    HAVE_ENOUGH_DATA: { value: 4 },
+  });
 
   /**
    * The HTML element interface map (HTML §4.13): every tag with a distinct
@@ -3451,10 +6571,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
       htmlInterfaceCtors.set(name, { ctor: HTMLCanvasElementCtor, tag });
       continue;
     }
-    const ctor = function (this: unknown, _w?: unknown, _h?: unknown): void {
+    const ctor = function (this: unknown, _w?: unknown, _h?: unknown): object {
+      // Customized built-ins extend these interfaces — `super()` must yield
+      // the wrapper being upgraded, exactly like HTMLElement does.
+      if (pendingCeUpgrade !== null) return pendingCeUpgrade;
       throw new Error("Illegal constructor");
     } as unknown as new () => object;
-    Object.setPrototypeOf(ctor.prototype as object, HTMLElementCtor.prototype as object);
+    Object.setPrototypeOf(
+      ctor.prototype as object,
+      name === "HTMLAudioElement" || name === "HTMLVideoElement"
+        ? (HTMLMediaElementCtor.prototype as object)
+        : (HTMLElementCtor.prototype as object),
+    );
     htmlInterfaceCtors.set(name, { ctor, tag });
   }
   /** A wrapper for `tag` gets `ctor.prototype` when the tag has its own interface. */
@@ -3466,72 +6594,1012 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
   };
   Object.setPrototypeOf(HTMLCanvasElementCtor.prototype, HTMLElementCtor.prototype as object);
   const CanvasRenderingContext2DCtor = function CanvasRenderingContext2D() {} as unknown as new () => object;
-  const OffscreenCanvasCtor = function OffscreenCanvas(this: { width: number; height: number; getContext: (t: unknown) => object | null }, w?: unknown, h?: unknown) {
-    this.width = Number(w) || 0;
-    this.height = Number(h) || 0;
+  const OffscreenCanvasCtor = function OffscreenCanvas(this: object, w?: unknown, h?: unknown) {
+    let bw = Math.max(0, Math.floor(Number(w) || 0));
+    let bh = Math.max(0, Math.floor(Number(h) || 0));
     let cached: object | null = null;
-    this.getContext = (type: unknown) => {
-      if (coerceGuestString(type).toLowerCase() !== "2d") return null;
-      if (cached === null) {
-        cached = {
-          canvas: this,
-          fillStyle: "#000",
-          strokeStyle: "#000",
-          lineWidth: 1,
-          globalAlpha: 1,
-          font: "10px sans-serif",
-          save() {},
-          restore() {},
-          beginPath() {},
-          closePath() {},
-          moveTo() {},
-          lineTo() {},
-          rect() {},
-          fill() {},
-          stroke() {},
-          clearRect() {},
-          fillRect() {},
-          strokeRect() {},
-          fillText() {},
-          strokeText() {},
-          measureText(text: unknown) {
-            return { width: coerceGuestString(text).length * 6 };
-          },
-          drawImage() {},
-          createImageData(cw: unknown, ch?: unknown) {
-            const width = Number(cw) || 0;
-            const height = Number(ch) || 0;
-            return { width, height, data: new Uint8ClampedArray(Math.max(0, width * height * 4)) };
-          },
-          getImageData(_x: unknown, _y: unknown, cw: unknown, ch: unknown) {
-            const width = Number(cw) || 0;
-            const height = Number(ch) || 0;
-            return { width, height, data: new Uint8ClampedArray(Math.max(0, width * height * 4)) };
-          },
-          putImageData() {},
-          scale() {},
-          rotate() {},
-          translate() {},
-          setTransform() {},
-          resetTransform() {},
-          transform() {},
-          setLineDash() {},
-          getLineDash() {
-            return [];
-          },
-        };
+    let engine: Canvas2DEngine | null = null;
+    let glCore: WebGLCore | null = null;
+    const ensure = (): Canvas2DEngine => {
+      if (engine === null) {
+        engine = new Canvas2DEngine(bw, bh);
+        canvasObjects.set(this, engine);
       }
-      return cached;
+      return engine;
     };
+    Object.defineProperty(this, "width", {
+      enumerable: true,
+      get: () => bw,
+      // OffscreenCanvas width/height setters resize the bitmap (and reset
+      // context state) — same "set bitmap dimensions" algorithm as <canvas>.
+      set: (v: unknown) => {
+        bw = Math.max(0, Math.floor(Number(v) || 0));
+        engine?.resize(bw, bh);
+      },
+    });
+    Object.defineProperty(this, "height", {
+      enumerable: true,
+      get: () => bh,
+      set: (v: unknown) => {
+        bh = Math.max(0, Math.floor(Number(v) || 0));
+        engine?.resize(bw, bh);
+      },
+    });
+    Object.defineProperty(this, "getContext", {
+      enumerable: true,
+      value: (type: unknown, opts?: unknown): object | null => {
+        const kind = coerceGuestString(type).toLowerCase();
+        if (kind === "webgl" || kind === "experimental-webgl") {
+          if (cached === null && engine === null) {
+            if (glCore === null) glCore = new WebGLCore(bw, bh);
+            cached = makeWebGLContext(glCore, this, {
+              imageSource: (source) => {
+                const id = idOf.get(source as object);
+                if (id !== undefined) return options.canvasImageSource?.(id);
+                const off = typeof source === "object" && source !== null
+                  ? canvasObjects.get(source) : undefined;
+                return off?.rasterize();
+              },
+            });
+          }
+          return cached;
+        }
+        if (kind !== "2d") return null;
+        if (cached === null) {
+          const eng = ensure();
+          cached = canvas2dApi(eng, {
+            canvasRef: () => this,
+            resolveImage: (source) => {
+              const id = idOf.get(source as object);
+              return id === undefined ? undefined : options.canvasImageSource?.(id);
+            },
+            resolveCanvas: (source) =>
+              typeof source === "object" && source !== null ? canvasObjects.get(source) : undefined,
+          });
+        }
+        void opts;
+        return cached;
+      },
+    });
   } as unknown as new (w?: unknown, h?: unknown) => object;
+  // RFC 0036: `WebGLRenderingContext` — interface object (non-constructible
+  // per WebIDL); ctx objects carry its prototype so `instanceof` works.
+  const WebGLRenderingContextCtor = function WebGLRenderingContext(): object {
+    throw new TypeError("Illegal constructor");
+  } as unknown as new () => object;
+  WebGLRenderingContextCtor.prototype = WebGLRenderingContextProto;
+  // -------------------------------------------------------------------------
+  // Observers (DOM §"mutation observers"; IntersectionObserver; ResizeObserver)
+  //
+  // MutationObserver rides the session's synchronous mutation sink and batches
+  // records into ONE compound microtask per notification round (DOM §"queue a
+  // mutation observer compound microtask"). ResizeObserver/IntersectionObserver
+  // are RENDERING-STEP observers: they evaluate against the FragmentTree at
+  // frame boundaries (tickAnimations) and on a scheduled microtask after
+  // observe()/mutations — never synchronously inside a DOM write.
+  // -------------------------------------------------------------------------
+
+  const enqueueMicrotask =
+    options.queueMicrotask ?? ((fn: () => void) => queueMicrotask(fn));
+
+  /** `isAncestor` over the live DOM parent chain — for MO subtree matching;
+   * stops at a shadow root (document observers never see shadow mutations). */
+  const isAncestorOf = (ancestor: NodeId, node: NodeId): boolean => {
+    let cur = session.dom.nodes.get(node)?.parent ?? null;
+    while (cur !== null) {
+      if (cur === ancestor) return true;
+      const n = session.dom.nodes.get(cur);
+      cur = n === undefined || n.tag === "#shadow-root" ? null : (n.parent ?? null);
+    }
+    return false;
+  };
+
+  interface RectObj {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+    readonly top: number;
+    readonly left: number;
+    readonly right: number;
+    readonly bottom: number;
+    toJSON(): object;
+  }
+  const rectObj = (x: number, y: number, w: number, h: number): RectObj => {
+    const r: RectObj = {
+      x, y, width: w, height: h,
+      top: y, left: x, right: x + w, bottom: y + h,
+      toJSON() {
+        return { x: r.x, y: r.y, width: r.width, height: r.height, top: r.top, left: r.left, right: r.right, bottom: r.bottom };
+      },
+    };
+    return r;
+  };
+
+  /** node → layout fragment index built once per geometry evaluation pass. */
+  type FragmentIndex = Map<NodeId, Fragment>;
+
+  /**
+   * Document-space border-box rect. The fragment tree expresses each node's
+   * rects in its PARENT's coordinate space (the point where the parent placed
+   * this fragment's margin box — `offsetFragment` semantics). Escaping one
+   * level means adding the ancestor's margin-box origin as expressed in the
+   * NEXT space up — so the document position is the node's own borderBox plus
+   * each ancestor's `marginBox` origin. All reads stay inside the FragmentTree,
+   * the single legal geometry source.
+   */
+  const documentRectOf = (fragByNode: FragmentIndex, nodeId: NodeId): RectObj | null => {
+    const frag = fragByNode.get(nodeId);
+    if (frag === undefined) return null; // display:none / not laid out.
+    let x = Number(frag.box.borderBox.x);
+    let y = Number(frag.box.borderBox.y);
+    let cur = session.dom.nodes.get(nodeId)?.parent ?? null;
+    while (cur !== null) {
+      const ancestor = fragByNode.get(cur);
+      if (ancestor !== undefined) {
+        x += Number(ancestor.box.marginBox.x);
+        y += Number(ancestor.box.marginBox.y);
+      }
+      cur = session.dom.nodes.get(cur)?.parent ?? null;
+    }
+    return rectObj(x, y, Number(frag.box.borderBox.width), Number(frag.box.borderBox.height));
+  };
+
+  // -- MutationObserver -------------------------------------------------------
+
+  interface MutationInit {
+    readonly childList: boolean;
+    readonly attributes: boolean;
+    readonly characterData: boolean;
+    readonly subtree: boolean;
+    readonly attributeOldValue: boolean;
+    readonly characterDataOldValue: boolean;
+    readonly attributeFilter: readonly string[] | null;
+  }
+  interface MutationRecordObj {
+    readonly type: string;
+    readonly target: object | null;
+    readonly addedNodes: object;
+    readonly removedNodes: object;
+    readonly previousSibling: object | null;
+    readonly nextSibling: object | null;
+    readonly attributeName: string | null;
+    readonly attributeNamespace: null;
+    readonly oldValue: string | null;
+  }
+  interface MutationObserverIface {
+    observe(target: unknown, init?: unknown): void;
+    disconnect(): void;
+    takeRecords(): MutationRecordObj[];
+  }
+  const mutationObservers = new Set<{
+    readonly regs: Map<NodeId, MutationInit>;
+    queue: MutationRecordObj[];
+    readonly cb: (records: MutationRecordObj[], obs: unknown) => void;
+  }>();
+  let mutationMicrotaskQueued = false;
+
+  const staticNodeList = (ids: readonly NodeId[]): object => {
+    const snapshot = [...ids];
+    return makeNodeList(() => snapshot);
+  };
+  const wrapOrNull = (id: NodeId | null): object | null =>
+    id === null ? null : makeElementCached(id);
+
+  const routeMutation = (m: DomMutation): void => {
+    let queued = false;
+    for (const obs of mutationObservers) {
+      for (const [targetId, init] of obs.regs) {
+        if (m.target !== targetId && !(init.subtree && isAncestorOf(targetId, m.target))) continue;
+        if (m.kind === "childList" && !init.childList) continue;
+        if (m.kind === "attributes") {
+          if (!init.attributes) continue;
+          if (init.attributeFilter !== null && m.attributeName !== null && !init.attributeFilter.includes(m.attributeName)) continue;
+        }
+        if (m.kind === "characterData" && !init.characterData) continue;
+        const wantOld =
+          (m.kind === "attributes" && init.attributeOldValue) ||
+          (m.kind === "characterData" && init.characterDataOldValue);
+        obs.queue.push({
+          type: m.kind,
+          target: wrapOrNull(m.target),
+          addedNodes: staticNodeList(m.addedNodes),
+          removedNodes: staticNodeList(m.removedNodes),
+          previousSibling: wrapOrNull(m.previousSibling),
+          nextSibling: wrapOrNull(m.nextSibling),
+          attributeName: m.attributeName,
+          attributeNamespace: null,
+          oldValue: wantOld ? m.oldValue : null,
+        });
+        queued = true;
+        break; // DOM: at most one record per observer per mutation.
+      }
+    }
+    if (queued && !mutationMicrotaskQueued) {
+      mutationMicrotaskQueued = true;
+      enqueueMicrotask(() => {
+        mutationMicrotaskQueued = false;
+        for (const obs of [...mutationObservers]) {
+          if (obs.queue.length === 0) continue;
+          const records = obs.queue;
+          obs.queue = [];
+          try {
+            obs.cb(records, obs);
+          } catch (error) {
+            options.onListenerError?.(error);
+          }
+        }
+      });
+    }
+    // Geometry observers re-evaluate after DOM writes (layout may have moved).
+    if (geometryObservers.size > 0) scheduleGeometryCheck();
+  };
+  session.onMutation(routeMutation);
+
+  class MutationObserverImpl implements MutationObserverIface {
+    readonly regs = new Map<NodeId, MutationInit>();
+    queue: MutationRecordObj[] = [];
+    readonly cb: (records: MutationRecordObj[], obs: unknown) => void;
+    constructor(cb: unknown) {
+      if (typeof cb !== "function") {
+        throw new TypeError("MutationObserver: callback is not a function");
+      }
+      this.cb = cb as (records: MutationRecordObj[], obs: unknown) => void;
+      mutationObservers.add(this);
+    }
+    observe(target: unknown, init?: unknown): void {
+      const id = idFromWrapper(target);
+      if (id === undefined) {
+        throw new TypeError("MutationObserver.observe: target is not a Node");
+      }
+      const o = (init ?? {}) as Record<string, unknown>;
+      const normalized: MutationInit = {
+        childList: Boolean(o["childList"]),
+        // DOM §observe: attributeOldValue/attributeFilter imply attributes;
+        // characterDataOldValue implies characterData.
+        attributes:
+          o["attributes"] !== undefined
+            ? Boolean(o["attributes"])
+            : Boolean(o["attributeOldValue"]) || o["attributeFilter"] !== undefined,
+        characterData:
+          o["characterData"] !== undefined
+            ? Boolean(o["characterData"])
+            : Boolean(o["characterDataOldValue"]),
+        subtree: Boolean(o["subtree"]),
+        attributeOldValue: Boolean(o["attributeOldValue"]),
+        characterDataOldValue: Boolean(o["characterDataOldValue"]),
+        attributeFilter: Array.isArray(o["attributeFilter"])
+          ? (o["attributeFilter"] as unknown[]).map(String)
+          : null,
+      };
+      if (!normalized.childList && !normalized.attributes && !normalized.characterData) {
+        throw new TypeError(
+          "MutationObserver.observe: at least one of childList, attributes, characterData must be true",
+        );
+      }
+      this.regs.set(id, normalized); // re-observing a target replaces its init.
+    }
+    disconnect(): void {
+      this.regs.clear();
+      this.queue = [];
+    }
+    takeRecords(): MutationRecordObj[] {
+      const out = this.queue;
+      this.queue = [];
+      return out;
+    }
+  }
+  const MutationObserverCtor = MutationObserverImpl as unknown as new (
+    cb: unknown,
+  ) => MutationObserverIface;
+
+  // -- ResizeObserver / IntersectionObserver (rendering-step observers) --------
+
+  const geometryObservers = new Set<object>();
+  let geometryCheckPending = false;
+
+  /** Run a geometry pass: one layout resolution shared by all geometry
+   * observers, then per-observer entry generation + delivery. */
+  const runGeometryCheck = (): void => {
+    geometryCheckPending = false;
+    if (geometryObservers.size === 0) return;
+    const tree = resolveLayoutTree();
+    const fragByNode: FragmentIndex = new Map();
+    if (tree !== null) {
+      for (const f of tree.fragments.values()) {
+        if (!fragByNode.has(f.node)) fragByNode.set(f.node, f);
+      }
+    }
+    const now = performance.now();
+    for (const obs of [...geometryObservers]) {
+      (obs as { eval(fragByNode: FragmentIndex, now: number): void }).eval(fragByNode, now);
+    }
+    for (const obs of [...geometryObservers]) {
+      (obs as { flush(): void }).flush();
+    }
+  };
+  const scheduleGeometryCheck = (): void => {
+    if (geometryCheckPending) return;
+    geometryCheckPending = true;
+    enqueueMicrotask(runGeometryCheck);
+  };
+
+  interface ResizeTargetReg {
+    lastInline: number;
+    lastBlock: number;
+    readonly box: "content-box" | "border-box" | "device-pixel-content-box";
+  }
+  class ResizeObserverImpl {
+    readonly #cb: (entries: unknown[], obs: unknown) => void;
+    readonly #targets = new Map<NodeId, ResizeTargetReg>();
+    #pending: unknown[] = [];
+    #flushQueued = false;
+    constructor(cb: unknown) {
+      if (typeof cb !== "function") {
+        throw new TypeError("ResizeObserver: callback is not a function");
+      }
+      this.#cb = cb as (entries: unknown[], obs: unknown) => void;
+    }
+    observe(target: unknown, init?: unknown): void {
+      const id = idFromWrapper(target);
+      if (id === undefined) {
+        throw new TypeError("ResizeObserver.observe: target is not an Element");
+      }
+      const box = (init as Record<string, unknown> | undefined)?.["box"];
+      this.#targets.set(id, {
+        box:
+          box === "border-box" || box === "device-pixel-content-box"
+            ? box
+            : "content-box",
+        lastInline: -1, // sentinel: first evaluation always delivers (spec initial delivery).
+        lastBlock: -1,
+      });
+      geometryObservers.add(this);
+      scheduleGeometryCheck();
+    }
+    unobserve(target: unknown): void {
+      const id = idFromWrapper(target);
+      if (id !== undefined) this.#targets.delete(id);
+      if (this.#targets.size === 0) geometryObservers.delete(this);
+    }
+    disconnect(): void {
+      this.#targets.clear();
+      this.#pending = [];
+      geometryObservers.delete(this);
+    }
+    takeRecords(): unknown[] {
+      const out = this.#pending;
+      this.#pending = [];
+      return out;
+    }
+    eval(fragByNode: FragmentIndex, now: number): void {
+      for (const [id, reg] of this.#targets) {
+        const frag = fragByNode.get(id);
+        const box = reg.box === "content-box" ? frag?.box.contentBox : frag?.box.borderBox;
+        const w = Number(box?.width ?? 0);
+        const h = Number(box?.height ?? 0);
+        if (w === reg.lastInline && h === reg.lastBlock) continue;
+        reg.lastInline = w;
+        reg.lastBlock = h;
+        const content = frag?.box.contentBox;
+        this.#pending.push({
+          target: wrapOrNull(id),
+          contentRect: rectObj(
+            Number(content?.x ?? 0),
+            Number(content?.y ?? 0),
+            Number(content?.width ?? 0),
+            Number(content?.height ?? 0),
+          ),
+          borderBoxSize: [{ inlineSize: Number(frag?.box.borderBox.width ?? 0), blockSize: Number(frag?.box.borderBox.height ?? 0) }],
+          contentBoxSize: [{ inlineSize: Number(content?.width ?? 0), blockSize: Number(content?.height ?? 0) }],
+          devicePixelContentBoxSize: [{ inlineSize: Math.round(Number(content?.width ?? 0)), blockSize: Math.round(Number(content?.height ?? 0)) }],
+          time: now,
+        });
+      }
+    }
+    flush(): void {
+      if (this.#pending.length === 0 || this.#flushQueued) return;
+      this.#flushQueued = true;
+      enqueueMicrotask(() => {
+        this.#flushQueued = false;
+        const entries = this.#pending;
+        this.#pending = [];
+        if (entries.length === 0) return;
+        try {
+          this.#cb(entries, this);
+        } catch (error) {
+          options.onListenerError?.(error);
+        }
+      });
+    }
+  }
+  const ResizeObserverCtor = ResizeObserverImpl as unknown as new (
+    cb: unknown,
+  ) => object;
+
+  class IntersectionObserverImpl {
+    readonly #cb: (entries: unknown[], obs: unknown) => void;
+    readonly root: object | null;
+    readonly #rootId: NodeId | null;
+    readonly #rootMargin: { top: number; right: number; bottom: number; left: number };
+    readonly #rootMarginPct: { top: boolean; right: boolean; bottom: boolean; left: boolean };
+    readonly thresholds: readonly number[];
+    readonly #targets = new Map<NodeId, { prevIndex: number; prevIntersecting: boolean }>();
+    #pending: unknown[] = [];
+    #flushQueued = false;
+    constructor(cb: unknown, init?: unknown) {
+      if (typeof cb !== "function") {
+        throw new TypeError("IntersectionObserver: callback is not a function");
+      }
+      this.#cb = cb as (entries: unknown[], obs: unknown) => void;
+      const o = (init ?? {}) as Record<string, unknown>;
+      const rootRaw = o["root"];
+      let rootId: NodeId | null = null;
+      if (rootRaw !== undefined && rootRaw !== null) {
+        const resolved = idFromWrapper(rootRaw);
+        if (resolved === undefined) {
+          throw new TypeError("IntersectionObserver: root must be an Element or Document");
+        }
+        rootId = resolved;
+      }
+      this.#rootId = rootId;
+      this.root = rootId === null ? null : wrapOrNull(rootId);
+      const marginRaw = typeof o["rootMargin"] === "string" ? o["rootMargin"] : "0px";
+      const parts = marginRaw.trim().split(/\s+/).filter((s) => s.length > 0);
+      const vals = (parts.length > 0 ? parts : ["0px"]).map((p) => {
+        const m = /^(-?\d+(?:\.\d+)?)(px|%)?$/.exec(p);
+        return m === null ? { n: 0, pct: false } : { n: Number(m[1]), pct: m[2] === "%" };
+      });
+      const [t, r, b, l] = [vals[0]!, vals[1] ?? vals[0]!, vals[2] ?? vals[0]!, vals[3] ?? vals[1] ?? vals[0]!];
+      this.#rootMargin = { top: t.n, right: r.n, bottom: b.n, left: l.n };
+      this.#rootMarginPct = { top: t.pct, right: r.pct, bottom: b.pct, left: l.pct };
+      const traw = o["threshold"];
+      const list = Array.isArray(traw) ? traw : traw === undefined ? [0] : [traw];
+      const parsed = list.map((v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new RangeError("IntersectionObserver: threshold must be between 0 and 1");
+        }
+        return n;
+      });
+      this.thresholds = Object.freeze([...new Set(parsed)].sort((a, b) => a - b));
+    }
+    get rootMargin(): string {
+      return `${this.#rootMargin.top}${this.#rootMarginPct.top ? "%" : "px"} ${this.#rootMargin.right}${this.#rootMarginPct.right ? "%" : "px"} ${this.#rootMargin.bottom}${this.#rootMarginPct.bottom ? "%" : "px"} ${this.#rootMargin.left}${this.#rootMarginPct.left ? "%" : "px"}`;
+    }
+    observe(target: unknown): void {
+      const id = idFromWrapper(target);
+      if (id === undefined) {
+        throw new TypeError("IntersectionObserver.observe: target is not an Element");
+      }
+      this.#targets.set(id, { prevIndex: -1, prevIntersecting: false });
+      geometryObservers.add(this);
+      scheduleGeometryCheck();
+    }
+    unobserve(target: unknown): void {
+      const id = idFromWrapper(target);
+      if (id !== undefined) this.#targets.delete(id);
+      if (this.#targets.size === 0) geometryObservers.delete(this);
+    }
+    disconnect(): void {
+      this.#targets.clear();
+      this.#pending = [];
+      geometryObservers.delete(this);
+    }
+    takeRecords(): unknown[] {
+      const out = this.#pending;
+      this.#pending = [];
+      return out;
+    }
+    eval(fragByNode: FragmentIndex, now: number): void {
+      // Root bounds: viewport (document space, scrolled) or the root element's
+      // border box, expanded by rootMargin (percentages resolve against the
+      // root rect's own dimension on each axis).
+      let rootX = 0;
+      let rootY = 0;
+      let rootW = 0;
+      let rootH = 0;
+      if (this.#rootId === null) {
+        const v = options.viewport?.() ?? { width: 800, height: 600, scrollY: 0 };
+        rootX = 0;
+        rootY = v.scrollY;
+        rootW = v.width;
+        rootH = v.height;
+      } else {
+        const r = documentRectOf(fragByNode, this.#rootId);
+        if (r === null) return; // root not laid out → nothing intersects.
+        rootX = r.x;
+        rootY = r.y;
+        rootW = r.width;
+        rootH = r.height;
+      }
+      const top = this.#rootMargin.top * (this.#rootMarginPct.top ? rootH / 100 : 1);
+      const right = this.#rootMargin.right * (this.#rootMarginPct.right ? rootW / 100 : 1);
+      const bottom = this.#rootMargin.bottom * (this.#rootMarginPct.bottom ? rootH / 100 : 1);
+      const left = this.#rootMargin.left * (this.#rootMarginPct.left ? rootW / 100 : 1);
+      const rootBounds = rectObj(rootX - left, rootY - top, rootW + left + right, rootH + top + bottom);
+
+      for (const [id, state] of this.#targets) {
+        const laidOut = fragByNode.has(id);
+        const target = documentRectOf(fragByNode, id) ?? rectObj(0, 0, 0, 0);
+        const interX = Math.max(target.x, rootBounds.x);
+        const interY = Math.max(target.y, rootBounds.y);
+        const interW = Math.min(target.right, rootBounds.right) - interX;
+        const interH = Math.min(target.bottom, rootBounds.bottom) - interY;
+        // Edge-touching counts as intersecting (spec); a non-laid-out node
+        // (display:none) has no box to intersect — report not-intersecting.
+        const isIntersecting = laidOut && interW >= 0 && interH >= 0;
+        const ratio =
+          isIntersecting && target.width * target.height > 0
+            ? Math.max(0, Math.min(1, (interW * interH) / (target.width * target.height)))
+            : 0;
+        // Spec: thresholdIndex counts thresholds already passed — for
+        // isIntersecting the first index whose threshold > ratio.
+        let index = 0;
+        if (isIntersecting) {
+          index = this.thresholds.length;
+          for (let i = 0; i < this.thresholds.length; i += 1) {
+            if ((this.thresholds[i] as number) > ratio) {
+              index = i;
+              break;
+            }
+          }
+        }
+        if (index === state.prevIndex && isIntersecting === state.prevIntersecting) continue;
+        state.prevIndex = index;
+        state.prevIntersecting = isIntersecting;
+        this.#pending.push({
+          target: wrapOrNull(id),
+          time: now,
+          rootBounds: this.#rootId === null ? rectObj(rootX, rootY, rootW, rootH) : rootBounds,
+          boundingClientRect: target,
+          intersectionRect: isIntersecting ? rectObj(interX, interY, Math.max(0, interW), Math.max(0, interH)) : rectObj(0, 0, 0, 0),
+          isIntersecting,
+          intersectionRatio: ratio,
+        });
+      }
+    }
+    flush(): void {
+      if (this.#pending.length === 0 || this.#flushQueued) return;
+      this.#flushQueued = true;
+      enqueueMicrotask(() => {
+        this.#flushQueued = false;
+        const entries = this.#pending;
+        this.#pending = [];
+        if (entries.length === 0) return;
+        try {
+          this.#cb(entries, this);
+        } catch (error) {
+          options.onListenerError?.(error);
+        }
+      });
+    }
+  }
+  const IntersectionObserverCtor = IntersectionObserverImpl as unknown as new (
+    cb: unknown,
+    init?: unknown,
+  ) => object;
+
+  /**
+   * PerformanceObserver — honest shell: the performance timeline (marks,
+   * measures, resource/paint entries) does not exist yet, so this registers
+   * observations and never delivers entries rather than fabricating data.
+   * `takeRecords` returns an empty list; `supportedEntryTypes` mirrors the
+   * platform surface for feature detection.
+   */
+  class PerformanceObserverImpl {
+    static readonly supportedEntryTypes = Object.freeze([
+      "element", "event", "largest-contentful-paint", "layout-shift",
+      "longtask", "mark", "measure", "navigation", "paint", "resource",
+      "visibility-state",
+    ]);
+    constructor(cb: unknown) {
+      if (typeof cb !== "function") {
+        throw new TypeError("PerformanceObserver: callback is not a function");
+      }
+    }
+    observe(_options?: unknown): void {}
+    disconnect(): void {}
+    takeRecords(): unknown[] {
+      return [];
+    }
+  }
+  const PerformanceObserverCtor = PerformanceObserverImpl as unknown as new (
+    cb: unknown,
+  ) => object;
+  Object.defineProperty(PerformanceObserverCtor, "supportedEntryTypes", {
+    get: () => PerformanceObserverImpl.supportedEntryTypes,
+  });
+
+  // -------------------------------------------------------------------------
+  // Custom Elements v1 (HTML §4.13)
+  //
+  // A per-document registry maps local names → { ctor, observedAttributes,
+  // extendTag }. Upgrading is lazy and host-driven: `makeElementCached` calls
+  // `ceUpgradeIfDefined` once the plain wrapper exists, so EVERY wrapper path
+  // (createElement, querySelector, childNodes, innerHTML-driven insertions)
+  // upgrades uniformly. `super()` inside a custom-element class returns the
+  // wrapper being upgraded via `pendingCeUpgrade`. Lifecycle callbacks are
+  // delivered from the session mutation sink — synchronous at the mutation,
+  // matching the platform's reaction-stack timing closely enough for page code.
+  // -------------------------------------------------------------------------
+
+  interface CeDefinition {
+    readonly name: string;
+    readonly ctor: new () => object;
+    readonly observedAttributes: ReadonlySet<string>;
+    /** Customized built-in: the element local name the class extends. */
+    readonly extendTag: string | null;
+  }
+  const ceRegistry = new Map<string, CeDefinition>();
+  /** Node ids already through the upgrade reaction (ctor ran). */
+  const ceUpgraded = new Set<NodeId>();
+  const ceWaiters = new Map<
+    string,
+    { readonly promise: Promise<unknown>; resolve: (ctor: unknown) => void }
+  >();
+
+  /** The CE definition a node resolves to: `is=` for customized built-ins,
+   * otherwise a same-named autonomous definition. */
+  const ceDefinitionFor = (id: NodeId): CeDefinition | undefined => {
+    const node = session.dom.nodes.get(id);
+    if (node?.kind !== "element") return undefined;
+    const is = node.attrs?.get("is");
+    if (is !== undefined) {
+      const d = ceRegistry.get(is);
+      if (d !== undefined && d.extendTag === node.tag) return d;
+    }
+    const d = ceRegistry.get(node.tag ?? "");
+    return d !== undefined && d.extendTag === null ? d : undefined;
+  };
+
+  /** Invoke a CE lifecycle callback on the node's wrapper. */
+  const ceInvoke = (id: NodeId, def: CeDefinition, kind: string, args: unknown[]): void => {
+    const method = (def.ctor.prototype as Record<string, unknown>)[kind];
+    if (typeof method !== "function") return;
+    try {
+      (method as (...a: unknown[]) => void).apply(makeElementCached(id), args);
+    } catch (error) {
+      options.onListenerError?.(error);
+    }
+  };
+
+  /**
+   * Upgrade `id` if it is not already upgraded (Custom Elements §"upgrade an
+   * element"): run the constructor on the existing wrapper, then enqueue
+   * attributeChangedCallback per observed attribute present, then
+   * connectedCallback when connected.
+   */
+  const ceUpgradeIfDefined = (id: NodeId): void => {
+    if (ceUpgraded.has(id)) return;
+    const def = ceDefinitionFor(id);
+    if (def === undefined) return;
+    ceUpgraded.add(id);
+    const w = makeElementCached(id);
+    Object.setPrototypeOf(w, def.ctor.prototype as object);
+    const prev = pendingCeUpgrade;
+    pendingCeUpgrade = w;
+    try {
+      Reflect.construct(def.ctor, [], def.ctor);
+    } catch (error) {
+      options.onListenerError?.(error);
+    } finally {
+      pendingCeUpgrade = prev;
+    }
+    const attrs = session.dom.nodes.get(id)?.attrs;
+    if (attrs !== undefined) {
+      for (const [k, v] of attrs) {
+        if (def.observedAttributes.has(k)) {
+          ceInvoke(id, def, "attributeChangedCallback", [k, null, v, null]);
+        }
+      }
+    }
+    if (isConnectedToDocument(session.dom, id)) ceInvoke(id, def, "connectedCallback", []);
+  };
+
+  /** `id` and its element descendants in tree order — INCLUDING shadow trees
+   * (a host's shadow children connect/disconnect with it). */
+  const forEachElementPreorder = (id: NodeId, fn: (id: NodeId) => void): void => {
+    const node = session.dom.nodes.get(id);
+    if (node === undefined) return;
+    if (node.kind === "element") fn(id);
+    if (node.shadow !== undefined) forEachElementPreorder(node.shadow, fn);
+    for (const child of node.children) forEachElementPreorder(child, fn);
+  };
+
+  /** Every element under `root` matching `tag`, traversing shadow roots too —
+   * used by `customElements.define` upgrades (light-DOM queries stay clean). */
+  const elementIdsByTagNameDeep = (root: NodeId, want: string): NodeId[] => {
+    const out: NodeId[] = [];
+    const visit = (id: NodeId): void => {
+      const node = session.dom.nodes.get(id);
+      if (node === undefined) return;
+      if (node.kind === "element" && node.tag === want) out.push(id);
+      if (node.shadow !== undefined) visit(node.shadow);
+      for (const child of node.children) visit(child);
+    };
+    for (const child of session.dom.nodes.get(root)?.children ?? []) visit(child);
+    return out;
+  };
+
+  /**
+   * `slotchange` (HTML §4.15): recompute the slot assignment signature for
+   * every slot in each affected shadow root and fire a bubbling `slotchange`
+   * (per slot, on a microtask) when the assignment actually changed.
+   */
+  const slotSignatures = new Map<NodeId, string>();
+  /** Slots whose change signal is queued but not yet delivered — spec signals
+   * ONCE per slot until the event fires, so rapid re-assignment coalesces. */
+  const slotPending = new Set<NodeId>();
+  const shadowRootAffectedBy = (id: NodeId): NodeId | undefined => {
+    const n = session.dom.nodes.get(id);
+    if (n === undefined) return undefined;
+    if (n.tag === "#shadow-root") return id;          // children of the root itself
+    if (n.shadow !== undefined) return n.shadow;       // mutation on the host (light children)
+    const sr = enclosingShadowRootId(id);              // node inside a shadow tree
+    if (sr !== undefined) return sr;
+    const p = n.parent;                                 // `slot=` attr on a light child
+    if (p !== null && p !== undefined) {
+      const ps = session.dom.nodes.get(p)?.shadow;
+      if (ps !== undefined) return ps;
+    }
+    return undefined;
+  };
+  const queueSlotChange = (m: DomMutation): void => {
+    const roots = new Set<NodeId>();
+    for (const id of [m.target, ...m.addedNodes, ...m.removedNodes]) {
+      const r = shadowRootAffectedBy(id);
+      if (r !== undefined) roots.add(r);
+    }
+    for (const root of roots) {
+      for (const sid of slotsInSubtree(root)) {
+        const sig = slotAssignedIds(sid).join(",");
+        if (slotSignatures.get(sid) === sig) continue;
+        slotSignatures.set(sid, sig);
+        if (slotPending.has(sid)) continue;
+        slotPending.add(sid);
+        const fire = (): void => {
+          slotPending.delete(sid);
+          dispatch(sid, makeEvent("slotchange", { bubbles: true }));
+        };
+        if (options.queueMicrotask !== undefined) options.queueMicrotask(fire);
+        else fire();
+      }
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  // Autofocus (HTML §4.3.11.1): the first inserted element carrying the
+  // `autofocus` attribute takes focus when the autofocus queue is flushed —
+  // on the next microtask after insertion. Only one autofocus lands per
+  // document.
+  // -----------------------------------------------------------------------
+  let autofocusDone = false;
+  const autofocusQueue: NodeId[] = [];
+  let autofocusScheduled = false;
+  const flushAutofocus = (): void => {
+    autofocusScheduled = false;
+    if (autofocusDone) return;
+    while (autofocusQueue.length > 0) {
+      const cand = autofocusQueue.shift();
+      if (cand === undefined) break;
+      if (!session.dom.nodes.has(cand) || !isFocusable(cand)) continue;
+      setFocused(cand, true); // autofocus is a keyboard-like modality
+      autofocusDone = true;
+      break;
+    }
+  };
+  const queueAutofocus = (id: NodeId): void => {
+    if (autofocusDone || autofocusQueue.includes(id)) return;
+    autofocusQueue.push(id);
+    if (autofocusScheduled) return;
+    autofocusScheduled = true;
+    if (options.queueMicrotask !== undefined) options.queueMicrotask(flushAutofocus);
+    else void Promise.resolve().then(flushAutofocus);
+  };
+
+  // Parser-inserted autofocus elements predate the mutation sink — scan the
+  // initial tree once (the "parser-end flush" of HTML §4.3.11.1).
+  forEachElementPreorder(session.dom.root, (id) => {
+    if (elementAttr(id, "autofocus") !== undefined) queueAutofocus(id);
+  });
+
+  // Lifecycle dispatch rides the session mutation sink (always active —
+  // independent of whether any MutationObserver is registered).
+  session.onMutation((m: DomMutation): void => {
+    queueSlotChange(m);
+    if (m.kind === "childList") {
+      for (const removed of m.removedNodes) {
+        // A detached focused/hovered/active element silently loses its UI
+        // state — no blur events fire on a node outside the document.
+        forEachElementPreorder(removed, (id) => {
+          if (id === focusedId) {
+            focusedId = null;
+            focusVisibleNow = false;
+            session.setUiState({ focus: undefined, focusVisible: false });
+          }
+          if (id === hoverId) setHover(null);
+          if (id === activeId) setActive(null);
+        });
+      }
+      for (const added of m.addedNodes) {
+        if (!isConnectedToDocument(session.dom, added)) continue;
+        forEachElementPreorder(added, (id) => {
+          if (elementAttr(id, "autofocus") !== undefined) queueAutofocus(id);
+          // Option insertion steps: inserting a selected option into a
+          // select-one deselects the others (HTML "option insertion steps").
+          if (
+            session.dom.nodes.get(id)?.tag === "option" &&
+            // nodeState first: `opt.selected=true` while detached is live
+            // state that never entered the dom control map.
+            (nodeState.get(id)?.selected ?? elementAttr(id, "selected") !== undefined)
+          ) {
+            const sel = ownerSelect(id);
+            if (sel !== null && !hasElementAttr(sel, "multiple")) {
+              for (const oid of optionIdsOf(sel)) {
+                if (oid !== id) patchControl(oid, { selected: false });
+              }
+            }
+          }
+        });
+      }
+    }
+    if (ceRegistry.size === 0 && ceUpgraded.size === 0) return;
+    if (m.kind === "childList") {
+      for (const removed of m.removedNodes) {
+        // The removed subtree was connected iff the former parent is still in
+        // the document (check NOW, post-removal).
+        if (!isConnectedToDocument(session.dom, m.target)) continue;
+        forEachElementPreorder(removed, (id) => {
+          const def = ceDefinitionFor(id);
+          if (def !== undefined && ceUpgraded.has(id)) {
+            ceInvoke(id, def, "disconnectedCallback", []);
+          }
+        });
+      }
+      for (const added of m.addedNodes) {
+        if (!isConnectedToDocument(session.dom, added)) continue;
+        forEachElementPreorder(added, (id) => {
+          const def = ceDefinitionFor(id);
+          if (def === undefined) return;
+          const wasUpgraded = ceUpgraded.has(id);
+          ceUpgradeIfDefined(id); // ctor + attrChanged + connected for new upgrades
+          if (wasUpgraded) ceInvoke(id, def, "connectedCallback", []);
+        });
+      }
+      return;
+    }
+    if (m.kind === "attributes" && m.attributeName !== null) {
+      const def = ceDefinitionFor(m.target);
+      if (def === undefined || !ceUpgraded.has(m.target)) return;
+      if (!def.observedAttributes.has(m.attributeName)) return;
+      const newValue = session.dom.nodes.get(m.target)?.attrs?.get(m.attributeName) ?? null;
+      ceInvoke(m.target, def, "attributeChangedCallback", [m.attributeName, m.oldValue, newValue, null]);
+    }
+  });
+
+  const ceDefine = (name: unknown, ctor: unknown, opts?: unknown): void => {
+    const local = coerceGuestString(name);
+    if (!isValidCustomElementName(local)) {
+      throw new DOMException(`'${local}' is not a valid custom element name`, "SyntaxError");
+    }
+    if (typeof ctor !== "function") {
+      throw new TypeError("customElements.define: constructor must be a function");
+    }
+    if (ceRegistry.has(local)) {
+      throw new DOMException(`custom element '${local}' is already defined`, "NotSupportedError");
+    }
+    for (const d of ceRegistry.values()) {
+      if (d.ctor === ctor) {
+        throw new DOMException("this constructor is already used for another custom element", "NotSupportedError");
+      }
+    }
+    const extendTag = (opts as Record<string, unknown> | undefined)?.["extends"];
+    const observed = new Set<string>(
+      Array.isArray((ctor as { observedAttributes?: unknown }).observedAttributes)
+        ? ((ctor as unknown as { observedAttributes: unknown[] }).observedAttributes).map(String)
+        : [],
+    );
+    const def: CeDefinition = {
+      name: local,
+      ctor: ctor as new () => object,
+      observedAttributes: observed,
+      extendTag: typeof extendTag === "string" ? extendTag.toLowerCase() : null,
+    };
+    ceRegistry.set(local, def);
+    // Feeds `:defined` matching through the cascade's DomTree input.
+    session.defineCustomElement(local);
+    // whenDefined waiters resolve with the constructor.
+    const waiter = ceWaiters.get(local);
+    if (waiter !== undefined) {
+      ceWaiters.delete(local);
+      waiter.resolve(def.ctor);
+    }
+    // Upgrade matching elements already in the document, in tree order —
+    // upgrade covers ctor, attributeChangedCallback (per observed attr), and
+    // connectedCallback (for connected nodes).
+    const tags = def.extendTag === null ? [local] : [def.extendTag];
+    for (const tag of tags) {
+      for (const id of elementIdsByTagNameDeep(session.dom.root, tag)) {
+        if (ceDefinitionFor(id) === def) ceUpgradeIfDefined(id);
+      }
+    }
+  };
+
+  const customElementsApi = {
+    define: ceDefine,
+    get(name: unknown): unknown {
+      return ceRegistry.get(coerceGuestString(name))?.ctor;
+    },
+    whenDefined(name: unknown): Promise<unknown> {
+      const local = coerceGuestString(name);
+      if (!isValidCustomElementName(local)) {
+        return Promise.reject(
+          new DOMException(`'${local}' is not a valid custom element name`, "SyntaxError"),
+        );
+      }
+      const existing = ceRegistry.get(local);
+      if (existing !== undefined) return Promise.resolve(existing.ctor);
+      const pending = ceWaiters.get(local);
+      if (pending !== undefined) return pending.promise;
+      let resolveFn: (ctor: unknown) => void = () => undefined;
+      const promise = new Promise<unknown>((resolve) => {
+        resolveFn = resolve;
+      });
+      ceWaiters.set(local, { promise, resolve: resolveFn });
+      return promise;
+    },
+    upgrade(wrapper: unknown): void {
+      const id = idFromWrapper(wrapper);
+      if (id !== undefined) ceUpgradeIfDefined(id);
+    },
+  };
+
+
+  // RFC 0022: WebSocket api bundle — the class is installed in domGlobals;
+  // `bindRealm` is returned so the runner can bind realm ArrayBuffer/TypeError
+  // after `vm.createContext` (same post-context pattern as fetch realm errors).
+  const wsApi: WebSocketApi = makeWebSocketApi({
+    baseUrl: session.url,
+    ...(options.wsTransport !== undefined ? { transport: options.wsTransport } : {}),
+    queueTask: enqueueMicrotask,
+    BlobCtor: makeBlobClass(),
+  });
   const domGlobals: Record<string, unknown> = {
-    Event: EventCtor,
+    Event: Event,
+    CustomEvent: CustomEvent,
+    UIEvent: UIEvent,
+    MouseEvent: MouseEvent,
+    PointerEvent: PointerEvent,
+    KeyboardEvent: KeyboardEvent,
+    FocusEvent: FocusEvent,
+    InputEvent: InputEvent,
+    WheelEvent: WheelEvent,
+    CompositionEvent: CompositionEvent,
     Node: NodeCtor,
     Element: ElementCtor,
     HTMLElement: HTMLElementCtor,
+    MutationObserver: MutationObserverCtor,
+    ResizeObserver: ResizeObserverCtor,
+    IntersectionObserver: IntersectionObserverCtor,
+    PerformanceObserver: PerformanceObserverCtor,
+    customElements: customElementsApi,
     ...Object.fromEntries([...htmlInterfaceCtors].map(([name, { ctor }]) => [name, ctor])),
     CanvasRenderingContext2D: CanvasRenderingContext2DCtor,
     OffscreenCanvas: OffscreenCanvasCtor,
+    WebGLRenderingContext: WebGLRenderingContextCtor,
+    // RFC 0035: media interfaces — HTMLMediaElement is the common base;
+    // `new Audio(src)` is the spec's detached-<audio> constructor.
+    HTMLMediaElement: HTMLMediaElementCtor,
+    Audio: function Audio(this: unknown, src?: unknown): object {
+      const el = (document as { createElement(t: string): object }).createElement("audio");
+      if (src !== undefined) {
+        (el as { src: string }).src = coerceGuestString(src);
+      }
+      return el;
+    },
+    // RFC 0033: real Path2D — an owned verb list consumed by fill/stroke/clip.
+    Path2D: Path2DImpl,
     // `new Text(data)` — a text node created directly in the live tree.
     Text: function Text(this: unknown, data: unknown) {
       const id = session.createTextNode(coerceGuestString(data));
@@ -3540,9 +7608,35 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     },
     NodeList: NodeListCtor,
     SVGElement: SVGElementCtor,
+    ShadowRoot: ShadowRootCtor,
     Document: DocumentCtor,
     DocumentFragment: DocumentFragmentCtor,
+    MessageEvent: MessageEvent,
+    CloseEvent: CloseEvent,
+    // RFC 0022: the guest WebSocket class — RFC 6455 handshake + framing run
+    // engine-side over the injected raw-socket transport; events ride the
+    // document's microtask queue like every other guest-facing delivery.
+    WebSocket: wsApi.WebSocket,
     getComputedStyle,
+    get scrollX(): number {
+      return documentScrollX;
+    },
+    get scrollY(): number {
+      return documentScrollY;
+    },
+    scrollTo(x?: unknown, y?: unknown): void {
+      const next = scrollToArgs(x, y);
+      if (next === null) return;
+      setDocumentScroll(next.left, next.top);
+    },
+    scrollBy(x?: unknown, y?: unknown): void {
+      if (typeof x === "object" && x !== null) {
+        const o = x as { left?: unknown; top?: unknown };
+        setDocumentScroll(documentScrollX + axisLength(o.left), documentScrollY + axisLength(o.top));
+        return;
+      }
+      setDocumentScroll(documentScrollX + axisLength(x), documentScrollY + axisLength(y));
+    },
   };
   /**
    * HTML §7.8 lifecycle: after parsing completes (all classic scripts have
@@ -3574,6 +7668,18 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     // via the element's registry (el.onload / addEventListener).
     dispatch(nodeId, makeEvent(type));
   };
+  // RFC 0035: bind the media engine to THIS api's dispatch + clock — one
+  // engine per document shared by the classic and module runs (second binder
+  // wins harmlessly: same session, same dispatch semantics).
+  if (options.media !== undefined) {
+    const clock = options.mediaClock ?? nodeMediaClock();
+    options.media.bindRuntime({
+      emit: (id: NodeId, type: string): void => {
+        dispatch(id, platformEvent(type, {}));
+      },
+      clock,
+    });
+  }
   return {
     document,
     globals: domGlobals,
@@ -3582,6 +7688,59 @@ const resolveLayoutTree = (): ReturnType<FineSession["layoutTree"]> | null => {
     hasActiveAnimations,
     fireDocumentLifecycleEvents,
     fireScriptElementEvent,
+    /**
+     * RFC 0011: the host's UI-click entry point — identical semantics to
+     * `el.click()` (dispatch click; run activation when not canceled) so a
+     * shell tap and a script click share one path.
+     */
+    clickElement: (id: NodeId): void => {
+      // Hit tests can land on a text child — retarget to the nearest element
+      // (the UA's activation target), same as clicking rendered text.
+      let target: NodeId | null = id;
+      while (target !== null && session.dom.nodes.get(target)?.kind !== "element") {
+        target = session.dom.nodes.get(target)?.parent ?? null;
+      }
+      if (target === null) return;
+      // RFC 0020: a host click is the full pointer+mouse sequence.
+      uiClick(target);
+    },
+    /**
+     * RFC 0013: element-targeted event delivery for the host (e.g. `load` on
+     * an iframe after its child document boots). Events are typed by name.
+     */
+    dispatchElementEvent: (id: NodeId, type: string, init?: Record<string, unknown>): void => {
+      if (session.dom.nodes.get(id)?.kind !== "element") return;
+      dispatch(id, platformEvent(type, init ?? {}));
+    },
+    /**
+     * RFC 0020: the host's UI-input synthesis surface — real pointer, mouse,
+     * keyboard, focus, and tab-traversal sequences backed by the shared
+     * dispatch machinery. Id form keeps the boundary explicit; resolving the
+     * element wrapper is left to the caller.
+     */
+    ui: {
+      pointerMove: uiPointerMove,
+      click: uiClick,
+      contextMenu: uiContextMenu,
+      dblClick: uiDblClick,
+      key: uiKey,
+      tab: uiTab,
+      focusedId: (): NodeId | null => focusedId,
+    },
+    bindWsRealm: (realm) => wsApi.bindRealm(realm),
+    canvasBitmaps: (): ReadonlyMap<NodeId, DecodedImage> => {
+      const out = new Map<NodeId, DecodedImage>();
+      for (const [id, engine] of canvasEngines) {
+        const img = engine.rasterize();
+        if (img !== undefined) out.set(id, img);
+      }
+      // WebGL drawing buffers ride the same channel — the framebuffer IS the
+      // canvas bitmap (snapshot() applies preserveDrawingBuffer semantics).
+      for (const [id, core] of webglCores) {
+        out.set(id, webglBitmap(core));
+      }
+      return out;
+    },
   };
 }
 
@@ -3602,7 +7761,9 @@ export function isConnectedToDocument(dom: DomTree, nodeId: NodeId): boolean {
   return false;
 }
 
-/** Whether `maybeDescendant` is currently contained by `root`, inclusive. */
+/** Whether `maybeDescendant` is currently contained by `root`, inclusive.
+ * A `"#shadow-root"` ends the walk — its DOM parent is null, so document
+ * containment never reaches inside a shadow tree. */
 function containsNode(dom: DomTree, root: NodeId, maybeDescendant: NodeId): boolean {
   let current: NodeId | null | undefined = maybeDescendant;
   const seen = new Set<NodeId>();
@@ -3610,7 +7771,8 @@ function containsNode(dom: DomTree, root: NodeId, maybeDescendant: NodeId): bool
     if (current === root) return true;
     if (seen.has(current)) return false;
     seen.add(current);
-    current = dom.nodes.get(current)?.parent;
+    const n = dom.nodes.get(current);
+    current = n === undefined || n.tag === "#shadow-root" ? null : n.parent;
   }
   return false;
 }
@@ -3625,6 +7787,26 @@ function textContentString(text: unknown): string {
 /** WebIDL-compatible DOMString conversion for CSSOM method arguments. */
 function cssomString(value: unknown): string {
   return String(value);
+}
+
+const CE_RESERVED_NAMES: ReadonlySet<string> = new Set([
+  "annotation-xml", "color-profile", "font-face", "font-face-src",
+  "font-face-uri", "font-face-format", "font-face-name", "missing-glyph",
+]);
+// HTML valid custom element name: an element local name that starts with an
+// ASCII lowercase letter, contains "-", and has no ASCII uppercase. Other
+// code points, including non-BMP characters, are allowed.
+const CE_LOCAL_NAME_RE = /^(?:[A-Za-z][^\0\t\n\f\r\u0020/>]*|[:_\u0080-\u{10FFFF}][A-Za-z0-9-.:_\u0080-\u{10FFFF}]*)$/u;
+
+function isValidCustomElementName(local: string): boolean {
+  if (local.length === 0 || !local.includes("-") || CE_RESERVED_NAMES.has(local)) return false;
+  const first = local.codePointAt(0) ?? 0;
+  if (first < 0x61 || first > 0x7a) return false;
+  for (const ch of local) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0x41 && cp <= 0x5a) return false;
+  }
+  return CE_LOCAL_NAME_RE.test(local);
 }
 
 /** HTML element attribute names are ASCII-case-insensitive in this bridge. */

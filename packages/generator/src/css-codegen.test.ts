@@ -104,12 +104,12 @@ void test("platform-as-data-layout: emitted artifacts include every new field", 
   assert.match(fields, /readonly gridTemplateColumns: string;/);
   assert.match(fields, /readonly opacity: number;/);
   assert.match(fields, /readonly transform: TransformValue;/);
-  assert.match(fields, /readonly zIndex: number;/);
+  assert.match(fields, /readonly zIndex: number \| "auto";/);
   assert.match(fields, /readonly position: PositionValue;/);
   // Initial values serialized from data.
   assert.match(initials, /opacity: 1/);
   assert.match(initials, /transform: "none"/);
-  assert.match(initials, /zIndex: 0/);
+  assert.match(initials, /zIndex: "auto"/);
   assert.match(initials, /position: "static"/);
   // Parsers delegate to the new primitives (by shape, not by name).
   assert.match(parser, /parseInteger\(value/);

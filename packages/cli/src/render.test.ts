@@ -199,17 +199,35 @@ void test("runRender returns a non-zero exit code on missing arguments", async (
 });
 
 void test("parseRenderArgs accepts -o before or after the positional input", () => {
-  assert.deepEqual(parseRenderArgs(["a.html", "-o", "b.png"]), { input: "a.html", output: "b.png", trace: false });
-  assert.deepEqual(parseRenderArgs(["-o", "b.png", "a.html"]), { input: "a.html", output: "b.png", trace: false });
+  assert.deepEqual(parseRenderArgs(["a.html", "-o", "b.png"]), {
+    input: "a.html",
+    output: "b.png",
+    trace: false,
+    backend: "gpu",
+  });
+  assert.deepEqual(parseRenderArgs(["-o", "b.png", "a.html"]), {
+    input: "a.html",
+    output: "b.png",
+    trace: false,
+    backend: "gpu",
+  });
   assert.deepEqual(parseRenderArgs(["--output", "b.png", "a.html"]), {
     input: "a.html",
     output: "b.png",
     trace: false,
+    backend: "gpu",
   });
   assert.deepEqual(parseRenderArgs(["--trace", "a.html", "--output", "b.png"]), {
     input: "a.html",
     output: "b.png",
     trace: true,
+    backend: "gpu",
+  });
+  assert.deepEqual(parseRenderArgs(["a.html", "-o", "b.png", "--backend", "skia"]), {
+    input: "a.html",
+    output: "b.png",
+    trace: false,
+    backend: "skia",
   });
 });
 

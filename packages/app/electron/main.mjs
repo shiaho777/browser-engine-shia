@@ -1,10 +1,10 @@
 import { app, BrowserWindow, ipcMain, screen } from "electron";
-import { existsSync, writeFileSync, appendFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { SHELL_HTML } from "../dist/shell.js";
-import { TabHost } from "../dist/tab-session.js";
+import { TabHost } from "../dist/tab-host.js";
 import { HOME_URL } from "../dist/home.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +27,39 @@ log(`preload=${preloadPath} exists=${existsSync(preloadPath)}`);
 log(`esm SourceTextModule=${typeof vm.SourceTextModule === "function"}`);
 
 let mainWindow = null;
-const host = new TabHost();
+// localStorage persists in the per-app profile dir (userData) — survives
+// restarts and is shared by every tab's renderer via the profile file.
+const profileDir = app.getPath("userData");
+const host = new TabHost({
+  profileDir,
+  downloadsDir: join(profileDir, "Downloads"),
+});
+// Download lifecycle events surface in chrome: a rolling list for the
+// `shell:downloads` pull plus a `downloads:event` push to the renderer.
+const recentDownloads = [];
+host.onDownload = (file) => {
+  log(`download ${file.state} ${file.filename} ${file.bytes}B -> ${file.path}`);
+  recentDownloads.push(file);
+  if (recentDownloads.length > 50) recentDownloads.shift();
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("downloads:event", file);
+  }
+};
+
+// Session history persists to session.json — tabs reopen to their last URL
+// on launch (documents reload fresh; live JS state is never serialized).
+const sessionFile = join(profileDir, "session.json");
+let quitArmed = false;
+app.on("will-quit", (event) => {
+  if (quitArmed) return;
+  event.preventDefault();
+  quitArmed = true;
+  host
+    .exportSession()
+    .then((saved) => writeFileSync(sessionFile, JSON.stringify(saved), "utf8"))
+    .catch((e) => log(`session-save-failed ${e}`))
+    .finally(() => app.quit());
+});
 
 function tab() {
   return host.active;
@@ -172,9 +204,11 @@ function registerIpc() {
   ipcMain.handle("shell:scroll", async (_event, deltaX, deltaY, viewport, extra) => {
     try {
       const vp = withDisplayDpr(viewport)
-      if (viewport) tab().setViewport(vp);
       const settle = extra && extra.settle === true;
-      const frame = await tab().scrollBy(Number(deltaX) || 0, Number(deltaY) || 0, { settle });
+      const frame = await tab().scrollBy(Number(deltaX) || 0, Number(deltaY) || 0, {
+        settle,
+        viewport: vp,
+      });
       return frame === null ? emptyFrame() : okFrame(frame);
     } catch (error) {
       return fail(error);
@@ -246,6 +280,7 @@ function registerIpc() {
     tabs: host.list(),
     activeTabId: host.activeId,
   }));
+  ipcMain.handle("shell:downloads", () => ({ ok: true, downloads: recentDownloads }));
   ipcMain.handle("shell:ping", () => ({
     ok: true,
     mode: "electron-ipc",
@@ -307,6 +342,17 @@ process.on("unhandledRejection", (error) => {
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  // Restore the persisted session — each tab reloads its current entry.
+  try {
+    if (existsSync(sessionFile)) {
+      const saved = JSON.parse(readFileSync(sessionFile, "utf8"));
+      if (Array.isArray(saved?.tabs) && saved.tabs.length > 0) {
+        void host.restoreSession(saved).catch((e) => log(`session-restore-failed ${e}`));
+      }
+    }
+  } catch (e) {
+    log(`session-read-failed ${e}`);
+  }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

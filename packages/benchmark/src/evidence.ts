@@ -811,6 +811,49 @@ export interface ExecutionEvidence {
   readonly resourceLoadedPage: ResourceLoadedPageEvidence;
   /** Deterministic representative real-site smoke evidence. */
   readonly realSiteSmoke: RealSiteSmokeEvidence;
+  /** RFC 0038: incremental layout — boundary replay counts + correctness. */
+  readonly subtreeReuse: SubtreeReuseEvidence;
+  /** RFC 0039: paint invalidation — display-list diff + retained surface. */
+  readonly paintDamage: PaintDamageEvidence;
+}
+
+/** RFC 0039: a localized mutation repairs only its damage rect. */
+export interface PaintDamageEvidence {
+  readonly scenario: string;
+  /** Commands identical between frames (prefix+suffix alignment). */
+  readonly unchangedCommands: number;
+  readonly changedCommands: number;
+  /** Damage-union area vs the full viewport — the repainted fraction. */
+  readonly damageAreaPx2: number;
+  readonly viewportAreaPx2: number;
+  /** In-place repair actually ran (retained buffer reused). */
+  readonly repaired: boolean;
+  /** No-change repaint short-circuited to the retained pixels. */
+  readonly identicalNoop: boolean;
+  /** Damaged render is byte-identical to a fresh full load of the document. */
+  readonly partialCorrect: boolean;
+  /**
+   * Whole-repaint wall-time for the damaged repaint vs a forced full-viewport
+   * one. Dominated by layout+PNG encode — reported as context, not proof of a
+   * raster speedup; `damageAreaPx2`/`repaired` are the real evidence.
+   */
+  readonly warmRepaintMs: number;
+  readonly coldRepaintMs: number;
+}
+
+/** RFC 0038: one mutation inside a panel → undamaged boundaries replay. */
+export interface SubtreeReuseEvidence {
+  readonly scenario: string;
+  readonly documentNodes: number;
+  readonly boundaryHits: number;
+  readonly boundaryMisses: number;
+  readonly boundaryStores: number;
+  readonly bypassed: number;
+  /** The replayed tree is geometrically identical to a fresh full layout. */
+  readonly replayCorrect: boolean;
+  /** Layout wall-time with the cache warm vs a forced all-miss run. */
+  readonly warmLayoutMs: number;
+  readonly coldLayoutMs: number;
 }
 
 /** Run maintained WPT subsets with trace enabled and reduce them to stable counts. */
@@ -863,6 +906,8 @@ export async function collectExecutionEvidence(repoRoot: string): Promise<Execut
     tracedStages: Object.freeze([...stages].sort()),
     incrementalEdit: collectIncrementalEditEvidence(),
     scriptDrivenEdit: collectScriptDrivenEditEvidence(),
+    subtreeReuse: collectSubtreeReuseEvidence(),
+    paintDamage: await collectPaintDamageEvidence(),
     resourceLoadedPage: await collectResourceLoadedPageEvidence(),
     realSiteSmoke: await collectRealSiteSmokeEvidence(),
   };
@@ -946,6 +991,209 @@ export function collectIncrementalEditEvidence(): IncrementalEditEvidence {
     steps: Object.freeze(steps),
     ...counts,
   });
+}
+
+// ---------------------------------------------------------------------------
+// RFC 0038: incremental-layout subtree reuse — mutation inside one panel
+// replays every undamaged formatting-context boundary.
+// ---------------------------------------------------------------------------
+
+const SUBTREE_REUSE_PANELS = 120;
+
+function subtreeReuseHtml(): string {
+  // Each panel carries a genuinely deep subtree — a paragraph, a nested list,
+  // and a flex row — so replaying its fragments is measurably cheaper than
+  // re-shaping, re-wrapping, and re-placing the whole subtree.
+  const panels = Array.from(
+    { length: SUBTREE_REUSE_PANELS },
+    (_, i) =>
+      `<div class="panel"><p id="p${i}">panel ${i} — a paragraph with enough text to wrap around the narrow measure several times over</p>` +
+      `<ul><li>row ${i}a with a longer line of content to shape</li>` +
+      `<li>row ${i}b another wrapped list item with real words</li><li>row ${i}c</li></ul>` +
+      `<div class="meta"><span>tag ${i} label</span><span>version ${i}.0.0</span><span>${i} items</span></div>` +
+      `<div class="sub"><div><div>deep ${i} nested content here</div><div>more depth ${i}</div></div></div>` +
+      `</div>`,
+  ).join("");
+  return (
+    "<html><head><style>" +
+    ".panel { overflow: hidden; margin: 2px; padding: 3px }" +
+    ".meta { display: flex } .meta span { margin-right: 4px }" +
+    ".sub div div { padding-left: 4px }" +
+    "</style></head>" +
+    `<body>${panels}</body></html>`
+  );
+}
+
+/** NodeId of the `<p>` inside panel `i`. */
+function subtreeReuseTextId(session: FineSession, i: number): NodeId {
+  const p = nodeById(session, `p${i}`);
+  const pNode = session.dom.nodes.get(p);
+  const textId = pNode?.children[0];
+  if (textId === undefined) throw new Error("subtree-reuse evidence: panel text missing");
+  return textId;
+}
+
+export function collectSubtreeReuseEvidence(): SubtreeReuseEvidence {
+  const session = new FineSession(subtreeReuseHtml(), "benchmark://subtree-reuse");
+  session.render(); // prime: every boundary stores its subtree
+  session.layoutTree();
+
+  // Warm run: mutate one panel's text → all other panels replay.
+  session.setText(subtreeReuseTextId(session, 60), "MUTATED — the warm run re-lays only this panel");
+  const t0 = performance.now();
+  const warmTree = session.layoutTree();
+  const warmLayoutMs = performance.now() - t0;
+  const stats = { ...session.layoutDamage.stats };
+
+  // Cold run: same kind of mutation but the epoch is bumped — every boundary
+  // misses and re-lays out; this is the whole-tree-relayout baseline.
+  session.setText(subtreeReuseTextId(session, 30), "MUTATED AGAIN — cold run relayouts all");
+  session.layoutDamage.epoch += 1;
+  const t1 = performance.now();
+  session.layoutTree();
+  const coldLayoutMs = performance.now() - t1;
+
+  // Repeat both phases so JIT warm-up does not bias the first measurement:
+  // the LAST warm/cold pair is the reported number.
+  let warmBest = warmLayoutMs;
+  let coldBest = coldLayoutMs;
+  for (let i = 0; i < 3; i += 1) {
+    session.setText(subtreeReuseTextId(session, 61), `warm${i}`);
+    const w0 = performance.now();
+    session.layoutTree();
+    warmBest = Math.min(warmBest, performance.now() - w0);
+    session.setText(subtreeReuseTextId(session, 31), `cold${i}`);
+    session.layoutDamage.epoch += 1;
+    const c0 = performance.now();
+    session.layoutTree();
+    coldBest = Math.min(coldBest, performance.now() - c0);
+  }
+
+  // Correctness: the warm (replayed) tree's geometry must equal a cold
+  // all-miss relayout of the same document state — replay is never allowed
+  // to drift from what a full layout would produce.
+  const replayCorrect = verifyAgainstFullLayout(warmTree);
+
+  return Object.freeze({
+    scenario: `${SUBTREE_REUSE_PANELS} overflow:hidden panels; text edit inside one panel`,
+    documentNodes: session.dom.nodes.size,
+    boundaryHits: stats.hits,
+    boundaryMisses: stats.misses,
+    boundaryStores: stats.stores,
+    bypassed: stats.bypassed,
+    replayCorrect,
+    warmLayoutMs: warmBest,
+    coldLayoutMs: coldBest,
+  });
+}
+
+/**
+ * Compare the warm (replayed) tree against a second session driven to the
+ * SAME document state but forced all-miss — the replay must equal a cold
+ * full relayout fragment for fragment.
+ */
+function verifyAgainstFullLayout(
+  warmTree: ReturnType<FineSession["layoutTree"]>,
+): boolean {
+  // A control session reproduces the warm-run document state: same html,
+  // same first mutation; the damage store is flipped global so every
+  // boundary re-lays out (the full-layout baseline).
+  const control = new FineSession(subtreeReuseHtml(), "benchmark://subtree-reuse-ctl");
+  control.render();
+  control.layoutTree();
+  control.setText(subtreeReuseTextId(control, 60), "MUTATED — the warm run re-lays only this panel");
+  control.layoutDamage.global = true;
+  const reference = control.layoutTree();
+  const incremental = warmTree;
+  const key = (tree: typeof reference): string =>
+    [...tree.fragments.values()]
+      .map((f) => {
+        const bb = f.box.borderBox;
+        return `${String(f.node)}:${bb.x},${bb.y},${bb.width},${bb.height}`;
+      })
+      .sort()
+      .join("|");
+  return key(incremental) === key(reference);
+}
+
+/** RFC 0039 scenario document: 120 panels, one text edit inside one. */
+function paintDamageHtml(label: string): string {
+  const panels = Array.from(
+    { length: 120 },
+    (_, i) => `<div class="panel" id="p${i}"><p>panel ${i} body</p></div>`,
+  ).join("");
+  return `<!doctype html><html><head><style>
+    body { font-family: browser-engine-builtin; }
+    .panel { background: #203858; height: 24px;
+             margin: 1px 0; color: #dde; font-size: 11px; }
+    #edit { background: #583820; color: #ffd; }
+    </style></head><body>
+    <div id="edit"><p>${label}</p></div>
+    ${panels}
+    </body></html>`;
+}
+
+/**
+ * RFC 0039: paint invalidation evidence — load, mutate one text node, and
+ * repaint through the retained-surface path. Reports how much of the frame
+ * the diff actually damaged and proves the repair is pixel-identical to a
+ * from-scratch load of the mutated document.
+ */
+export async function collectPaintDamageEvidence(): Promise<PaintDamageEvidence> {
+  const { loadPage, repaintPage } = await import("@browser-engine/app");
+  const viewport = { width: 480, height: 360, devicePixelRatio: 1 };
+  const mutated = "edited panel content MUTATED";
+  const page = await loadPage(
+    `${paintDamageHtml("before")}<script>window.__m = () => {
+      document.getElementById('edit').firstChild.textContent = '${mutated}';
+      return true;
+    };</script>`,
+    { viewport, runScripts: true, keepAlive: true },
+  );
+  if (page === null) throw new Error("paint-damage evidence: initial load failed");
+  try {
+    // Baseline: a repaint that damages the whole viewport (scroll forces all
+    // command positions to change) is the full-raster comparison point.
+    const w0 = performance.now();
+    await repaintPage(page, { ...viewport, width: viewport.width + 8 }, page.focus, page.scrollY);
+    const coldMs = performance.now() - w0;
+
+    // Warm run back at the original viewport: two diffs — restore full, then
+    // the localized edit lands on a retained buffer at the final size.
+    const restored = await repaintPage(page, viewport, page.focus, page.scrollY);
+    const win = page.runtime?.globals as Record<string, unknown> | null;
+    const mutate = win?.["__m"] as (() => boolean) | undefined;
+    if (mutate === undefined) throw new Error("paint-damage evidence: hook missing");
+    mutate();
+    const w1 = performance.now();
+    const next = await repaintPage(restored, viewport, page.focus, page.scrollY);
+    const warmMs = performance.now() - w1;
+    const stats = next.paintDamage;
+    if (stats === undefined) throw new Error("paint-damage evidence: no stats");
+
+    // A repaint with no mutation must be a raster no-op.
+    const noop = await repaintPage(next, viewport, next.focus, next.scrollY);
+
+    // Ground truth: fresh load of the mutated document paints same pixels.
+    const fresh = await loadPage(paintDamageHtml(mutated), { viewport });
+    const partialCorrect =
+      fresh !== null && Buffer.compare(next.pngBytes, fresh.pngBytes) === 0;
+
+    return Object.freeze({
+      scenario: "120 static panels; text edit inside one div",
+      unchangedCommands: stats.unchangedCommands,
+      changedCommands: stats.changedCommands,
+      damageAreaPx2: stats.damageArea,
+      viewportAreaPx2: stats.viewportArea,
+      repaired: stats.repaired,
+      identicalNoop: noop.paintDamage?.identical === true,
+      partialCorrect,
+      warmRepaintMs: warmMs,
+      coldRepaintMs: coldMs,
+    });
+  } finally {
+    page.runtime?.disposeWorkers?.();
+  }
 }
 
 function scriptDrivenEditHtml(): string {

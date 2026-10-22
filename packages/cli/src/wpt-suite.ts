@@ -21,8 +21,13 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 
+import { DEFAULT_MEDIA_ENVIRONMENT } from "@browser-engine/css-parser";
 import { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
+import { CSS } from "./css-supports.js";
+import { createMatchMedia } from "./match-media.js";
+import { createMediaPreferences } from "./preferences.js";
+import { installConstructableStylesheets } from "./constructable-sheet.js";
 import { createStageTraceCollector, type StageTrace } from "./stage-trace.js";
 import { createAssertions, WptAssertionError } from "./testharness.js";
 import {
@@ -178,11 +183,34 @@ function buildAsyncHarness(): AsyncHarness {
     return tools;
   };
 
+  // Tests in one file share document state. Run them in source order, one at a
+  // time, so a later promise_test cannot mutate state under an earlier one.
+  const jobs: Array<() => Promise<void>> = [];
+  let draining: Promise<void> | null = null;
+  const enqueue = (job: () => Promise<void>): void => {
+    jobs.push(job);
+  };
+  const startDrain = async (): Promise<void> => {
+    if (draining !== null) return draining;
+    draining = (async () => {
+      while (jobs.length > 0) {
+        const job = jobs.shift();
+        if (job !== undefined) await job();
+      }
+    })();
+    try {
+      await draining;
+    } finally {
+      draining = null;
+    }
+    return undefined;
+  };
+
+  // testharness `test()` runs the body immediately, so script statements between
+  // calls observe and change the document the same way a browser does.
   const test = (func: unknown, name: unknown): void => {
     if (typeof func !== "function") return;
     const n = typeof name === "string" ? name : "(unnamed test)";
-    // A synchronous test still gets the tool object as `this` (tests call
-    // `this.step_func(...)`), and a failing step marks the whole test failed.
     const outcome: { status?: WptSubtest["status"]; message?: string | null } = {};
     const tools = makeTools((status, message) => {
       outcome.status ??= status;
@@ -203,15 +231,22 @@ function buildAsyncHarness(): AsyncHarness {
     const n = typeof name === "string" ? name : (typeof func === "string" ? func : "(unnamed async_test)");
     let settled = false;
     let resolveDone!: () => void;
-    pending.push(new Promise<void>((r) => (resolveDone = r)));
+    const done = new Promise<void>((r) => (resolveDone = r));
+    pending.push(done);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (status: WptSubtest["status"], message: string | null): void => {
       if (settled) return;
       settled = true;
+      if (timer !== undefined) clearTimeout(timer);
       push(n, status, message);
       resolveDone();
     };
     const t = makeTools(finish);
-    if (typeof func === "function") t.step(func, t);
+    enqueue(() => {
+      timer = setTimeout(() => finish("ERROR", "Test timed out"), 5000);
+      if (typeof func === "function") t.step(func, t);
+      return done;
+    });
     return t;
   };
 
@@ -220,22 +255,30 @@ function buildAsyncHarness(): AsyncHarness {
     if (typeof func !== "function") return;
     let settled = false;
     let resolveDone!: () => void;
-    pending.push(new Promise<void>((r) => (resolveDone = r)));
+    const done = new Promise<void>((r) => (resolveDone = r));
+    pending.push(done);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (status: WptSubtest["status"], message: string | null): void => {
       if (settled) return;
       settled = true;
+      if (timer !== undefined) clearTimeout(timer);
       push(n, status, message);
       resolveDone();
     };
-    void Promise.resolve()
-      .then(() => (func as (t: TestTools) => unknown)(makeTools(finish)))
-      .then(
-        () => finish("PASS", null),
-        (e: unknown) => {
-          const c = classify(e);
-          finish(c.status, c.message);
-        },
-      );
+    enqueue(() => {
+      timer = setTimeout(() => finish("ERROR", "Test timed out"), 5000);
+      const tools = makeTools(finish);
+      void Promise.resolve()
+        .then(() => (func as (this: TestTools, t: TestTools) => unknown).call(tools, tools))
+        .then(
+          () => finish("PASS", null),
+          (e: unknown) => {
+            const c = classify(e);
+            finish(c.status, c.message);
+          },
+        );
+      return done;
+    });
   };
 
   const globals: Record<string, unknown> = {
@@ -257,11 +300,11 @@ function buildAsyncHarness(): AsyncHarness {
   };
 
   const settle = async (timeoutMs: number): Promise<void> => {
-    if (pending.length === 0) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)));
-    await Promise.race([Promise.allSettled(pending), timeout]);
-    if (timer !== undefined) clearTimeout(timer);
+    const timeout = new Promise<void>((r) => setTimeout(r, timeoutMs));
+    const done = (async () => {
+      while (jobs.length > 0 || draining !== null) await startDrain();
+    })();
+    await Promise.race([done, timeout]);
   };
 
   return { globals, subtests, settle };
@@ -278,9 +321,10 @@ export function extractScripts(html: string): { src?: string; content: string }[
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const attrs = m[1] ?? "";
-    const srcMatch = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
-    if (srcMatch !== null) {
-      scripts.push({ src: srcMatch[1] as string, content: "" });
+    const srcMatch = /\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i.exec(attrs);
+    const src = srcMatch?.[1] ?? srcMatch?.[2] ?? srcMatch?.[3];
+    if (src !== undefined) {
+      scripts.push({ src, content: "" });
     } else {
       scripts.push({ content: m[2] ?? "" });
     }
@@ -319,7 +363,11 @@ export async function runWptHtml(
       },
     },
   );
+  const frameSlot: { current: (cb: () => void) => void } = {
+    current: (cb) => queueMicrotask(cb),
+  };
   const { document, globals } = buildDocumentApi(session, {
+    scheduleFrame: (cb) => frameSlot.current(cb),
     inlineHandlerCompiler: (body): unknown => vm.runInContext(`(function (event) {\n${body}\n})`, guestContext as vm.Context),
     // a/area activation navigates: update the sandbox location and fire a
     // hashchange at the window (only when the fragment actually changed).
@@ -370,6 +418,40 @@ export async function runWptHtml(
   sandbox["WheelEvent"] = WheelEvent;
   sandbox["CompositionEvent"] = CompositionEvent;
   sandbox["performance"] = { now: () => performance.now(), timeOrigin: 0 };
+  const animationFrameQueue: Array<(time: number) => void> = [];
+  let animationFrameScheduled = false;
+  const requestAnimationFrame = (fn: unknown): number => {
+    if (typeof fn !== "function") return 0;
+    animationFrameQueue.push(fn as (time: number) => void);
+    if (!animationFrameScheduled) {
+      animationFrameScheduled = true;
+      setTimeout(() => {
+        animationFrameScheduled = false;
+        const batch = animationFrameQueue.splice(0);
+        const time = performance.now();
+        for (const callback of batch) callback(time);
+      }, 0);
+    }
+    return animationFrameQueue.length;
+  };
+  sandbox["requestAnimationFrame"] = requestAnimationFrame;
+  frameSlot.current = (cb) => {
+    requestAnimationFrame(cb);
+  };
+  const mediaPreferences = createMediaPreferences();
+  sandbox["navigator"] = { preferences: mediaPreferences.api };
+  sandbox["matchMedia"] = createMatchMedia(() => mediaPreferences.environment(DEFAULT_MEDIA_ENVIRONMENT));
+  sandbox["CSS"] = CSS;
+  installConstructableStylesheets(sandbox);
+  // HTML named access: an element's id is a property of the window when that
+  // name is not already a global. Tests read `ex_ref` / `media_sheet` that way.
+  for (const node of session.dom.nodes.values()) {
+    if (node.kind !== "element") continue;
+    const id = node.attrs?.get("id");
+    if (id === undefined || id === "" || sandbox[id] !== undefined) continue;
+    const named = (document as { getElementById(elementId: string): object | null }).getElementById(id);
+    if (named !== null) sandbox[id] = named;
+  }
   const windowTarget = new EventTarget();
   sandbox["addEventListener"] = windowTarget.addEventListener.bind(windowTarget);
   sandbox["removeEventListener"] = windowTarget.removeEventListener.bind(windowTarget);
@@ -388,7 +470,12 @@ export async function runWptHtml(
       if (source.trim() === "") continue;
       vm.runInContext(source, sandbox, { timeout: 5000 });
     }
-    await harness.settle(2000);
+    // `load` is a macrotask so a test can subscribe during its startup
+    // microtask and still observe it. Parser-blocking scripts run first.
+    setTimeout(() => {
+      windowTarget.dispatchEvent(new Event("load"));
+    }, 0);
+    await harness.settle(20000);
   } catch (error) {
     harnessError = error instanceof Error ? error.message : String(error);
   }

@@ -2,6 +2,9 @@ export interface EngineViewport {
   readonly width: number;
   readonly height: number;
   readonly devicePixelRatio?: number;
+  /** User/system media preferences (prefers-* media features). */
+  readonly prefersColorScheme?: "light" | "dark";
+  readonly prefersReducedMotion?: boolean;
 }
 
 export interface EngineFrame {
@@ -56,6 +59,7 @@ export const DEFAULT_APP_VIEWPORT: EngineViewport = Object.freeze({
 export function normalizeViewport(
   input: Partial<EngineViewport> | null | undefined,
   fallback: EngineViewport = DEFAULT_APP_VIEWPORT,
+  minEdge = 200,
 ): EngineViewport {
   const width = Number(input?.width);
   const height = Number(input?.height);
@@ -63,9 +67,15 @@ export function normalizeViewport(
   const devicePixelRatio =
     Number.isFinite(dprIn) && dprIn >= 1 ? Math.min(Math.max(dprIn, 1), 3) : 1;
   return {
-    width: Number.isFinite(width) && width >= 200 ? Math.min(Math.floor(width), 4096) : fallback.width,
-    height: Number.isFinite(height) && height >= 200 ? Math.min(Math.floor(height), 4096) : fallback.height,
+    width: Number.isFinite(width) && width >= minEdge ? Math.min(Math.floor(width), 4096) : fallback.width,
+    height: Number.isFinite(height) && height >= minEdge ? Math.min(Math.floor(height), 4096) : fallback.height,
     devicePixelRatio,
+    ...(input?.prefersColorScheme !== undefined || fallback.prefersColorScheme !== undefined
+      ? { prefersColorScheme: input?.prefersColorScheme ?? fallback.prefersColorScheme ?? "light" }
+      : {}),
+    ...(input?.prefersReducedMotion === true || fallback.prefersReducedMotion === true
+      ? { prefersReducedMotion: true }
+      : {}),
   };
 }
 

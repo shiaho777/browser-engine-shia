@@ -18,6 +18,7 @@
     "@browser-engine/scoreboard": "0.0.0",
     "@browser-engine/generator": "0.0.0",
     "@browser-engine/cli": "0.0.0",
+    "@browser-engine/app": "0.0.0",
     "@browser-engine/test-harness": "0.0.0"
   }
 }

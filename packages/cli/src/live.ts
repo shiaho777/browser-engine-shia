@@ -48,15 +48,33 @@ import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
 
 import { documentStylesheets } from "./stylesheets.js";
+import {
+  DEFAULT_MEDIA_ENVIRONMENT,
+  type MediaEnvironment,
+} from "@browser-engine/css-parser";
 import { collectImages } from "./images.js";
 import type { NodeRef, Url } from "./pipeline.js";
-import { pipelineShaper } from "./fonts.js";
+import { pipelineFontRegistry, pipelineShaperFor } from "./fonts.js";
+import { registerFontFacesSync } from "./webfonts.js";
 
 /** The live, mutable DOM — a kernel INPUT (seeded from parse, edited by script). */
 export const LiveDom: InputSlot<Url, DomTree> = defineInput<Url, DomTree>("LiveDom");
 
+/** The live media environment — viewport/DPR/prefers-* feeding `@media`
+ * evaluation. Defaults to the 800×600 screen until the session sets it. */
+export const LiveMedia: InputSlot<Url, MediaEnvironment> =
+  defineInput<Url, MediaEnvironment>("LiveMedia");
+
 /** `qLiveSheets` — collect stylesheets from the live DOM. */
-export const qLiveSheets = define((db, url: Url) => documentStylesheets(db.getInput(LiveDom, url)), "qLiveSheets");
+export const qLiveSheets = define((db, url: Url) => {
+  let media: MediaEnvironment = DEFAULT_MEDIA_ENVIRONMENT;
+  try {
+    media = db.getInput(LiveMedia, url);
+  } catch {
+    /* unset ⇒ default env */
+  }
+  return documentStylesheets(db.getInput(LiveDom, url), undefined, media);
+}, "qLiveSheets");
 
 /** `qLiveComputed` — the cascade product for one node off the live DOM. */
 export const qLiveComputed: QueryDef<NodeRef, ReturnType<typeof cascade>> = define((db, ref: NodeRef) => {
@@ -68,7 +86,7 @@ export const qLiveComputed: QueryDef<NodeRef, ReturnType<typeof cascade>> = defi
 /** `qLiveLayout` — lay the live DOM out into a FragmentTree. */
 export const qLiveLayout = define((db, url: Url) => {
   const dom = db.getInput(LiveDom, url);
-  return layout(dom, (node) => db.query(qLiveComputed, { url, node }), { shaper: pipelineShaper });
+  return layout(dom, (node) => db.query(qLiveComputed, { url, node }), { shaper: pipelineShaperFor(url) });
 }, "qLiveLayout");
 
 /** `qLivePaint` — the DisplayList for the live document. */
@@ -107,6 +125,12 @@ export class LiveSession {
     return this.#dom;
   }
 
+  /** Update the media environment (viewport resize, DPR, prefers-*) and let
+   * the incremental engine re-evaluate `@media` rules on the next render. */
+  setMedia(env: MediaEnvironment): void {
+    this.#db.setInput(LiveMedia, this.#url, env);
+  }
+
   /** Diagnostic: total compute-fn executions so far (proves memoization). */
   get recomputeCount(): number {
     return this.#db.recomputeCount;
@@ -114,6 +138,14 @@ export class LiveSession {
 
   /** Render the current DOM to a DisplayList (incrementally, via the kernel). */
   render(): DisplayList {
+    // `@font-face` sync subset (RFC 0006): data:/local sources register here
+    // (entry-point seam — queries stay pure); network sources are skipped.
+    registerFontFacesSync(
+      this.#db.query(qLiveSheets, this.#url),
+      pipelineFontRegistry,
+      this.#url,
+      this.#url,
+    );
     return this.#db.query(qLivePaint, this.#url);
   }
 

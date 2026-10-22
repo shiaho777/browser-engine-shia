@@ -36,13 +36,27 @@ import { parseHtml } from "@browser-engine/html-parser";
 import { cascade } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
-import { encodeSurfaceToPng, renderDisplayListOnGpu } from "@browser-engine/backend";
+import {
+  createSkiaBackend,
+  createSurface,
+  encodeSurfaceToPng,
+  loadCanvasKit,
+  renderDisplayListOnGpu,
+  ScreenshotBackend,
+} from "@browser-engine/backend";
+import type { PaintBackend } from "@browser-engine/backend";
 
-import { qPaint, SourceBytes, type Url } from "./pipeline.js";
+import { qPaint, qSheets, SourceBytes, type Url } from "./pipeline.js";
 import { documentStylesheets } from "./stylesheets.js";
 import { collectImages, tryDecode } from "./images.js";
 import { cacheLoader, defaultFetch, discoverSubresources, documentBaseUrl, loadResourcesWithTrace, resolveUrl, type FetchFn } from "./loader.js";
-import { pipelineGlyphSource, pipelineShaper } from "./fonts.js";
+import {
+  pipelineFaceTable,
+  pipelineFontRegistry,
+  pipelineRasterSource,
+  pipelineShaperFor,
+} from "./fonts.js";
+import { registerFontFaces, registerFontFacesSync } from "./webfonts.js";
 import { createStageTraceCollector, type StageTrace, type StageTraceSummary } from "./stage-trace.js";
 
 /**
@@ -68,6 +82,12 @@ export interface RenderResult {
 export interface RenderOptions {
   /** Attach a per-query stage trace to the returned result. */
   readonly trace?: boolean;
+  /**
+   * Render through this {@link PaintBackend} instead of the default GPU
+   * pipeline (RFC 0001). The caller owns backend lifecycle — a Skia backend is
+   * built once via `await createSkiaBackend()` and stays synchronous per render.
+   */
+  readonly backend?: PaintBackend;
 }
 
 /** Stable resource-loaded-page evidence for async URL renders. */
@@ -105,12 +125,15 @@ export function renderHtmlToPng(
   const collector = options.trace === true ? createStageTraceCollector() : undefined;
   const db = new NaiveDb(collector === undefined ? {} : { onQuery: collector.onQuery });
   db.setInput(SourceBytes, url, htmlBytes);
+  // `@font-face` sync subset (RFC 0006): local() + data: sources need no
+  // network — register before the paint query so `font-family` can hit them.
+  registerFontFacesSync(db.query(qSheets, url), pipelineFontRegistry, url, url);
   const displayList = db.query(qPaint, url);
 
-  // 2. Render the WHOLE DisplayList through the GPU compositor (every paint op
-  //    — rects/borders/text/images/clips/layers — becomes GPU commands).
+  // 2. Render the WHOLE DisplayList — through the GPU compositor by default,
+  //    or through the caller-supplied PaintBackend (e.g. Skia, RFC 0001).
   const { width, height } = surfaceSizeFor(displayList);
-  const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource);
+  const surface = paintWithBackend(displayList, width, height, options.backend);
 
   // 3. Encode the rendered pixels to PNG bytes.
   const png = encodeSurfaceToPng(surface);
@@ -142,6 +165,9 @@ export async function renderUrlToPng(
   if (rootBytes === undefined) {
     throw new Error(`render: failed to fetch the document at ${url}`);
   }
+  // Warm the Skia codec surface (RFC 0007) so the synchronous collectImages /
+  // imageBySrc decode below covers every raster format, not just PNG+JPEG.
+  await loadCanvasKit();
 
   // Parse, then fetch the document's external subresources into a cache.
   const dom = parseHtml(rootBytes);
@@ -154,6 +180,15 @@ export async function renderUrlToPng(
   // URL path composes the stages directly rather than via the kernel queries,
   // which take only `SourceBytes`; incremental URL rendering is later work.)
   const sheets = documentStylesheets(dom, load);
+  // `@font-face` phase (RFC 0006): register the sheets' font descriptors under
+  // this document's scope BEFORE layout runs — a webfont must be resolveable
+  // the moment `font-family` names it, exactly like a downloaded font that's
+  // ready inside its block period.
+  const fontEvents = await registerFontFaces(sheets, pipelineFontRegistry, baseUrl, url, {
+    cache: resourceLoad.cache,
+    fetchBytes: fetchFn,
+  });
+  void fontEvents;
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   const images = collectImages(dom, load);
   // A memoized `background-image: url(...)` resolver. CSS background images live
@@ -171,9 +206,12 @@ export async function renderUrlToPng(
     bgImageCache.set(src, decoded);
     return decoded;
   };
-  const displayList = paint(layout(dom, styleOf, { shaper: pipelineShaper }), styleOf, (node) => images.get(node), {
-    imageBySrc,
-  });
+  const displayList = paint(
+    layout(dom, styleOf, { shaper: pipelineShaperFor(url) }),
+    styleOf,
+    (node) => images.get(node),
+    { imageBySrc },
+  );
   const authorSheets = sheets.slice(1);
   const authorRuleCount = authorSheets.reduce((sum, sheet) => sum + sheet.rules.length, 0);
   const authorDeclarationCount = authorSheets.reduce(
@@ -182,7 +220,7 @@ export async function renderUrlToPng(
   );
 
   const { width, height } = surfaceSizeFor(displayList);
-  const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource);
+  const surface = paintWithBackend(displayList, width, height, options.backend);
   const png = encodeSurfaceToPng(surface);
   if (options.trace !== true) {
     return { png, width: surface.width, height: surface.height };
@@ -257,11 +295,34 @@ export function surfaceSizeFor(list: DisplayList): { width: number; height: numb
   };
 }
 
+/**
+ * Render `list` through `backend` when one is supplied, else through the GPU
+ * compositor (the default raster path). The DisplayList is the whole input in
+ * both cases (Requirement 3.5).
+ */
+function paintWithBackend(
+  list: DisplayList,
+  width: number,
+  height: number,
+  backend: PaintBackend | undefined,
+): { readonly width: number; readonly height: number; readonly pixels: Uint8ClampedArray } {
+  if (backend === undefined) {
+    return renderDisplayListOnGpu(list, width, height, pipelineRasterSource);
+  }
+  const surface = createSurface(width, height);
+  backend.render(list, surface);
+  return surface;
+}
+
+/** The `render --backend` choices: the production candidates plus the oracle. */
+export type RenderBackend = "gpu" | "skia" | "cpu";
+
 /** Parsed `render` command arguments. */
 interface RenderArgs {
   readonly input: string;
   readonly output: string;
   readonly trace: boolean;
+  readonly backend: RenderBackend;
 }
 
 /**
@@ -274,6 +335,7 @@ export function parseRenderArgs(argv: readonly string[]): RenderArgs {
   let input: string | undefined;
   let output: string | undefined;
   let trace = false;
+  let backend: RenderBackend = "gpu";
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "-o" || arg === "--output") {
@@ -281,6 +343,12 @@ export function parseRenderArgs(argv: readonly string[]): RenderArgs {
       i += 1;
     } else if (arg === "--trace") {
       trace = true;
+    } else if (arg === "--backend" || arg?.startsWith("--backend=")) {
+      const value = arg === "--backend" ? argv[++i] : arg.slice("--backend=".length);
+      if (value !== "gpu" && value !== "skia" && value !== "cpu") {
+        throw new Error(`render: unknown --backend ${value ?? ""} (expected gpu|skia|cpu)`);
+      }
+      backend = value;
     } else if (arg !== undefined && arg.startsWith("-")) {
       throw new Error(`render: unknown option ${arg}`);
     } else if (arg !== undefined && !arg.startsWith("-")) {
@@ -293,7 +361,7 @@ export function parseRenderArgs(argv: readonly string[]): RenderArgs {
   if (output === undefined) {
     throw new Error("render: missing -o <out.png> argument (usage: render <input.html> -o <out.png>)");
   }
-  return { input, output, trace };
+  return { input, output, trace, backend };
 }
 
 /**
@@ -310,15 +378,28 @@ export async function runRender(argv: readonly string[]): Promise<number> {
     return 1;
   }
   try {
+    // Build the requested backend once: `gpu` is the default in-repo pipeline,
+    // `skia` the real-Skia rasterizer (RFC 0001), `cpu` the differential oracle.
+    const backend =
+      args.backend === "skia"
+        ? await createSkiaBackend({
+            faces: pipelineFaceTable,
+            ascentEm: pipelineRasterSource.ascentEm,
+          })
+        : args.backend === "cpu"
+          ? new ScreenshotBackend({ rasterSource: pipelineRasterSource })
+          : undefined;
     const isUrl = /^https?:\/\//i.test(args.input);
+    const renderOpts: RenderOptions =
+      backend === undefined ? { trace: args.trace } : { trace: args.trace, backend };
     let result: RenderResult;
     if (isUrl) {
       // Fetch the document (and its subresources) from the network, then render.
-      result = await renderUrlToPng(args.input, defaultFetch, { trace: args.trace });
+      result = await renderUrlToPng(args.input, defaultFetch, renderOpts);
       writeFileSync(args.output, result.png);
     } else {
       const htmlBytes = new Uint8Array(readFileSync(args.input));
-      result = renderHtmlToPng(htmlBytes, `file://${args.input}`, { trace: args.trace });
+      result = renderHtmlToPng(htmlBytes, `file://${args.input}`, renderOpts);
       writeFileSync(args.output, result.png);
     }
     console.log(

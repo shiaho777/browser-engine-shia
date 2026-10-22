@@ -6,7 +6,7 @@
  * Built by `tsc` then run with: `node --test packages/cli/dist/*.test.js`.
  *
  * The welding adds initial-valued fields (`position:static`, `float:none`,
- * `opacity:1`, `transform:"none"`, `zIndex:0`, …) to every ComputedStyle. The
+ * `opacity:1`, `transform:"none"`, `zIndex:"auto"`, …) to every ComputedStyle. The
  * layout/paint readers map every such initial to the "normal flow / no layer"
  * path, so a plain block/inline document must produce the SAME FragmentTree and
  * DisplayList as before. These tests pin that:

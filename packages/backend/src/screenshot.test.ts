@@ -17,9 +17,15 @@ import assert from "node:assert/strict";
 
 import type { Color, DisplayList, PaintCmd, Rect } from "@browser-engine/ir";
 import { px } from "@browser-engine/ir";
+import { builtinFont } from "@browser-engine/font";
 
 import { ScreenshotBackend, type PaintBackend } from "./screenshot.js";
 import { createSurface, type Surface } from "./surface.js";
+
+/** The REAL glyph id of `cp` in the default face table (`[builtinFont]`, faceIndex 0). */
+function gidOf(cp: number): number {
+  return builtinFont().glyphIdForCodePoint(cp);
+}
 
 /** Build a frozen DisplayList from a plain command array (mirrors the IR shape). */
 function displayList(commands: readonly PaintCmd[]): DisplayList {
@@ -44,6 +50,39 @@ function pixelAt(surface: Surface, x: number, y: number): [number, number, numbe
 
 const RED: Color = { r: 255, g: 0, b: 0, a: 1 };
 const BLUE: Color = { r: 0, g: 0, b: 255, a: 1 };
+
+void test("linear-gradient to the right blends red into blue", () => {
+  const surface = createSurface(4, 1);
+  new ScreenshotBackend().render(displayList([{
+    op: "linear-gradient",
+    rect: rect(0, 0, 4, 1),
+    angle: 90,
+    stops: [
+      { color: RED, offset: 0 },
+      { color: BLUE, offset: 1 },
+    ],
+  }]), surface);
+  const left = pixelAt(surface, 0, 0);
+  const right = pixelAt(surface, 3, 0);
+  assert.ok(left[0] > left[2], "the left pixel is redder than it is blue");
+  assert.ok(right[2] > right[0], "the right pixel is bluer than it is red");
+});
+
+void test("radial-gradient is red at the center and bluer at the corner", () => {
+  const surface = createSurface(3, 3);
+  new ScreenshotBackend().render(displayList([{
+    op: "radial-gradient",
+    rect: rect(0, 0, 3, 3),
+    stops: [
+      { color: RED, offset: 0 },
+      { color: BLUE, offset: 1 },
+    ],
+  }]), surface);
+  const center = pixelAt(surface, 1, 1);
+  const corner = pixelAt(surface, 0, 0);
+  assert.ok(center[0] > center[2], "the center pixel is redder than it is blue");
+  assert.ok(corner[2] > corner[0], "the corner pixel is bluer than it is red");
+});
 
 void test("renders an opaque rect into the correct pixel region (Req 14.1)", () => {
   const surface = createSurface(10, 10);
@@ -160,7 +199,7 @@ void test("a text command rasterizes a real glyph's coverage into pixels", () =>
     displayList([
       {
         op: "text",
-        glyphs: [{ glyphId: 0x48, advance: px(5), offset: { x: px(0), y: px(0) } }],
+        glyphs: [{ glyphId: gidOf(0x48), faceIndex: 0, advance: px(5), offset: { x: px(0), y: px(0) } }],
         at: { x: px(0), y: px(0) },
         fill: RED,
         fontSize: px(7),
@@ -182,14 +221,14 @@ void test("a text command rasterizes a real glyph's coverage into pixels", () =>
   assert.ok(inked >= 10, "'H' inks a substantial number of pixels, not a solid block or nothing");
 });
 
-void test("an uncovered glyph id paints nothing (a missing glyph, never a fake block)", () => {
-  // U+E000 (a Private Use Area code point) is not in the built-in font.
+void test("an out-of-range glyph id paints nothing (beyond the face's numGlyphs)", () => {
+  // gid 0xe000 is far past the built-in face's numGlyphs ⇒ empty outline.
   const surface = createSurface(8, 8);
   new ScreenshotBackend().render(
     displayList([
       {
         op: "text",
-        glyphs: [{ glyphId: 0xe000, advance: px(5), offset: { x: px(0), y: px(0) } }],
+        glyphs: [{ glyphId: 0xe000, faceIndex: 0, advance: px(5), offset: { x: px(0), y: px(0) } }],
         at: { x: px(0), y: px(0) },
         fill: RED,
         fontSize: px(7),
@@ -212,8 +251,8 @@ void test("glyphs are positioned by their offset within the run", () => {
       {
         op: "text",
         glyphs: [
-          { glyphId: 0x48, advance: px(5), offset: { x: px(0), y: px(0) } },
-          { glyphId: 0x48, advance: px(5), offset: { x: px(6), y: px(0) } },
+          { glyphId: gidOf(0x48), faceIndex: 0, advance: px(5), offset: { x: px(0), y: px(0) } },
+          { glyphId: gidOf(0x48), faceIndex: 0, advance: px(5), offset: { x: px(6), y: px(0) } },
         ],
         at: { x: px(0), y: px(0) },
         fill: BLUE,
@@ -234,7 +273,7 @@ void test("text rasterization is clipped to the current clip rect", () => {
       { op: "push-clip", rect: { x: px(0), y: px(0), width: px(3), height: px(8) } as unknown as Rect },
       {
         op: "text",
-        glyphs: [{ glyphId: 0x48, advance: px(5), offset: { x: px(0), y: px(0) } }],
+        glyphs: [{ glyphId: gidOf(0x48), faceIndex: 0, advance: px(5), offset: { x: px(0), y: px(0) } }],
         at: { x: px(0), y: px(0) },
         fill: RED,
         fontSize: px(7),
@@ -256,7 +295,7 @@ void test("glyphs are ANTI-ALIASED at non-integer scale (partial-coverage edge p
     displayList([
       {
         op: "text",
-        glyphs: [{ glyphId: 0x48, advance: px(13), offset: { x: px(0), y: px(0) } }],
+        glyphs: [{ glyphId: gidOf(0x48), faceIndex: 0, advance: px(13), offset: { x: px(0), y: px(0) } }],
         at: { x: px(0), y: px(0) },
         fill: { r: 255, g: 0, b: 0, a: 1 },
         fontSize: px(17),
@@ -283,7 +322,7 @@ void test("glyphs are ANTI-ALIASED at non-integer scale (partial-coverage edge p
 void test("coverage rasterization is deterministic (same command ⇒ identical pixels)", () => {
   const cmd: PaintCmd = {
     op: "text",
-    glyphs: [{ glyphId: 0x41, advance: px(11), offset: { x: px(0), y: px(0) } }],
+    glyphs: [{ glyphId: gidOf(0x41), faceIndex: 0, advance: px(11), offset: { x: px(0), y: px(0) } }],
     at: { x: px(1), y: px(1) },
     fill: { r: 0, g: 0, b: 0, a: 1 },
     fontSize: px(15),
@@ -372,4 +411,114 @@ void test("filter: blur spreads a hard square's coverage beyond its edges", () =
   const [r] = pixelAt(surface, 6, 10);
   assert.ok(r < 255, "blur bled ink outside the original square");
   assert.ok(r > 150, "but it is a soft, partial tint (not full black)");
+});
+
+// ---------------------------------------------------------------------------
+// `tile` command (RFC 0008) — repeated background images.
+// ---------------------------------------------------------------------------
+
+function checker2(): import("@browser-engine/ir").DecodedImage {
+  // 2×2: red | blue / blue | red — a visible checker pattern when tiled.
+  const pixels = new Uint8ClampedArray(16);
+  const put = (i: number, c: Color): void => {
+    pixels[i * 4] = c.r;
+    pixels[i * 4 + 1] = c.g;
+    pixels[i * 4 + 2] = c.b;
+    pixels[i * 4 + 3] = 255;
+  };
+  put(0, RED);
+  put(1, BLUE);
+  put(2, BLUE);
+  put(3, RED);
+  return { width: 2, height: 2, pixels };
+}
+
+void test("RFC 0008: tile repeats the source across the area at tile size", () => {
+  const surface = createSurface(8, 4);
+  new ScreenshotBackend().render(
+    displayList([
+      {
+        op: "tile",
+        area: rect(0, 0, 8, 4),
+        src: checker2(),
+        tile: { width: px(2), height: px(2) },
+        origin: { x: px(0), y: px(0) },
+        step: { x: px(2), y: px(2) },
+        repeatX: true,
+        repeatY: true,
+      },
+    ]),
+    surface,
+  );
+  assert.deepEqual(pixelAt(surface, 0, 0), [255, 0, 0, 255]);
+  assert.deepEqual(pixelAt(surface, 1, 0), [0, 0, 255, 255]);
+  assert.deepEqual(pixelAt(surface, 2, 0), [255, 0, 0, 255], "tile 2 row 0 repeats the pattern");
+  assert.deepEqual(pixelAt(surface, 3, 3), [255, 0, 0, 255], "local (1,1) is red");
+});
+
+void test("RFC 0008: tile clips painting to the area rect", () => {
+  const surface = createSurface(8, 8);
+  new ScreenshotBackend().render(
+    displayList([
+      {
+        op: "tile",
+        area: rect(2, 2, 4, 4),
+        src: checker2(),
+        tile: { width: px(2), height: px(2) },
+        origin: { x: px(0), y: px(0) },
+        step: { x: px(2), y: px(2) },
+        repeatX: true,
+        repeatY: true,
+      },
+    ]),
+    surface,
+  );
+  assert.deepEqual(pixelAt(surface, 0, 0), [255, 255, 255, 255], "outside the area stays white");
+  assert.deepEqual(pixelAt(surface, 2, 2), [255, 0, 0, 255]);
+  assert.deepEqual(pixelAt(surface, 5, 5), [255, 0, 0, 255], "local (1,1) is red");
+});
+
+void test("RFC 0008: repeatX-only tiles one row; origin may be negative", () => {
+  const surface = createSurface(8, 6);
+  new ScreenshotBackend().render(
+    displayList([
+      {
+        op: "tile",
+        area: rect(0, 0, 8, 6),
+        src: checker2(),
+        tile: { width: px(2), height: px(2) },
+        origin: { x: px(-1), y: px(4) },
+        step: { x: px(2), y: px(2) },
+        repeatX: true,
+        repeatY: false,
+      },
+    ]),
+    surface,
+  );
+  // Negative origin shifts the phase: x=0 samples tile pixel (1,0) → blue.
+  assert.deepEqual(pixelAt(surface, 0, 4), [0, 0, 255, 255]);
+  assert.deepEqual(pixelAt(surface, 1, 4), [255, 0, 0, 255]);
+  assert.deepEqual(pixelAt(surface, 0, 0), [255, 255, 255, 255], "no-repeat on y ⇒ one row only");
+});
+
+void test("RFC 0008: a gapped step (space repeat) leaves the gap unpainted", () => {
+  const surface = createSurface(10, 2);
+  new ScreenshotBackend().render(
+    displayList([
+      {
+        op: "tile",
+        area: rect(0, 0, 10, 2),
+        src: checker2(),
+        tile: { width: px(2), height: px(2) },
+        origin: { x: px(0), y: px(0) },
+        step: { x: px(4), y: px(2) },
+        repeatX: true,
+        repeatY: true,
+      },
+    ]),
+    surface,
+  );
+  assert.deepEqual(pixelAt(surface, 0, 0), [255, 0, 0, 255]);
+  assert.deepEqual(pixelAt(surface, 2, 0), [255, 255, 255, 255], "the 2px gap is unpainted");
+  assert.deepEqual(pixelAt(surface, 4, 0), [255, 0, 0, 255]);
 });

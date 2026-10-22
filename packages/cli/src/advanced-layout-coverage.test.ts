@@ -125,6 +125,7 @@ interface StyleSpec {
   readonly top?: number;
   readonly left?: number;
   readonly "flex-direction"?: string;
+  readonly "flex-grow"?: number;
   readonly "grid-template-columns"?: number;
 }
 
@@ -146,6 +147,7 @@ function makeStyle(spec: StyleSpec = {}): ComputedStyle {
   // The layout engine reads the GENERATED camelCase fields (matching the real
   // cascade output), so the synthetic style writes them under those names.
   if (spec["flex-direction"] !== undefined) style["flexDirection"] = spec["flex-direction"];
+  if (spec["flex-grow"] !== undefined) style["flexGrow"] = spec["flex-grow"];
   if (spec["grid-template-columns"] !== undefined) {
     style["gridTemplateColumns"] = spec["grid-template-columns"];
   }
@@ -534,7 +536,7 @@ function referencePng(width: number, height: number, draw: (s: Surface) => void)
 }
 
 void test("Req 10.4: a flex-row scene renders coloured halves matching the reference within threshold", () => {
-  // container(200×50) flex row of two auto-width children ⇒ 100px each, side by
+  // container(200×50) flex row of two flex-grow:1 children ⇒ 100px each, side by
   // side: child A red on the left, child B blue on the right.
   const dom = buildDom([
     { id: 0, kind: "document", parent: null, children: [1] },
@@ -545,8 +547,8 @@ void test("Req 10.4: a flex-row scene renders coloured halves matching the refer
   const styleOf = styleTable(
     new Map([
       [1, makeStyle({ display: "flex", width: 200, height: 50 })],
-      [2, makeStyle({ display: "block", height: 50, backgroundColor: RED })],
-      [3, makeStyle({ display: "block", height: 50, backgroundColor: BLUE })],
+      [2, makeStyle({ display: "block", height: 50, backgroundColor: RED, "flex-grow": 1 })],
+      [3, makeStyle({ display: "block", height: 50, backgroundColor: BLUE, "flex-grow": 1 })],
     ]),
   );
 

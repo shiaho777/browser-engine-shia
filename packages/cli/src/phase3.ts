@@ -169,14 +169,14 @@ function fragmentForNode(tree: FragmentTree, node: NodeId): Fragment {
 }
 
 /** A deterministic in-memory network stack for the fetch / font-face checks. */
-function memoryStack(routes: Record<string, NetworkResponse>): NetworkStack {
+function memoryStack(routes: Record<string, Omit<NetworkResponse, "url"> & { url?: string }>): NetworkStack {
   return {
     request(req: NetworkRequest): Promise<NetworkResponse> {
       const route = routes[req.url];
       if (route === undefined) {
-        return Promise.resolve({ status: 404, ok: false, headers: {}, body: new Uint8Array() });
+        return Promise.resolve({ url: req.url, status: 404, ok: false, headers: {}, body: new Uint8Array() });
       }
-      return Promise.resolve(route);
+      return Promise.resolve({ url: req.url, ...route });
     },
   };
 }

@@ -13,10 +13,16 @@ import assert from "node:assert/strict";
 
 import type { Color, DisplayList, PaintCmd, Rect } from "@browser-engine/ir";
 import { px } from "@browser-engine/ir";
+import { builtinFont } from "@browser-engine/font";
 
 import { ScreenshotBackend } from "./screenshot.js";
 import { createSurface, type Surface } from "./surface.js";
 import { renderDisplayListOnGpu } from "./gpu-render.js";
+
+/** The REAL glyph id of `cp` in the default face table (`[builtinFont]`, faceIndex 0). */
+function gidOf(cp: number): number {
+  return builtinFont().glyphIdForCodePoint(cp);
+}
 
 function displayList(commands: readonly PaintCmd[]): DisplayList {
   return Object.freeze({ commands: Object.freeze([...commands]) }) as unknown as DisplayList;
@@ -74,8 +80,8 @@ void test("GPU renders text (coverage) within tolerance of the CPU reference", (
     {
       op: "text",
       glyphs: [
-        { glyphId: 0x48, advance: px(10), offset: { x: px(0), y: px(0) } },
-        { glyphId: 0x69, advance: px(10), offset: { x: px(12), y: px(0) } },
+        { glyphId: gidOf(0x48), faceIndex: 0, advance: px(10), offset: { x: px(0), y: px(0) } },
+        { glyphId: gidOf(0x69), faceIndex: 0, advance: px(10), offset: { x: px(12), y: px(0) } },
       ],
       at: { x: px(2), y: px(2) },
       fill: BLACK,
@@ -105,4 +111,40 @@ void test("GPU composites an opacity layer + clip identically to the CPU referen
   const gpu = renderDisplayListOnGpu(list, w, h);
   // Independent compositing math may differ by ±1 in a handful of blended pixels.
   assert.ok(diffCount(ref, gpu, 1) === 0, "opacity layer + clip matches within ±1");
+});
+
+void test("GPU renders a `tile` command identically to the CPU reference (RFC 0008)", () => {
+  // 2×2 red/blue checker tiled across a 10×6 area, plus a gapped (space) run.
+  const img = {
+    width: 2,
+    height: 2,
+    pixels: new Uint8ClampedArray([
+      255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255,
+    ]),
+  };
+  const list = displayList([
+    {
+      op: "tile",
+      area: rect(1, 1, 10, 6),
+      src: img,
+      tile: { width: px(2), height: px(2) },
+      origin: { x: px(-1), y: px(0) },
+      step: { x: px(2), y: px(2) },
+      repeatX: true,
+      repeatY: true,
+    },
+    {
+      op: "tile",
+      area: rect(0, 8, 12, 2),
+      src: img,
+      tile: { width: px(2), height: px(2) },
+      origin: { x: px(0), y: px(8) },
+      step: { x: px(4), y: px(2) },
+      repeatX: true,
+      repeatY: false,
+    },
+  ]);
+  const ref = cpu(list, 16, 12);
+  const gpu = renderDisplayListOnGpu(list, 16, 12);
+  assert.equal(diffCount(ref, gpu, 0), 0, "tiled image quads match the CPU oracle exactly");
 });

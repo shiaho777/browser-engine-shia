@@ -17,6 +17,33 @@ import type { DisplayList, DomTree, NodeId, PaintCmd } from "@browser-engine/ir"
 import { nodeId } from "@browser-engine/ir";
 
 import { LiveSession, withRemoveAttribute, withText } from "./live.js";
+import { pipelineFaceTable } from "./fonts.js";
+
+/**
+ * Decode rendered glyphs back to code points: `glyphId` is a REAL font-local
+ * id since RFC 0002, so invert the owning face's cmap (printable ASCII is
+ * enough for these tests' strings) — a glyph no cp maps to decodes as -1.
+ */
+function textCodePoints(list: DisplayList): number[] {
+  const out: number[] = [];
+  for (const c of list.commands) {
+    if (c.op !== "text") continue;
+    for (const g of c.glyphs) {
+      const face = pipelineFaceTable[g.faceIndex];
+      let cp = -1;
+      if (face !== undefined) {
+        for (let candidate = 0x20; candidate <= 0x7e; candidate += 1) {
+          if (face.glyphIdForCodePoint(candidate) === g.glyphId) {
+            cp = candidate;
+            break;
+          }
+        }
+      }
+      out.push(cp);
+    }
+  }
+  return out;
+}
 
 /** Find the first node of a given kind/tag in a session's DOM. */
 function findNode(dom: DomTree, pred: (n: { kind: string; tag?: string; text?: string }) => boolean): NodeId {
@@ -93,20 +120,16 @@ void test("an equal-value mutation disturbs nothing (Req 2.6)", () => {
 void test("mutating text changes the rendered glyph run", () => {
   const session = new LiveSession("<div>hi</div>");
   const before = session.render();
-  const beforeGlyphs = before.commands
-    .filter((c): c is Extract<PaintCmd, { op: "text" }> => c.op === "text")
-    .flatMap((c) => c.glyphs.map((g) => g.glyphId));
+  const beforeCps = textCodePoints(before);
 
   const textId = findNode(session.dom, (n) => n.kind === "text");
   session.setText(textId, "hello");
   const after = session.render();
-  const afterGlyphs = after.commands
-    .filter((c): c is Extract<PaintCmd, { op: "text" }> => c.op === "text")
-    .flatMap((c) => c.glyphs.map((g) => g.glyphId));
+  const afterCps = textCodePoints(after);
 
   // "hi" = [104,105]; "hello" = [104,101,108,108,111].
-  assert.deepEqual(beforeGlyphs, [0x68, 0x69]);
-  assert.deepEqual(afterGlyphs, [0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+  assert.deepEqual(beforeCps, [0x68, 0x69]);
+  assert.deepEqual(afterCps, [0x68, 0x65, 0x6c, 0x6c, 0x6f]);
 });
 
 void test("mutating an attribute restyles the node (class drives a CSS rule)", () => {

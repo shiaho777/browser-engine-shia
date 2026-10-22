@@ -1,17 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { pipelinePrimaryFontName } from "@browser-engine/cli";
 import { coerceGuestString } from "@browser-engine/guest";
+import type { DownloadEvent } from "@browser-engine/ipc";
 
 import { HOME_URL } from "./home.js";
 import { normalizeViewport, type EngineViewport } from "./host-api.js";
 import { SHELL_HTML } from "./shell.js";
-import { TabHost, type TabSession } from "./tab-session.js";
-import { loadPage, type PageFrame } from "./page.js";
+import { TabHost, type RemoteTab } from "./tab-host.js";
+import type { PageFrame } from "./page.js";
 
 export interface AppServerOptions {
   readonly host?: string;
   readonly port?: number;
+  /** Where `a[download]`/attachment payloads land — default: tmp scratch dir. */
+  readonly downloadsDir?: string;
 }
 
 export interface NavigateSuccess {
@@ -103,7 +107,7 @@ function sendPng(res: ServerResponse, bytes: Uint8Array, frameRev: number): void
   res.end(Buffer.from(bytes));
 }
 
-function navState(tab: TabSession): { canGoBack: boolean; canGoForward: boolean; url: string } {
+function navState(tab: RemoteTab): { canGoBack: boolean; canGoForward: boolean; url: string } {
   return {
     canGoBack: tab.canGoBack(),
     canGoForward: tab.canGoForward(),
@@ -152,11 +156,16 @@ function frameToResult(
 }
 
 function readViewport(body: Record<string, unknown>): EngineViewport | Partial<EngineViewport> {
-  const viewport: { width?: number; height?: number; devicePixelRatio?: number } = {};
-  if (typeof body["width"] === "number") viewport.width = body["width"];
-  if (typeof body["height"] === "number") viewport.height = body["height"];
-  if (typeof body["devicePixelRatio"] === "number") viewport.devicePixelRatio = body["devicePixelRatio"];
-  return viewport;
+  const scheme = body["prefersColorScheme"];
+  return {
+    ...(typeof body["width"] === "number" ? { width: body["width"] } : {}),
+    ...(typeof body["height"] === "number" ? { height: body["height"] } : {}),
+    ...(typeof body["devicePixelRatio"] === "number"
+      ? { devicePixelRatio: body["devicePixelRatio"] }
+      : {}),
+    ...(scheme === "light" || scheme === "dark" ? { prefersColorScheme: scheme } : {}),
+    ...(body["prefersReducedMotion"] === true ? { prefersReducedMotion: true } : {}),
+  };
 }
 
 function wantsBinary(body: Record<string, unknown>): boolean {
@@ -170,13 +179,13 @@ export async function renderTarget(input: {
   width?: number;
   height?: number;
 }): Promise<NavigateResult> {
+  const host = new TabHost();
   try {
     const viewportInput: { width?: number; height?: number } = {};
     if (typeof input.width === "number") viewportInput.width = input.width;
     if (typeof input.height === "number") viewportInput.height = input.height;
     const viewport = normalizeViewport(viewportInput);
     if (typeof input.html === "string") {
-      const host = new TabHost();
       const frame = await host.active.loadHtml(
         input.html,
         typeof input.title === "string" && input.title.trim() !== "" ? input.title : "upload.html",
@@ -187,30 +196,15 @@ export async function renderTarget(input: {
     if (typeof input.target !== "string" || input.target.trim() === "") {
       return { ok: false, error: "missing target or html" };
     }
-    const page = await loadPage(input.target, { viewport });
-    return {
-      ok: true,
-      pngBase64: page.frame.pngBase64,
-      width: page.frame.width,
-      height: page.frame.height,
-      bytes: page.frame.bytes,
-      durationMs: page.frame.durationMs,
-      source: page.frame.url,
-      title: page.frame.title,
-      url: page.frame.url,
-      viewport: page.viewport,
-      scriptsRun: page.frame.scriptsRun,
-      mutations: page.frame.mutations,
-      scriptError: page.frame.scriptError,
-      engine: page.frame.engine,
-      frameRev: page.frame.frameRev,
-      frameMode: "base64",
-    };
+    const frame = await host.active.navigate(input.target, { viewport, push: false });
+    return frameToResult(frame, host);
   } catch (error: unknown) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    await host.dispose();
   }
 }
 
@@ -238,7 +232,17 @@ function listen(server: Server, host: string, port: number): Promise<number> {
 export async function startAppServer(options: AppServerOptions = {}): Promise<AppServer> {
   const host = options.host ?? "127.0.0.1";
   const preferredPort = options.port ?? 7788;
-  const tabs = new TabHost();
+  const tabs = new TabHost({
+    // The web shell downloads into a per-user scratch dir — same subsystem,
+    // honest location (no OS download manager integration).
+    downloadsDir: options.downloadsDir ?? join(tmpdir(), "browser-engine-shia", "downloads"),
+  });
+  // Rolling download-event log — `GET /api/downloads` feeds the chrome UI.
+  const recentDownloads: DownloadEvent[] = [];
+  tabs.onDownload = (file) => {
+    recentDownloads.push(file);
+    if (recentDownloads.length > 50) recentDownloads.shift();
+  };
 
   const create = (): Server =>
     createServer((req, res) => {
@@ -247,19 +251,6 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
 
       if (method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
         sendHtml(res, SHELL_HTML);
-        return;
-      }
-      if (method === "GET" && url.pathname === "/api/health") {
-        sendJson(res, 200, {
-          ok: true,
-          engine: "browser-engine-shia",
-          mode: "interactive",
-          viewport: tabs.active.viewport,
-          fonts: pipelinePrimaryFontName(),
-          tabs: tabs.list(),
-          activeTabId: tabs.activeId,
-          features: ["binary-frame", "multi-tab", "text-input", "caret"],
-        });
         return;
       }
       if (method === "GET" && url.pathname === "/api/frame") {
@@ -279,9 +270,33 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
         });
         return;
       }
+      if (method === "GET" && url.pathname === "/api/downloads") {
+        sendJson(res, 200, { ok: true, downloads: recentDownloads });
+        return;
+      }
 
       void (async () => {
         try {
+          if (method === "GET" && url.pathname === "/api/health") {
+            // The renderer reports its own font stack — fonts live worker-side.
+            let fonts = "renderer-unavailable";
+            try {
+              fonts = (await tabs.active.ping()).fonts;
+            } catch {
+              // Renderer dead — health still answers for the shell itself.
+            }
+            sendJson(res, 200, {
+              ok: true,
+              engine: "browser-engine-shia",
+              mode: "interactive",
+              viewport: tabs.active.viewport,
+              fonts,
+              tabs: tabs.list(),
+              activeTabId: tabs.activeId,
+              features: ["binary-frame", "multi-tab", "text-input", "caret"],
+            });
+            return;
+          }
           if (method === "POST" && url.pathname === "/api/tabs/new") {
             const list = tabs.create();
             const frame = await tabs.active.navigate(HOME_URL, { push: true });
@@ -306,6 +321,18 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
               return;
             }
             sendJson(res, 200, frameToResult(frame, tabs, { binary: true }));
+            return;
+          }
+          if (method === "POST" && url.pathname === "/api/tabs/duplicate") {
+            const raw = await readBody(req);
+            const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
+            const id = Number(body["id"] ?? tabs.activeId);
+            const list = await tabs.duplicate(id);
+            let frame = tabs.active.frame;
+            if (frame === null) {
+              frame = await tabs.active.navigate(HOME_URL, { push: true });
+            }
+            sendJson(res, 200, { ...frameToResult(frame, tabs, { binary: true }), tabs: list });
             return;
           }
           if (method === "POST" && url.pathname === "/api/tabs/close") {
@@ -361,11 +388,15 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
             const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
             const dx = typeof body["deltaX"] === "number" ? body["deltaX"] : 0;
             const dy = typeof body["deltaY"] === "number" ? body["deltaY"] : 0;
-            if (typeof body["width"] === "number" || typeof body["height"] === "number" || typeof body["devicePixelRatio"] === "number") {
-              tabs.active.setViewport(readViewport(body));
-            }
+            const hasViewport =
+              typeof body["width"] === "number" ||
+              typeof body["height"] === "number" ||
+              typeof body["devicePixelRatio"] === "number";
             const settle = body["settle"] === true;
-            const frame = await tabs.active.scrollBy(dx, dy, { settle });
+            const frame = await tabs.active.scrollBy(dx, dy, {
+              settle,
+              ...(hasViewport ? { viewport: readViewport(body) } : {}),
+            });
             if (frame === null) {
               sendJson(res, 200, {
                 ok: true,
@@ -455,7 +486,7 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
           if (method === "POST" && url.pathname === "/api/hit-test") {
             const raw = await readBody(req);
             const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
-            const hit = tabs.active.hitTestAt(Number(body["x"] ?? 0), Number(body["y"] ?? 0));
+            const hit = await tabs.active.hitTestAt(Number(body["x"] ?? 0), Number(body["y"] ?? 0));
             sendJson(res, 200, { ok: true, ...hit });
             return;
           }
@@ -531,12 +562,15 @@ export async function startAppServer(options: AppServerOptions = {}): Promise<Ap
     host,
     port,
     url: `http://${host}:${port}/`,
-    close: () =>
-      new Promise((resolveClose, rejectClose) => {
+    close: async () => {
+      // Renderers first — worker threads keep the event loop alive if left.
+      await tabs.dispose();
+      await new Promise<void>((resolveClose, rejectClose) => {
         server.close((closeError) => {
           if (closeError) rejectClose(closeError);
           else resolveClose();
         });
-      }),
+      });
+    },
   };
 }

@@ -3,8 +3,18 @@ import vm from "node:vm";
 import type { FineSession } from "./fine.js";
 import { buildDocumentApi } from "./script.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
-import { makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
-import type { GuestBrowserFetch } from "./event-loop.js";
+import { makeBlobClass, makeFileClass, globalObjectUrls, makeFetchApi, adaptResponseLike, DOMException,
+  UIEvent as GuestUIEvent, MouseEvent as GuestMouseEvent, PointerEvent as GuestPointerEvent,
+  KeyboardEvent as GuestKeyboardEvent, FocusEvent as GuestFocusEvent, InputEvent as GuestInputEvent,
+  WheelEvent as GuestWheelEvent, CompositionEvent as GuestCompositionEvent } from "@browser-engine/guest";
+import type { FetchApi, RawFetchResult, NormalizedRequest } from "@browser-engine/guest";
+import type { GuestBrowserFetch, NavigationHost, SessionStorageBag } from "./event-loop.js";
+import { installNavigationGlobals, installXMLHttpRequest } from "./event-loop.js";
+import { createServiceWorkerContainer } from "./service-worker.js";
+import { nodeMediaClock } from "./media.js";
+import { CSS } from "./css-supports.js";
+import { createMatchMedia } from "./match-media.js";
+import { createMediaPreferences } from "./preferences.js";
 
 export interface ModuleEntry {
   readonly url: string;
@@ -25,6 +35,28 @@ export interface ModuleRunResult {
   readonly settle?: (maxMs?: number) => Promise<void>;
   /** Present only with `keepAlive`: total DOM mutations performed so far. */
   readonly getMutations?: () => number;
+  /** RFC 0011/0013: element-level dispatch entry points (module-only pages). */
+  readonly clickElement?: ((nodeId: import("@browser-engine/ir").NodeId) => void) | undefined;
+  readonly dispatchElementEvent?: ((
+    nodeId: import("@browser-engine/ir").NodeId,
+    type: string,
+    init?: Record<string, unknown>,
+  ) => void) | undefined;
+  /** RFC 0020: UI-input synthesis for module pages. */
+  readonly ui?: {
+    readonly pointerMove: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly click: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly contextMenu: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly dblClick: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly key: (detail: {
+      key: string; code?: string; repeat?: boolean; location?: number;
+      ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean;
+    }) => void;
+    readonly tab: (dir: 1 | -1) => void;
+    readonly focusedId: () => import("@browser-engine/ir").NodeId | null;
+  } | undefined;
+  /** RFC 0033: rasterize canvases this module-run's sandbox drew on. */
+  readonly canvasBitmaps?: () => ReadonlyMap<import("@browser-engine/ir").NodeId, import("@browser-engine/ir").DecodedImage>;
 }
 
 type SourceTextModuleCtor = new (
@@ -54,125 +86,14 @@ function getSourceTextModule(): SourceTextModuleCtor | null {
 }
 
 
-function emptyRect(): object {
-  return {
-    x: 0,
-    y: 0,
-    width: 0,
-    height: 0,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    toJSON() {
-      return this;
-    },
-  };
-}
-
-function createObserverStub(kind: "mutation" | "resize" | "intersection" | "performance", cb?: unknown): {
-  observe: (...args: unknown[]) => void;
-  unobserve: (...args: unknown[]) => void;
-  disconnect: () => void;
-  takeRecords: () => unknown[];
-  root?: unknown;
-  rootMargin?: string;
-  thresholds?: number[];
-} {
-  const targets = new Set<unknown>();
-  let disconnected = false;
-  const deliver = (target: unknown): void => {
-    if (disconnected || typeof cb !== "function") return;
-    queueMicrotask(() => {
-      if (disconnected || typeof cb !== "function") return;
-      try {
-        if (kind === "intersection") {
-          const rect = emptyRect();
-          (cb as (entries: unknown[], obs: unknown) => void)(
-            [
-              {
-                target,
-                isIntersecting: true,
-                intersectionRatio: 1,
-                boundingClientRect: rect,
-                intersectionRect: rect,
-                rootBounds: null,
-                time: performance.now(),
-              },
-            ],
-            observer,
-          );
-        } else if (kind === "resize") {
-          (cb as (entries: unknown[], obs: unknown) => void)(
-            [
-              {
-                target,
-                contentRect: emptyRect(),
-                borderBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-                contentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-                devicePixelContentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-              },
-            ],
-            observer,
-          );
-        }
-      } catch {
-        // Guest code may throw here; swallowed by design.
-      }
-    });
-  };
-  const observer = {
-    observe: (target?: unknown) => {
-      if (target === undefined || disconnected) return;
-      targets.add(target);
-      if (kind === "intersection" || kind === "resize") deliver(target);
-    },
-    unobserve: (target?: unknown) => {
-      targets.delete(target);
-    },
-    disconnect: () => {
-      disconnected = true;
-      targets.clear();
-    },
-    takeRecords: () => [],
-    root: null,
-    rootMargin: "0px",
-    thresholds: [0],
-  };
-  return observer;
-}
-
-function installObserverGlobals(sandbox: Record<string, unknown>): void {
-  const make =
-    (kind: "mutation" | "resize" | "intersection" | "performance") =>
-    function Observer(this: unknown, cb?: unknown) {
-      return createObserverStub(kind, cb);
-    };
-  const PerformanceObserver = make("performance") as unknown as {
-    new (cb?: unknown): ReturnType<typeof createObserverStub>;
-    supportedEntryTypes?: readonly string[];
-  };
-  PerformanceObserver.supportedEntryTypes = [
-    "element",
-    "event",
-    "largest-contentful-paint",
-    "layout-shift",
-    "longtask",
-    "mark",
-    "measure",
-    "navigation",
-    "paint",
-    "resource",
-    "visibility-state",
-  ];
-  sandbox["MutationObserver"] = make("mutation");
-  sandbox["ResizeObserver"] = make("resize");
-  sandbox["IntersectionObserver"] = make("intersection");
-  sandbox["PerformanceObserver"] = PerformanceObserver;
-}
+// Observer globals are REAL implementations installed by buildDocumentApi's
+// `globals` (MutationObserver/ResizeObserver/IntersectionObserver + a shell
+// PerformanceObserver) — nothing to stub here.
 
 
-function installEventTarget(sandbox: Record<string, unknown>): void {
+
+
+function installEventTarget(sandbox: Record<string, unknown>, fetchApi?: FetchApi): void {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   const addEventListener = (type: unknown, fn: unknown): void => {
     if (typeof fn !== "function") return;
@@ -326,10 +247,15 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   if (sandbox["DocumentFragment"] === undefined) sandbox["DocumentFragment"] = DocumentFragmentCtor;
   if (sandbox["Event"] === undefined) sandbox["Event"] = EventCtor;
   if (sandbox["CustomEvent"] === undefined) sandbox["CustomEvent"] = CustomEventCtor;
-  sandbox["MouseEvent"] = EventCtor;
-  sandbox["KeyboardEvent"] = EventCtor;
-  sandbox["FocusEvent"] = EventCtor;
-  sandbox["PointerEvent"] = EventCtor;
+  // RFC 0020: real typed event classes (guard-installed like Event above).
+  if (sandbox["UIEvent"] === undefined) sandbox["UIEvent"] = GuestUIEvent;
+  if (sandbox["MouseEvent"] === undefined) sandbox["MouseEvent"] = GuestMouseEvent;
+  if (sandbox["PointerEvent"] === undefined) sandbox["PointerEvent"] = GuestPointerEvent;
+  if (sandbox["KeyboardEvent"] === undefined) sandbox["KeyboardEvent"] = GuestKeyboardEvent;
+  if (sandbox["FocusEvent"] === undefined) sandbox["FocusEvent"] = GuestFocusEvent;
+  if (sandbox["InputEvent"] === undefined) sandbox["InputEvent"] = GuestInputEvent;
+  if (sandbox["WheelEvent"] === undefined) sandbox["WheelEvent"] = GuestWheelEvent;
+  if (sandbox["CompositionEvent"] === undefined) sandbox["CompositionEvent"] = GuestCompositionEvent;
   sandbox["Image"] = ImageCtor;
   sandbox["HTMLImageElement"] = ImageCtor;
   sandbox["XMLHttpRequest"] = function XMLHttpRequest(this: {
@@ -345,6 +271,13 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
     this.open = () => {};
     this.send = () => {};
   };
+  // Fetch §5 classes for the guest realm (RFC 0019) — same shared bundle
+  // as the classic runner so instanceof holds across both paths.
+  const api = fetchApi ?? makeFetchApi("about:blank");
+  if (sandbox["Headers"] === undefined) sandbox["Headers"] = api.Headers;
+  if (sandbox["Request"] === undefined) sandbox["Request"] = api.Request;
+  if (sandbox["Response"] === undefined) sandbox["Response"] = api.Response;
+  if (sandbox["ReadableStream"] === undefined) sandbox["ReadableStream"] = api.ReadableStream;
   sandbox["DOMParser"] = function DOMParser(this: { parseFromString: () => object }) {
     this.parseFromString = () => ({
       documentElement: null,
@@ -400,225 +333,20 @@ function quietConsole(): Record<string, (...args: unknown[]) => void> {
 }
 
 
-function installXMLHttpRequest(
+
+
+function installBrowserGlobals(
   sandbox: Record<string, unknown>,
-  doFetch: (input: unknown, init?: unknown) => Promise<object>,
-  baseUrl: string,
-): void {
-  type XhrSelf = {
-    readyState: number;
-    status: number;
-    statusText: string;
-    responseText: string;
-    response: unknown;
-    responseURL: string;
-    responseType: string;
-    withCredentials: boolean;
-    timeout: number;
-    onreadystatechange: ((this: XhrSelf, ev?: unknown) => void) | null;
-    onload: ((this: XhrSelf, ev?: unknown) => void) | null;
-    onerror: ((this: XhrSelf, ev?: unknown) => void) | null;
-    onloadend: ((this: XhrSelf, ev?: unknown) => void) | null;
-    onloadstart: ((this: XhrSelf, ev?: unknown) => void) | null;
-    open: (method: unknown, url: unknown) => void;
-    setRequestHeader: (name: unknown, value: unknown) => void;
-    send: (body?: unknown) => void;
-    abort: () => void;
-    getAllResponseHeaders: () => string;
-    getResponseHeader: (name: unknown) => string | null;
-    addEventListener: (type: unknown, fn: unknown) => void;
-    removeEventListener: (type: unknown, fn: unknown) => void;
-  };
-  const Ctor = function XMLHttpRequest(this: XhrSelf) {
-    // Aliased once here because `self` is captured across the async XHR
-    // callbacks below, where `this` would be unbound.
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const self = this;
-    self.readyState = 0;
-    self.status = 0;
-    self.statusText = "";
-    self.responseText = "";
-    self.response = "";
-    self.responseURL = "";
-    self.responseType = "";
-    self.withCredentials = false;
-    self.timeout = 0;
-    self.onreadystatechange = null;
-    self.onload = null;
-    self.onerror = null;
-    self.onloadend = null;
-    self.onloadstart = null;
-    let method = "GET";
-    let url = "";
-    const headers: Record<string, string> = {};
-    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
-    let aborted = false;
-    const emit = (type: string): void => {
-      const prop = ({
-        readystatechange: self.onreadystatechange,
-        load: self.onload,
-        error: self.onerror,
-        loadend: self.onloadend,
-        loadstart: self.onloadstart,
-      } as Record<string, ((this: XhrSelf, ev?: unknown) => void) | null>)[type];
-      if (typeof prop === "function") {
-        try {
-          prop.call(self);
-        } catch {
-          // Guest code may throw here; swallowed by design.
-        }
-      }
-      const set = listeners.get(type);
-      if (set !== undefined) {
-        for (const fn of set) {
-          try {
-            fn.call(self);
-          } catch {
-            // Guest code may throw here; swallowed by design.
-          }
-        }
-      }
-    };
-    self.open = (m: unknown, u: unknown) => {
-      method = (typeof m === "string" ? m : "GET").toUpperCase();
-      const raw = typeof u === "string" ? u : "";
-      try {
-        url = new URL(raw, baseUrl).href;
-      } catch {
-        url = raw;
-      }
-      self.readyState = 1;
-      self.status = 0;
-      self.statusText = "";
-      self.responseText = "";
-      self.response = "";
-      emit("readystatechange");
-    };
-    self.setRequestHeader = (name: unknown, value: unknown) => {
-      headers[String(name)] = String(value);
-    };
-    self.send = (body?: unknown) => {
-      if (self.readyState !== 1) return;
-      aborted = false;
-      self.readyState = 2;
-      emit("readystatechange");
-      emit("loadstart");
-      const init: Record<string, unknown> = { method, headers };
-      if (body !== undefined && body !== null && method !== "GET" && method !== "HEAD") {
-        init["body"] = body;
-      }
-      void Promise.resolve(doFetch(url, init))
-        .then(async (res) => {
-          if (aborted) return;
-          const status = Number((res as { status?: unknown }).status ?? 0);
-          const ok = Boolean((res as { ok?: unknown }).ok ?? (status >= 200 && status < 300));
-          const rawUrl = (res as { url?: unknown }).url;
-          const resUrl = typeof rawUrl === "string" ? rawUrl : url;
-          let text = "";
-          const textFn = (res as { text?: unknown }).text;
-          if (typeof textFn === "function") {
-            text = String(await (textFn as () => Promise<unknown>).call(res));
-          }
-          self.status = status;
-          self.statusText = ok ? "OK" : "Error";
-          self.responseURL = resUrl;
-          self.responseText = text;
-          self.response = text;
-          self.readyState = 3;
-          emit("readystatechange");
-          self.readyState = 4;
-          emit("readystatechange");
-          if (status >= 200 && status < 300) emit("load");
-          else emit("error");
-          emit("loadend");
-        })
-        .catch(() => {
-          if (aborted) return;
-          self.status = 0;
-          self.statusText = "";
-          self.responseText = "";
-          self.response = "";
-          self.readyState = 4;
-          emit("readystatechange");
-          emit("error");
-          emit("loadend");
-        });
-    };
-    self.abort = () => {
-      aborted = true;
-      self.readyState = 0;
-    };
-    self.getAllResponseHeaders = () => "";
-    self.getResponseHeader = (_name: unknown) => null;
-    self.addEventListener = (type: unknown, fn: unknown) => {
-      if (typeof fn !== "function") return;
-      const key = String(type);
-      let set = listeners.get(key);
-      if (set === undefined) {
-        set = new Set();
-        listeners.set(key, set);
-      }
-      set.add(fn as (...args: unknown[]) => void);
-    };
-    self.removeEventListener = (type: unknown, fn: unknown) => {
-      const set = listeners.get(String(type));
-      if (set === undefined || typeof fn !== "function") return;
-      set.delete(fn as (...args: unknown[]) => void);
-    };
-  } as unknown as {
-    new (): XhrSelf;
-    UNSENT: number;
-    OPENED: number;
-    HEADERS_RECEIVED: number;
-    LOADING: number;
-    DONE: number;
-  };
-  Ctor.UNSENT = 0;
-  Ctor.OPENED = 1;
-  Ctor.HEADERS_RECEIVED = 2;
-  Ctor.LOADING = 3;
-  Ctor.DONE = 4;
-  sandbox["XMLHttpRequest"] = Ctor;
-}
-
-
-function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): void {
-  let protocol = "";
-  let host = "";
-  let hostname = "";
-  let port = "";
-  let pathname = "";
-  let search = "";
-  let hash = "";
-  let origin = "";
-  try {
-    const u = new URL(href);
-    protocol = u.protocol;
-    host = u.host;
-    hostname = u.hostname;
-    port = u.port;
-    pathname = u.pathname;
-    search = u.search;
-    hash = u.hash;
-    origin = u.origin;
-  } catch {
-    // Invalid URL input: keep the raw/fallback value.
-  }
-  const location = {
-    href,
-    protocol,
-    host,
-    hostname,
-    port,
-    pathname,
-    search,
-    hash,
-    origin,
-    toString: () => href,
-    assign: (_u: unknown) => {},
-    replace: (_u: unknown) => {},
-    reload: () => {},
-  };
+  href: string,
+  host?: NavigationHost,
+  storage?: SessionStorageBag,
+  fetchApi?: FetchApi,
+  serviceWorker?: object,
+): FetchApi {
+  // RFC 0010: location/history/storage delegate to the shared installer so
+  // module scripts see the same live session objects as classic scripts.
+  installNavigationGlobals(sandbox, href, host, storage);
+  const mediaPreferences = createMediaPreferences();
   const navigator = {
     userAgent: BROWSER_USER_AGENT,
     appName: "Netscape",
@@ -640,33 +368,9 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
     pdfViewerEnabled: true,
     javaEnabled: () => false,
     sendBeacon: () => true,
-  };
-  const history = {
-    length: 1,
-    state: null,
-    scrollRestoration: "auto",
-    back: () => {},
-    forward: () => {},
-    go: (_n?: unknown) => {},
-    pushState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
-    replaceState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
-  };
-  const map = new Map<string, string>();
-  const storage = {
-    get length() {
-      return map.size;
-    },
-    getItem: (k: unknown) => map.get(String(k)) ?? null,
-    setItem: (k: unknown, v: unknown) => {
-      map.set(String(k), String(v));
-    },
-    removeItem: (k: unknown) => {
-      map.delete(String(k));
-    },
-    clear: () => {
-      map.clear();
-    },
-    key: (i: unknown) => [...map.keys()][Number(i)] ?? null,
+    // RFC 0034: module scripts see the same serviceWorker container.
+    ...(serviceWorker !== undefined ? { serviceWorker } : {}),
+    preferences: mediaPreferences.api,
   };
   sandbox["window"] = sandbox;
   sandbox["self"] = sandbox;
@@ -674,11 +378,7 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
   sandbox["top"] = sandbox;
   sandbox["parent"] = sandbox;
   sandbox["frames"] = sandbox;
-  sandbox["location"] = location;
   sandbox["navigator"] = navigator;
-  sandbox["history"] = history;
-  sandbox["localStorage"] = storage;
-  sandbox["sessionStorage"] = storage;
   sandbox["console"] = quietConsole();
   sandbox["atob"] = (data: unknown) => Buffer.from(String(data), "base64").toString("binary");
   sandbox["btoa"] = (data: unknown) => Buffer.from(String(data), "binary").toString("base64");
@@ -780,37 +480,8 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
     clearMarks: () => {},
     clearMeasures: () => {},
   };
-  const viewportW = 1280;
-  const viewportH = 800;
-  sandbox["matchMedia"] = (q: unknown) => {
-    const media = typeof q === "string" ? q : "";
-    const checks: boolean[] = [];
-    const minW = /min-width:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const maxW = /max-width:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const minH = /min-height:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const maxH = /max-height:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    if (minW) checks.push(viewportW >= Number(minW[1]));
-    if (maxW) checks.push(viewportW <= Number(maxW[1]));
-    if (minH) checks.push(viewportH >= Number(minH[1]));
-    if (maxH) checks.push(viewportH <= Number(maxH[1]));
-    if (/prefers-color-scheme:\s*light/i.test(media)) checks.push(true);
-    if (/prefers-color-scheme:\s*dark/i.test(media)) checks.push(false);
-    if (/prefers-reduced-motion:\s*no-preference/i.test(media)) checks.push(true);
-    if (/prefers-reduced-motion:\s*reduce/i.test(media)) checks.push(false);
-    if (/hover:\s*hover/i.test(media)) checks.push(true);
-    if (/pointer:\s*fine/i.test(media)) checks.push(true);
-    const matches = checks.length === 0 ? false : checks.every(Boolean);
-    return {
-      matches,
-      media,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      onchange: null,
-      dispatchEvent: () => false,
-    };
-  };
+  sandbox["matchMedia"] = createMatchMedia(() => mediaPreferences.environment({ type: "screen", widthPx: 1280, heightPx: 800, resolutionDppx: 1 }));
+  sandbox["CSS"] = CSS;
   sandbox["queueMicrotask"] = (fn: unknown) => {
     if (typeof fn === "function") {
       queueMicrotask(() => {
@@ -855,8 +526,9 @@ function installBrowserGlobals(sandbox: Record<string, unknown>, href: string): 
         }, 16)
       : 0;
   sandbox["cancelAnimationFrame"] = (id: unknown) => clearTimeout(Number(id));
-  installObserverGlobals(sandbox);
-  installEventTarget(sandbox);
+  const api = fetchApi ?? makeFetchApi(href);
+  installEventTarget(sandbox, api);
+  return api;
 }
 
 function resolveSpecifier(specifier: string, baseUrl: string): string | null {
@@ -896,6 +568,14 @@ export async function runModuleScripts(
     readonly context?: import("node:vm").Context;
     readonly inheritWindow?: Record<string, unknown>;
     readonly browserFetch?: GuestBrowserFetch;
+    /** RFC 0022: raw-socket transport for guest `new WebSocket(...)`. */
+    readonly wsTransport?: import("@browser-engine/guest").WsTransport;
+    /** RFC 0010: live navigation bridge (shared semantics with classic). */
+    readonly sessionHost?: NavigationHost;
+    /** RFC 0010: session-scoped storage for module-only sandboxes. */
+    readonly storage?: SessionStorageBag;
+    /** RFC 0013: iframe nodeId → child context window proxy. */
+    readonly frameLookup?: (nodeId: import("@browser-engine/ir").NodeId) => unknown;
     readonly settleMs?: number;
     readonly budgetMs?: number;
     /**
@@ -905,6 +585,17 @@ export async function runModuleScripts(
      * `liveTimers`/`settle`/`getMutations` hooks for exactly that.
      */
     readonly keepAlive?: boolean;
+    /** RFC 0027: the document's CSP context — `script-src` gates module-graph
+     *  fetches, `connect-src` gates guest fetch/XHR. */
+    readonly csp?: import("./csp.js").CspContext | null;
+    /** RFC 0033: drawImage(imgEl) source resolution (decodedImages). */
+    readonly canvasImageSource?: (
+      nodeId: import("@browser-engine/ir").NodeId,
+    ) => import("@browser-engine/ir").DecodedImage | undefined;
+    /** RFC 0034: navigator.serviceWorker backing registry. */
+    readonly serviceWorkerRegistry?: import("./service-worker.js").ServiceWorkerRegistry;
+    /** RFC 0035: the document's media engine (real-clock timers here). */
+    readonly media?: import("./media.js").MediaEngine;
   } = {},
 ): Promise<ModuleRunResult> {
   const SourceTextModule = getSourceTextModule();
@@ -928,6 +619,16 @@ export async function runModuleScripts(
   const maxModules = options.maxModules ?? 250;
   const decoder = new TextDecoder();
   let mutationsOf = (): number => 0;
+  let bindWsRealmOf: ((realm: {
+    ArrayBuffer?: new (length: number) => ArrayBuffer;
+    TypeError?: new (message: string) => Error;
+  }) => void) | undefined;
+  let clickElementOf: ((nodeId: import("@browser-engine/ir").NodeId) => void) | undefined;
+  let dispatchElementEventOf:
+    | ((nodeId: import("@browser-engine/ir").NodeId, type: string, init?: Record<string, unknown>) => void)
+    | undefined;
+  let uiOf: ModuleRunResult["ui"];
+  let canvasBitmapsOf: ModuleRunResult["canvasBitmaps"];
   let sandbox: Record<string, unknown>;
   let context: import("node:vm").Context;
 
@@ -955,21 +656,12 @@ export async function runModuleScripts(
       inflightFetches.delete(work);
     });
   };
-  const emptyResponse = (url: string): object => {
-    const headers = {
-      get: (_name: unknown) => null,
-      has: (_name: unknown) => false,
-    };
-    return {
-      ok: false,
-      status: 0,
-      url,
-      headers,
-      text: () => Promise.resolve(""),
-      json: () => Promise.resolve(null),
-      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-    };
-  };
+  // RFC 0019: ONE guest fetch-api bundle shared by sandbox classes, fetch(),
+  // and XHR — module scripts see identical Request/Response semantics as
+  // classic scripts.
+  const fetchApi = makeFetchApi(session.url);
+  const emptyRaw = (url: string): RawFetchResult =>
+    ({ status: 0, url, headers: {}, body: new Uint8Array() });
   const isLowValueModuleFetch = (url: string): boolean => {
     const u = url.toLowerCase();
     return (
@@ -987,78 +679,70 @@ export async function runModuleScripts(
       u.includes("favicon")
     );
   };
-  const makeFetch = () => {
-    if (browserFetch !== undefined) {
-      return (input: unknown, init?: unknown): Promise<object> => {
-        let url = String(input);
-        try {
-          url = new URL(url, session.url).href;
-        } catch {
-          // Invalid URL input: keep the raw/fallback value.
-        }
-        if (sealed || Date.now() >= budgetDeadline || isLowValueModuleFetch(url)) {
-          return Promise.resolve(emptyResponse(url));
-        }
-        return trackFetch(browserFetch(input, init) as Promise<object>);
-      };
+  // RFC 0027: the document's CSP context — `connect-src` gates guest
+  // fetch/XHR targets below; `script-src` gates module-graph loads in
+  // `loadSource`.
+  const csp = options.csp ?? session.csp ?? null;
+  // The module runner's fetch core: a NormalizedRequest in, a RawFetchResult
+  // out. Budget/seal/low-value filtering stays module-specific policy on top
+  // of the shared facade.
+  const fetchCore = async (req: NormalizedRequest): Promise<RawFetchResult> => {
+    let url = req.url;
+    if (sealed || Date.now() >= budgetDeadline || isLowValueModuleFetch(url)) {
+      return emptyRaw(url);
     }
-    return (input: unknown): Promise<object> => {
-      let url = String(input);
-      try {
-        url = new URL(url, session.url).href;
-      } catch {
-        // Invalid URL input: keep the raw/fallback value.
+    if (csp !== null) {
+      const gated = csp.gateSubresourceUrl(url);
+      if (gated.blocked || !csp.check("connect", gated.url).allowed) {
+        return emptyRaw(url);
       }
-      if (sealed || Date.now() >= budgetDeadline || isLowValueModuleFetch(url)) {
-        return Promise.resolve(emptyResponse(url));
-      }
-      return trackFetch(
-        (async (): Promise<object> => {
-          const bytes = await fetchFn(url);
-          const ok = bytes !== undefined;
-          const body = ok ? decoder.decode(bytes) : "";
-          const looksJson =
-            ok &&
-            (body.trimStart().startsWith("{") ||
-              body.trimStart().startsWith("[") ||
-              url.includes("/x/") ||
-              url.includes("api.") ||
-              url.endsWith(".json"));
-          const contentType = !ok
-            ? "text/plain"
-            : looksJson
-              ? "application/json; charset=utf-8"
-              : url.includes(".js")
-                ? "application/javascript; charset=utf-8"
-                : "text/html; charset=utf-8";
-          const headers = {
-            get: (name: unknown) => {
-              const key = String(name).toLowerCase();
-              if (key === "content-type") return contentType;
-              if (key === "content-length") return ok ? String(body.length) : "0";
-              return null;
-            },
-            has: (name: unknown) => headers.get(name) !== null,
-          };
-          return {
-            ok,
-            status: ok ? 200 : 404,
-            url,
-            headers,
-            text: () => Promise.resolve(body),
-            json: () => {
-              try {
-                return Promise.resolve(JSON.parse(body) as unknown);
-              } catch {
-                return Promise.resolve(null);
-              }
-            },
-            arrayBuffer: () => Promise.resolve((bytes ?? new Uint8Array()).buffer),
-          };
-        })(),
-      );
-    };
+      url = gated.url;
+    }
+    if (browserFetch !== undefined) {
+      const res = await trackFetch(browserFetch(url, {
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        signal: req.signal,
+        mode: req.mode,
+        credentials: req.credentials,
+        referrerPolicy: req.referrerPolicy,
+      }) as Promise<object>);
+      return adaptResponseLike(res, url);
+    }
+    return trackFetch(
+      (async (): Promise<RawFetchResult> => {
+        const bytes = await fetchFn(url);
+        const ok = bytes !== undefined;
+        const body = ok ? decoder.decode(bytes) : "";
+        const looksJson =
+          ok &&
+          (body.trimStart().startsWith("{") ||
+            body.trimStart().startsWith("[") ||
+            url.includes("/x/") ||
+            url.includes("api.") ||
+            url.endsWith(".json"));
+        const contentType = !ok
+          ? "text/plain"
+          : looksJson
+            ? "application/json; charset=utf-8"
+            : url.includes(".js")
+              ? "application/javascript; charset=utf-8"
+              : "text/html; charset=utf-8";
+        return {
+          status: ok ? 200 : 404,
+          url,
+          headers: {
+            "content-type": contentType,
+            "content-length": String(body.length),
+          },
+          body: ok ? bytes : new Uint8Array(),
+        };
+      })(),
+    );
   };
+  const makeFetch = (): ((input: unknown, init?: unknown) => Promise<unknown>) =>
+    fetchApi.makeFetch(fetchCore);
 
   const installTimers = (target: Record<string, unknown>): void => {
     // keepAlive timers must not hold the host process open: the host drives
@@ -1131,7 +815,7 @@ export async function runModuleScripts(
       } catch {
         // Invalid URL input: keep the raw/fallback value.
       }
-      return Promise.resolve(emptyResponse(url));
+      return Promise.resolve(fetchApi.responseFromRaw(emptyRaw(url)));
     };
     installTimers(sandbox);
   };
@@ -1140,19 +824,68 @@ export async function runModuleScripts(
     sandbox = options.sandbox;
     context = options.context;
     installTimers(sandbox);
+    installEventTarget(sandbox, fetchApi);
     sandbox["fetch"] = makeFetch();
     installXMLHttpRequest(sandbox, sandbox["fetch"] as (input: unknown, init?: unknown) => Promise<object>, session.url);
   } else {
-    const api = buildDocumentApi(session, { geometryMode: "stub", styleMode: "fast" });
+    const navHost = options.sessionHost;
+    const api = buildDocumentApi(session, {
+      geometryMode: "stub",
+      styleMode: "fast",
+      ...(options.frameLookup !== undefined ? { frameLookup: options.frameLookup } : {}),
+      ...(options.wsTransport !== undefined ? { wsTransport: options.wsTransport } : {}),
+      ...(options.canvasImageSource !== undefined ? { canvasImageSource: options.canvasImageSource } : {}),
+      ...(options.media !== undefined
+        ? {
+            media: options.media,
+            // No virtual loop in the module runner — playback rides the
+            // wall clock (real timers), matching the runner's transport.
+            mediaClock: nodeMediaClock(),
+          }
+        : {}),
+      // RFC 0011: module-only pages get the same activation sink classic
+      // runs have — link clicks and form submits reach the session host.
+      ...(navHost !== undefined
+        ? {
+            navigator: (url: string, init?: {
+              replace?: boolean; target?: string; method?: string;
+              body?: string; contentType?: string;
+            }) => {
+              if (init?.target !== undefined && navHost.navigateTarget !== undefined) {
+                navHost.navigateTarget(url, init.target, init);
+                return;
+              }
+              if (navHost.submit !== undefined) navHost.submit(url, init);
+              else navHost.assign(url);
+            },
+          }
+        : {}),
+    });
     mutationsOf = api.mutations;
+    bindWsRealmOf = api.bindWsRealm;
+    clickElementOf = api.clickElement;
+    dispatchElementEventOf = api.dispatchElementEvent;
+    uiOf = api.ui;
+    canvasBitmapsOf = api.canvasBitmaps;
     sandbox = {
       document: api.document,
       ...api.globals,
     };
     sandbox["fetch"] = makeFetch();
-    installBrowserGlobals(sandbox, session.url);
-    installObserverGlobals(sandbox);
-    installEventTarget(sandbox);
+    installBrowserGlobals(
+      sandbox,
+      session.url,
+      options.sessionHost,
+      options.storage,
+      fetchApi,
+      options.serviceWorkerRegistry !== undefined
+        ? createServiceWorkerContainer({
+            registry: options.serviceWorkerRegistry,
+            pageUrl: session.url,
+            postTask: (fn) => setTimeout(fn, 0),
+          })
+        : undefined,
+    );
     installTimers(sandbox);
     installXMLHttpRequest(sandbox, sandbox["fetch"] as (input: unknown, init?: unknown) => Promise<object>, session.url);
     if (options.inheritWindow !== undefined) {
@@ -1186,6 +919,19 @@ export async function runModuleScripts(
     context = vm.createContext(sandbox);
   }
 
+  // Bind the realm's error intrinsics into the fetch api bundle so
+  // API-thrown TypeError/DOMException pass guest instanceof checks.
+  {
+    const errs = vm.runInContext(
+      "({ TypeError, RangeError, ArrayBuffer, DOMException: typeof DOMException !== \"undefined\" ? DOMException : null })",
+      context,
+    ) as { TypeError: typeof TypeError; RangeError: typeof RangeError; ArrayBuffer: typeof ArrayBuffer; DOMException: typeof DOMException | null };
+    const de = errs.DOMException ?? DOMException;
+    fetchApi.bindRealmErrors({ ...errs, DOMException: de });
+    sandbox["DOMException"] = de;
+    bindWsRealmOf?.({ ArrayBuffer: errs.ArrayBuffer, TypeError: errs.TypeError });
+  }
+
   const moduleCache = new Map<string, InstanceType<SourceTextModuleCtor>>();
   const sourceCache = new Map<string, string>();
   const importedUrls: string[] = [];
@@ -1201,6 +947,15 @@ export async function runModuleScripts(
     if (cached !== undefined) return cached;
     if (sealed || Date.now() >= budgetDeadline) {
       return null;
+    }
+    // RFC 0027: module-graph fetches are `script-src` fetches — a refused
+    // specifier resolves like a fetch failure (the module fails to link).
+    if (csp !== null) {
+      const gated = csp.gateSubresourceUrl(url);
+      if (gated.blocked || !csp.check("script", gated.url).allowed) {
+        return null;
+      }
+      url = gated.url;
     }
     if (moduleCache.size + sourceCache.size > maxModules) {
       errors.push(`module graph exceeded maxModules=${maxModules} at ${url}`);
@@ -1400,6 +1155,7 @@ export async function runModuleScripts(
     importedUrls,
     mutations: mutationsOf(),
     liveTimers: liveTimeouts.size + liveIntervals.size,
+    ...(canvasBitmapsOf !== undefined ? { canvasBitmaps: canvasBitmapsOf } : {}),
     settle: async (maxMs = 500): Promise<void> => {
       const deadline = Date.now() + Math.max(0, maxMs);
       while (Date.now() < deadline) {
@@ -1408,6 +1164,9 @@ export async function runModuleScripts(
       }
     },
     getMutations: mutationsOf,
+    clickElement: clickElementOf,
+    dispatchElementEvent: dispatchElementEventOf,
+    ui: uiOf,
   };
 }
 

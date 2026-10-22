@@ -9,6 +9,7 @@
     { "path": "../scoreboard" },
     { "path": "../generator" },
     { "path": "../cli" },
+    { "path": "../app" },
     { "path": "../test-harness" }
   ],
   "include": ["src/**/*.ts"]

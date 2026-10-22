@@ -53,14 +53,17 @@ import type {
   Edges,
   Matrix,
   PaintCmd,
+  Px,
   Rect,
 } from "@browser-engine/ir";
 
 import { clampAlpha, type Surface } from "./surface.js";
-import { builtinFont, coverageSource, type GlyphCoverageSource } from "@browser-engine/font";
+import { needsSyntheticBold, needsSyntheticItalic, syntheticItalicShift } from "./embolden.js";
+import { gradientColor, gradientT, radialT } from "./gradient.js";
+import { builtinFont, faceTableRasterSource, type GlyphRasterSource } from "@browser-engine/font";
 
 /** The default glyph source: the real built-in TrueType font (outline-rasterized). */
-const DEFAULT_GLYPH_SOURCE: GlyphCoverageSource = coverageSource(builtinFont());
+const DEFAULT_RASTER_SOURCE: GlyphRasterSource = faceTableRasterSource([builtinFont()]);
 
 /** Every paint-command op the abstract DisplayList can carry. */
 type PaintOp = PaintCmd["op"];
@@ -71,6 +74,9 @@ const DEFAULT_SUPPORTED_OPS: ReadonlySet<PaintOp> = new Set<PaintOp>([
   "border",
   "text",
   "image",
+  "tile",
+  "linear-gradient",
+  "radial-gradient",
   "push-clip",
   "pop-clip",
   "push-layer",
@@ -134,13 +140,14 @@ export interface ScreenshotBackendOptions {
    */
   readonly strictTransforms?: boolean;
   /**
-   * The REAL-FONT glyph coverage source (from `@browser-engine/font`). `text`
-   * commands rasterize genuine scalable vector outlines (parsed TrueType,
-   * anti-aliased). Defaults to the built-in TrueType font; inject a parsed
-   * `.ttf` face to render with any real font. The DisplayList is unchanged —
-   * `text` glyph ids are treated as code points the source maps to its glyphs.
+   * The REAL-FONT glyph raster source (from `@browser-engine/font` — RFC 0002).
+   * `text` commands carry REAL shaped `(faceIndex, glyphId)` pairs; the source
+   * rasterizes `faces[faceIndex].outlineOf(glyphId)` to anti-aliased coverage.
+   * Defaults to the built-in TrueType font table (`faceIndex 0`); inject the
+   * pipeline's face table to render with the same fonts shaping used. No
+   * code-point resolution happens here — that was the shaper's job.
    */
-  readonly glyphSource?: GlyphCoverageSource;
+  readonly rasterSource?: GlyphRasterSource;
 }
 
 /**
@@ -176,13 +183,13 @@ export class ScreenshotBackend implements PaintBackend {
   readonly #supportedOps: ReadonlySet<PaintOp>;
   /** Whether a non-identity layer transform is an explicit error vs a no-op. */
   readonly #strictTransforms: boolean;
-  /** The real-font glyph coverage source (defaults to the built-in TrueType font). */
-  readonly #glyphSource: GlyphCoverageSource;
+  /** The real-font glyph raster source (defaults to the built-in face table). */
+  readonly #rasterSource: GlyphRasterSource;
 
   constructor(options: ScreenshotBackendOptions = {}) {
     this.#supportedOps = options.supportedOps ?? DEFAULT_SUPPORTED_OPS;
     this.#strictTransforms = options.strictTransforms ?? false;
-    this.#glyphSource = options.glyphSource ?? DEFAULT_GLYPH_SOURCE;
+    this.#rasterSource = options.rasterSource ?? DEFAULT_RASTER_SOURCE;
   }
 
   /**
@@ -287,10 +294,19 @@ export class ScreenshotBackend implements PaintBackend {
         fillBorder(target, cmd.rect, cmd.edges, clip, 1);
         return;
       case "text":
-        renderText(target, cmd, clip, 1, this.#glyphSource);
+        renderText(target, cmd, clip, 1, this.#rasterSource);
         return;
       case "image":
         blitImage(target, cmd.rect, cmd.src, clip, 1, cmd.radius !== undefined ? Number(cmd.radius) : 0);
+        return;
+      case "tile":
+        blitTiled(target, cmd, clip, 1);
+        return;
+      case "linear-gradient":
+        fillLinearGradient(target, cmd, clip);
+        return;
+      case "radial-gradient":
+        fillRadialGradient(target, cmd, clip);
         return;
       // push/pop-clip and push/pop-layer are handled in `render`.
       case "push-clip":
@@ -638,6 +654,42 @@ function clipPixelCover(clip: ClipBounds, x: number, y: number): number {
 }
 
 /** Fill `rect` with `fill`, clipped to `clip` and scaled by `opacity`. */
+function fillLinearGradient(
+  surface: Surface,
+  cmd: Extract<PaintCmd, { op: "linear-gradient" }>,
+  clip: ClipBounds,
+): void {
+  const region = intersect(rectToBounds(cmd.rect), clip);
+  const rx = Number(cmd.rect.x);
+  const ry = Number(cmd.rect.y);
+  const rw = Number(cmd.rect.width);
+  const rh = Number(cmd.rect.height);
+  for (let y = region.y0; y < region.y1; y += 1) {
+    for (let x = region.x0; x < region.x1; x += 1) {
+      const t = gradientT(x + 0.5, y + 0.5, rx, ry, rw, rh, cmd.angle);
+      blendPixel(surface, x, y, gradientColor(cmd.stops, t), 1);
+    }
+  }
+}
+
+function fillRadialGradient(
+  surface: Surface,
+  cmd: Extract<PaintCmd, { op: "radial-gradient" }>,
+  clip: ClipBounds,
+): void {
+  const region = intersect(rectToBounds(cmd.rect), clip);
+  const rx = Number(cmd.rect.x);
+  const ry = Number(cmd.rect.y);
+  const rw = Number(cmd.rect.width);
+  const rh = Number(cmd.rect.height);
+  for (let y = region.y0; y < region.y1; y += 1) {
+    for (let x = region.x0; x < region.x1; x += 1) {
+      const t = radialT(x + 0.5, y + 0.5, rx, ry, rw, rh);
+      blendPixel(surface, x, y, gradientColor(cmd.stops, t), 1);
+    }
+  }
+}
+
 function fillRect(
   surface: Surface,
   rect: Rect,
@@ -710,31 +762,39 @@ function fillBorder(
  * DisplayList boundary.
  */
 /**
- * Rasterize a `text` command using REAL FONT outlines via the glyph
- * {@link GlyphCoverageSource}. Each IR glyph id is treated as a Unicode code
- * point, mapped to the font's glyph id, rasterized to anti-aliased coverage at
- * `fontSize`, and blitted at the pen position with correct baseline placement
- * (`em-box top + ascent − glyph-top`). Clipped + opacity-scaled. A code point
- * the font lacks (glyph id 0), or a blank glyph (space), paints nothing. This is
- * the ONE glyph path — genuine scalable vector outlines, no bitmap fallback.
+ * Rasterize a `text` command using REAL FONT outlines via the
+ * {@link GlyphRasterSource}. Each IR glyph carries its REAL `(faceIndex,
+ * glyphId)` pair — produced by the shaper (RFC 0002); the source rasterizes
+ * the face's own outline to anti-aliased coverage at `fontSize` and blits it
+ * at the pen position with baseline placement (`em-box top + ascent −
+ * glyph-top`). Clipped + opacity-scaled. A gid the face lacks (outline 0 /
+ * empty) or a blank glyph (space) paints nothing — the face's own `.notdef`
+ * outline still paints when the shaper emitted it.
  */
 function renderText(
   surface: Surface,
   cmd: Extract<PaintCmd, { readonly op: "text" }>,
   clip: ClipBounds,
   opacity: number,
-  source: GlyphCoverageSource,
+  source: GlyphRasterSource,
 ): void {
   const fontSize = cmd.fontSize;
   if (fontSize <= 0) return;
   const ascentPx = source.ascentEm * fontSize;
   const weight = cmd.fontWeight !== undefined ? Number(cmd.fontWeight) : 400;
-  const boldOffset = weight >= 700 ? 1 : weight >= 500 ? 1 : 0;
+  // Synthetic bold (RFC 0006): only when `font-synthesis` allows it AND the
+  // selected face genuinely lacks the requested weight.
+  const synthFor = (faceIndex: number): number =>
+    needsSyntheticBold(weight, source.faceWeight?.(faceIndex), cmd.synthesizeBold !== false) ? 1 : 0;
   for (const glyph of cmd.glyphs) {
-    const gid = source.glyphId(glyph.glyphId);
-    if (gid === 0) continue; // missing glyph ⇒ blank, never a fabricated block.
-    const r = source.raster(gid, fontSize);
+    const italic = needsSyntheticItalic(
+      cmd.fontStyle,
+      cmd.synthesizeStyle !== false,
+      source.faceItalic?.(glyph.faceIndex) === true,
+    );
+    const r = source.raster(glyph.faceIndex, glyph.glyphId, fontSize);
     if (r.width === 0 || r.height === 0) continue; // blank glyph (e.g. space).
+    const boldOffset = synthFor(glyph.faceIndex);
     const stamps = boldOffset > 0 ? [0, boldOffset] : [0];
     for (const dx of stamps) {
       const gridLeft = Math.round(cmd.at.x + glyph.offset.x + r.left + dx);
@@ -744,7 +804,7 @@ function renderText(
         if (py < clip.y0 || py >= clip.y1) continue;
         const rowBase = ry * r.width;
         for (let rx = 0; rx < r.width; rx += 1) {
-          const px = gridLeft + rx;
+          const px = gridLeft + rx + (italic ? syntheticItalicShift(ry) : 0);
           if (px < clip.x0 || px >= clip.x1) continue;
           const cov = r.coverage[rowBase + rx] ?? 0;
           if (cov <= 0) continue;
@@ -797,6 +857,61 @@ function blitImage(
         a: (src.pixels[si + 3] as number) / 255,
       };
       blendPixel(surface, x, y, color, opacity * cover);
+    }
+  }
+}
+
+/**
+ * Blit a `tile` command (RFC 0008): the source is drawn at `tile` size,
+ * repeating per axis across the `area` clip from `origin` stepping by `step`.
+ * `repeatX`/`repeatY` off means a single tile on that axis — the area clip
+ * still applies.
+ */
+function blitTiled(
+  surface: Surface,
+  cmd: Extract<PaintCmd, { readonly op: "tile" }>,
+  clip: ClipBounds,
+  opacity: number,
+): void {
+  const area = rectToBounds(cmd.area);
+  let eff = intersect(area, clip);
+  if (eff.x1 <= eff.x0 || eff.y1 <= eff.y0) return;
+  // `radius` rounds the AREA (the element's border box), not each tile — the
+  // rounded clip names the area bounds explicitly so partial outer clips keep
+  // corner geometry correct.
+  const radius = cmd.radius !== undefined ? Number(cmd.radius) : 0;
+  if (radius > 0) {
+    eff = {
+      ...eff,
+      radius,
+      rx: area.x0,
+      ry: area.y0,
+      rw: area.x1 - area.x0,
+      rh: area.y1 - area.y0,
+    };
+  }
+  const tw = Number(cmd.tile.width);
+  const th = Number(cmd.tile.height);
+  const stepX = Math.max(1, Number(cmd.step.x));
+  const stepY = Math.max(1, Number(cmd.step.y));
+  if (tw <= 0 || th <= 0 || cmd.src.width <= 0 || cmd.src.height <= 0) return;
+  const ox = Number(cmd.origin.x);
+  const oy = Number(cmd.origin.y);
+  // First tile index covering the clip: floor((clipStart - origin)/step) may be
+  // negative (tiles extend left/up of the origin too).
+  const ix0 = cmd.repeatX ? Math.floor((eff.x0 - ox) / stepX) : 0;
+  const ix1 = cmd.repeatX ? Math.floor((eff.x1 - 1 - ox) / stepX) : 0;
+  const iy0 = cmd.repeatY ? Math.floor((eff.y0 - oy) / stepY) : 0;
+  const iy1 = cmd.repeatY ? Math.floor((eff.y1 - 1 - oy) / stepY) : 0;
+  for (let iy = iy0; iy <= iy1; iy += 1) {
+    for (let ix = ix0; ix <= ix1; ix += 1) {
+      const rect: Rect = {
+        x: (ox + ix * stepX) as Px,
+        y: (oy + iy * stepY) as Px,
+        width: cmd.tile.width,
+        height: cmd.tile.height,
+      };
+      blitImage(surface, rect, cmd.src, eff, opacity, 0);
     }
   }
 }

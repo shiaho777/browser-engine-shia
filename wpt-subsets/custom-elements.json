@@ -1,0 +1,11 @@
+{
+  "name": "custom-elements",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "custom-elements/form-associated/focusability.html",
+    "custom-elements/reactions/AriaMixin-string-attributes.html",
+    "custom-elements/registries/valid-custom-element-names.html"
+  ],
+  "baselinePassCount": 2056
+}

@@ -8,10 +8,16 @@ export type {
   GlyphRaster,
   Contour,
   GlyphCoverageSource,
+  GlyphRasterSource,
 } from "./types.js";
 
 export { parseTrueType } from "./truetype.js";
-export { compileTrueType, type CompileFont, type CompileGlyph } from "./compile.js";
+export {
+  compileTrueType,
+  compileTrueTypeCollection,
+  type CompileFont,
+  type CompileGlyph,
+} from "./compile.js";
 export { rasterizeOutline } from "./raster.js";
 export {
   loadTrueTypeFontFromBytes,
@@ -32,7 +38,43 @@ export {
   GLYPH_HEIGHT,
   GLYPH_ART_BY_CODEPOINT,
 } from "./glyph-art.js";
-export { fallbackCoverageSource, advanceEmForCodePoint } from "./fallback.js";
+export {
+  fallbackCoverageSource,
+  advanceEmForCodePoint,
+  faceTableRasterSource,
+} from "./fallback.js";
+export {
+  HarfBuzzShaper,
+  type HarfBuzzApi,
+  type HarfBuzzGlyph,
+  type ShapeOptions,
+} from "./harfbuzz.js";
+export {
+  readSfntFaceInfo,
+  readSfntFaceInfoFromFile,
+  type SfntFaceInfo,
+} from "./names.js";
+export {
+  cssFontFeatures,
+  fontStretchWidthClass,
+  isGenericFamily,
+  parseFontFamilyList,
+  parseFontFeatureSettings,
+  parseVariationSettings,
+  type CssFeatureInput,
+  type FontFeatureSpec,
+  type FontVariation,
+} from "./features.js";
+export { FontRegistry, type FontSelect } from "./registry.js";
+export {
+  collectFontFaceDescriptors,
+  faceFromSourceBytes,
+  fontFaceFormatSupported,
+  parseFontFaceRule,
+  type FontFaceDescriptor,
+  type FontFaceSource,
+} from "./fontface.js";
+export { isWoff, unwrapWoff } from "./woff.js";
 
 import type { FontFace, GlyphCoverageSource, GlyphRaster } from "./types.js";
 import { rasterizeOutline } from "./raster.js";

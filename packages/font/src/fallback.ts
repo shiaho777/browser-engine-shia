@@ -1,5 +1,5 @@
 import { rasterizeOutline } from "./raster.js";
-import type { FontFace, GlyphCoverageSource, GlyphRaster } from "./types.js";
+import type { FontFace, GlyphCoverageSource, GlyphRaster, GlyphRasterSource } from "./types.js";
 
 const EMPTY_RASTER: GlyphRaster = {
   width: 0,
@@ -49,6 +49,31 @@ export function fallbackCoverageSource(faces: readonly FontFace[]): GlyphCoverag
       if (slot === undefined) return EMPTY_RASTER;
       return rasterizeOutline(slot.face.outlineOf(slot.gid), fontSizePx / slot.face.unitsPerEm);
     },
+  };
+}
+
+/**
+ * The post-shaping raster source (RFC 0002): a {@link GlyphRasterSource} over
+ * a face TABLE — the same ordered list the pipeline shaper resolves
+ * `faceIndex` against. A text command's `(faceIndex, glyphId)` pair goes
+ * straight to `faces[faceIndex].outlineOf(glyphId)`; no code-point resolution
+ * happens at raster time (that is the shaper's job now).
+ */
+export function faceTableRasterSource(faces: readonly FontFace[]): GlyphRasterSource {
+  if (faces.length === 0) {
+    throw new Error("font: faceTableRasterSource requires at least one FontFace");
+  }
+  const primary = faces[0]!;
+  return {
+    ascentEm: primary.ascent / primary.unitsPerEm,
+    raster: (faceIndex: number, glyphId: number, fontSizePx: number): GlyphRaster => {
+      const face = faces[faceIndex];
+      // gid 0 is the face's own .notdef — a real glyph, drawn honestly.
+      if (face === undefined || glyphId < 0) return EMPTY_RASTER;
+      return rasterizeOutline(face.outlineOf(glyphId), fontSizePx / face.unitsPerEm);
+    },
+    faceWeight: (faceIndex: number): number | undefined => faces[faceIndex]?.weight,
+    faceItalic: (faceIndex: number): boolean | undefined => faces[faceIndex]?.italic,
   };
 }
 

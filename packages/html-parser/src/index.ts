@@ -191,6 +191,86 @@ export function parseHtmlWithMetrics(source: Uint8Array): ParseResult {
 }
 
 /**
+ * RFC 0040: incremental document parser — the document loader feeds wire
+ * chunks in via {@link write} and polls {@link snapshot} for the DOM of the
+ * bytes received so far. `finish()` produces the final parse (identical to
+ * {@link parseHtmlWithMetrics} on the complete buffer).
+ *
+ * Honest model: a snapshot is the BATCH parse of the received prefix — the
+ * same `tokenize`+`buildTree` pipeline re-runs on the accumulated bytes. The
+ * contract an incremental engine guarantees (a well-formed partial tree that
+ * converges to the full parse at EOF) holds exactly; the cost model does not
+ * (real engines resume the tokenizer — we re-scan, O(bytes·snapshots)).
+ * Snapshots are lazy: `write` only accumulates; parse work happens on poll.
+ */
+export class IncrementalHtmlParser {
+  #parts: Uint8Array[] = [];
+  #received = 0;
+  #done = false;
+  #lastSnapshotBytes = -1;
+  #lastSnapshot: ParseResult | null = null;
+  #final: ParseResult | null = null;
+  #snapshotCount = 0;
+
+  /** Append a wire chunk. Throws once {@link finish} has run. */
+  write(chunk: Uint8Array): void {
+    if (this.#done) throw new Error("IncrementalHtmlParser: write() after finish()");
+    if (chunk.byteLength === 0) return;
+    this.#parts.push(chunk);
+    this.#received += chunk.byteLength;
+  }
+
+  get receivedBytes(): number {
+    return this.#received;
+  }
+
+  /** How many snapshots this parser has produced (evidence counter). */
+  get snapshots(): number {
+    return this.#snapshotCount;
+  }
+
+  /**
+   * Parse the received prefix — memoized per byte count so polling without
+   * new bytes costs nothing. Returns null before any byte arrives.
+   */
+  snapshot(): ParseResult | null {
+    if (this.#done && this.#final !== null) return this.#final;
+    if (this.#received === 0) return null;
+    if (this.#lastSnapshotBytes === this.#received && this.#lastSnapshot !== null) {
+      return this.#lastSnapshot;
+    }
+    const buf = this.#collect();
+    const result = parseHtmlWithMetrics(buf);
+    this.#lastSnapshotBytes = this.#received;
+    this.#lastSnapshot = result;
+    this.#snapshotCount += 1;
+    return result;
+  }
+
+  /**
+   * Seal the input and produce the final parse — byte-identical to parsing
+   * the whole buffer in one shot (proven by construction: it IS that call).
+   */
+  finish(): ParseResult {
+    if (this.#final !== null) return this.#final;
+    this.#done = true;
+    this.#final = parseHtmlWithMetrics(this.#collect());
+    return this.#final;
+  }
+
+  #collect(): Uint8Array {
+    if (this.#parts.length === 1) return this.#parts[0] as Uint8Array;
+    const out = new Uint8Array(this.#received);
+    let off = 0;
+    for (const p of this.#parts) {
+      out.set(p, off);
+      off += p.byteLength;
+    }
+    return out;
+  }
+}
+
+/**
  * Determine the document rendering mode from the token stream (HTML §13.2.6.1,
  * a pragmatic subset; task 9.4 / Requirement 17.4):
  *

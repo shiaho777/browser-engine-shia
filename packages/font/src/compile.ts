@@ -25,6 +25,96 @@ export interface CompileFont {
   readonly descent: number;
   readonly glyphs: readonly CompileGlyph[];
   readonly cmap: ReadonlyMap<number, number>;
+  /** Emit a `name` table with family/subfamily/full/PostScript records. */
+  readonly names?: { readonly family: string; readonly subfamily?: string };
+  /** Emit a minimal `OS/2` table (weight/width class + fsSelection). `xHeight` upgrades it to version 2. */
+  readonly os2?: {
+    readonly weightClass?: number;
+    readonly widthClass?: number;
+    readonly italic?: boolean;
+    readonly xHeight?: number;
+    readonly subscriptOffset?: number;
+    readonly superscriptOffset?: number;
+  };
+}
+
+/** Encode a `name` table: single Windows (3,1,0x409) record per name ID. */
+function encodeNameTable(names: { family: string; subfamily?: string }): Uint8Array {
+  const entries: { nameId: number; text: string }[] = [
+    { nameId: 1, text: names.family },
+    { nameId: 2, text: names.subfamily ?? "Regular" },
+    { nameId: 4, text: `${names.family} ${names.subfamily ?? "Regular"}` },
+    { nameId: 6, text: `${names.family.replace(/\s+/g, "")}-${names.subfamily ?? "Regular"}` },
+    { nameId: 16, text: names.family },
+    { nameId: 17, text: names.subfamily ?? "Regular" },
+  ];
+  const w = new Writer();
+  w.uint16(0); // format
+  w.uint16(entries.length);
+  w.uint16(6 + entries.length * 12); // stringStorage offset
+  let storage = 0;
+  for (const e of entries) {
+    w.uint16(3); // platformID: Windows
+    w.uint16(1); // encodingID: Unicode BMP
+    w.uint16(0x409); // languageID: en-US
+    w.uint16(e.nameId);
+    w.uint16(e.text.length * 2);
+    w.uint16(storage);
+    storage += e.text.length * 2;
+  }
+  for (const e of entries) {
+    for (const ch of e.text) w.uint16(ch.charCodeAt(0)); // UTF-16BE
+  }
+  return w.toBytes();
+}
+
+/** Encode a minimal OS/2 v0 table (we only promise weight/width/fsSelection). */
+function encodeOs2(os2: {
+  weightClass?: number;
+  widthClass?: number;
+  italic?: boolean;
+  xHeight?: number;
+  subscriptOffset?: number;
+  superscriptOffset?: number;
+}): Uint8Array {
+  const w = new Writer();
+  w.uint16(os2.xHeight !== undefined ? 2 : 0);
+  w.int16(500); // xAvgCharWidth
+  w.uint16(os2.weightClass ?? 400);
+  w.uint16(os2.widthClass ?? 5);
+  w.uint16(0); // fsType
+  w.int16(0); // ySubscriptXSize
+  w.int16(0); // ySubscriptYSize
+  w.int16(0); // ySubscriptXOffset
+  w.int16(os2.subscriptOffset ?? 0); // ySubscriptYOffset @16
+  w.int16(0); // ySuperscriptXSize
+  w.int16(0); // ySuperscriptYSize
+  w.int16(0); // ySuperscriptXOffset
+  w.int16(os2.superscriptOffset ?? 0); // ySuperscriptYOffset @24
+  w.int16(0); // yStrikeoutSize
+  w.int16(0); // yStrikeoutPosition
+  w.int16(0); // sFamilyClass @30
+  for (let i = 0; i < 10; i += 1) w.uint8(0); // panose @32–41
+  for (let i = 0; i < 4; i += 1) w.uint32(0); // ulUnicodeRange @42–57
+  w.tag("TEST"); // achVendID @58–61
+  w.uint16(os2.italic === true ? 0x1 : 0x0); // fsSelection @62
+  w.uint16(0); // usFirstCharIndex
+  w.uint16(0); // usLastCharIndex
+  w.int16(0); // sTypoAscender
+  w.int16(0); // sTypoDescender
+  w.int16(0); // sTypoLineGap
+  w.uint16(0); // usWinAscent
+  w.uint16(0); // usWinDescent — v0 = 78 bytes
+  if (os2.xHeight !== undefined) {
+    w.uint32(0); // ulCodePageRange1
+    w.uint32(0); // ulCodePageRange2
+    w.int16(os2.xHeight); // sxHeight @86
+    w.int16(0); // sCapHeight
+    w.uint16(0); // usDefaultChar
+    w.uint16(0); // usBreakChar
+    w.uint16(0); // usMaxContext
+  }
+  return w.toBytes();
 }
 
 const MAGIC = 0x5f0f3cf5;
@@ -133,6 +223,9 @@ export function compileTrueType(font: CompileFont): Uint8Array {
     { tag: "loca", bytes: locaBytes },
     { tag: "maxp", bytes: maxpBytes },
   ];
+  if (font.names !== undefined) tables.push({ tag: "name", bytes: encodeNameTable(font.names) });
+  if (font.os2 !== undefined) tables.push({ tag: "OS/2", bytes: encodeOs2(font.os2) });
+  tables.sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
 
   const numTables = tables.length;
   const entrySelector = Math.floor(Math.log2(numTables));
@@ -279,4 +372,39 @@ function pad4(bytes: Uint8Array): Uint8Array {
   const out = new Uint8Array(bytes.length + (4 - rem));
   out.set(bytes);
   return out;
+}
+
+/**
+ * Compile a TrueType COLLECTION (`ttcf`) — several member faces in one file
+ * (macOS Supplemental ships this way, so {@link readSfntFaceInfo} and
+ * `parseTrueType(faceIndex)` need a fixture). Each member is compiled
+ * standalone, then its table-directory offsets are rebased onto its final
+ * file position. Member `head.checkSumAdjustment` values stay the standalone
+ * ones (parsers must not verify them — ours don't).
+ */
+export function compileTrueTypeCollection(fonts: readonly CompileFont[]): Uint8Array {
+  const members = fonts.map((f) => compileTrueType(f));
+  const headerSize = 12 + members.length * 4;
+  const bases: number[] = [];
+  let cursor = headerSize;
+  for (const m of members) {
+    bases.push(cursor);
+    cursor += m.length;
+  }
+  const out = new Writer();
+  out.tag("ttcf");
+  out.uint32(0x00010000); // version
+  out.uint32(members.length);
+  for (const b of bases) out.uint32(b);
+  for (let i = 0; i < members.length; i += 1) {
+    const bytes = new Uint8Array(members[i]!);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const numTables = view.getUint16(4, false);
+    for (let t = 0; t < numTables; t += 1) {
+      const rec = 12 + t * 16;
+      view.setUint32(rec + 8, view.getUint32(rec + 8, false) + bases[i]!, false);
+    }
+    out.raw(bytes);
+  }
+  return out.toBytes();
 }

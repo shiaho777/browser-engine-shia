@@ -117,6 +117,439 @@ const DOM = buildDom([
 // Req 11.1 — a matching rule produces the property's computed value.
 // ---------------------------------------------------------------------------
 
+void test("::first-letter font-size resolves em against the element and does not restyle it", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "div", parent: 0, children: [2] },
+    { id: 2, kind: "element", tag: "p", parent: 1, children: [] },
+  ]);
+  const sheet = buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "10px" }] },
+    {
+      selector: "p",
+      specificity: [0, 0, 1],
+      declarations: [
+        { property: "font-size", value: "20px" },
+        { property: "color", value: "blue" },
+      ],
+    },
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "2em" },
+        { property: "color", value: "red" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(2));
+  assert.equal(Number(style.fontSize), 20);
+  assert.deepEqual(style.color, BLUE);
+  assert.equal(Number((style as unknown as Record<string, unknown>)["firstLetterFontSize"]), 40);
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLetterColor"], RED);
+});
+
+void test("a more specific ::first-letter font-size wins, and ::first-line does not style the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", attrs: { class: "x" }, parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p.x::first-letter",
+      specificity: [0, 1, 2],
+      declarations: [{ property: "font-size", value: "40px" }],
+    },
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "font-size", value: "10px" }],
+    },
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "99px" },
+        { property: "color", value: "red" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(Number(style.fontSize), 16);
+  assert.deepEqual(style.color, BLACK);
+  assert.equal(Number((style as unknown as Record<string, unknown>)["firstLetterFontSize"]), 40);
+  assert.equal(Number((style as unknown as Record<string, unknown>)["firstLineFontSize"]), 99);
+  assert.equal("firstLetterColor" in style, false);
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLineColor"], RED);
+});
+
+void test("::first-line font-size resolves em against the element and does not restyle it", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "div", parent: 0, children: [2] },
+    { id: 2, kind: "element", tag: "p", parent: 1, children: [] },
+  ]);
+  const sheet = buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "10px" }] },
+    {
+      selector: "p",
+      specificity: [0, 0, 1],
+      declarations: [
+        { property: "font-size", value: "20px" },
+        { property: "color", value: "blue" },
+      ],
+    },
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "2em" },
+        { property: "color", value: "red" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(2));
+  assert.equal(Number(style.fontSize), 20);
+  assert.deepEqual(style.color, BLUE);
+  assert.equal(Number((style as unknown as Record<string, unknown>)["firstLineFontSize"]), 40);
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLineColor"], RED);
+  assert.equal("firstLetterFontSize" in style, false);
+  assert.equal("firstLetterColor" in style, false);
+});
+
+void test("::first-letter float does not float the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "float", value: "left" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["float"], "none");
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterFloat"], "left");
+});
+
+void test("::first-letter font-weight accepts bold and does not embolden the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "font-weight", value: "bold" }],
+    },
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "font-weight", value: "700" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(Number(style["fontWeight"]), 400);
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterFontWeight"], 700);
+  assert.equal((style as unknown as Record<string, unknown>)["firstLineFontWeight"], 700);
+});
+
+void test("::first-letter font-style accepts italic and does not italicize the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "font-style", value: "italic" }],
+    },
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "font-style", value: "oblique" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["fontStyle"], "normal");
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterFontStyle"], "italic");
+  assert.equal((style as unknown as Record<string, unknown>)["firstLineFontStyle"], "oblique");
+});
+
+void test("::first-letter text-transform, word-spacing, line-height, and decoration stay off the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "text-transform", value: "uppercase" },
+        { property: "word-spacing", value: "0.5em" },
+        { property: "line-height", value: "2" },
+        { property: "vertical-align", value: "super" },
+        { property: "text-decoration", value: "underline red" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["textTransform"], "none");
+  assert.equal(style["lineHeight"], "normal");
+  const extra = style as unknown as Record<string, unknown>;
+  assert.equal(extra["firstLetterTextTransform"], "uppercase");
+  assert.equal(extra["firstLetterWordSpacing"], 8);
+  assert.equal(extra["firstLetterLineHeight"], 32);
+  assert.equal(extra["firstLetterVerticalAlign"], "super");
+  assert.deepEqual(extra["firstLetterTextDecoration"], { line: "underline", color: RED });
+});
+
+void test("::first-letter letter-spacing em uses the pseudo font-size", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "div", parent: 0, children: [2] },
+    { id: 2, kind: "element", tag: "p", parent: 1, children: [] },
+  ]);
+  const sheet = buildSheet([
+    { selector: "div", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "10px" }] },
+    { selector: "p", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "20px" }] },
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "32px" },
+        { property: "letter-spacing", value: "0.5em" },
+      ],
+    },
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "letter-spacing", value: "1em" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(2));
+  assert.equal(Number(style["letterSpacing"]), 0);
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterLetterSpacing"], 16);
+  assert.equal((style as unknown as Record<string, unknown>)["firstLineLetterSpacing"], 20);
+});
+
+void test("::first-letter margin resolves em against the pseudo font-size", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "32px" },
+        { property: "margin", value: "0.5em 10px 0 4px" },
+        { property: "margin-right", value: "8px" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.deepEqual(style.margin, { top: px(0), right: px(0), bottom: px(0), left: px(0) });
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLetterMargin"], {
+    top: 16,
+    right: 8,
+    bottom: 0,
+    left: 4,
+  });
+});
+
+void test("::first-letter padding resolves em against the pseudo font-size", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "32px" },
+        { property: "padding", value: "0.5em 10px 0 4px" },
+        { property: "padding-left", value: "2px" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.deepEqual(style["padding"], { top: px(0), right: px(0), bottom: px(0), left: px(0) });
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLetterPadding"], {
+    top: 16,
+    right: 10,
+    bottom: 0,
+    left: 2,
+  });
+});
+
+void test("::first-letter border resolves em against the pseudo font-size", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "font-size", value: "32px" },
+        { property: "border", value: "2px solid red" },
+        { property: "border-left-width", value: "0.5em" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["borderTopWidth"], px(0));
+  assert.equal(style["borderTopStyle"], "none");
+  assert.equal(style["borderLeftWidth"], px(0));
+  const border = (style as unknown as Record<string, unknown>)["firstLetterBorder"] as {
+    top: { width: number; style: string; color: Color };
+    right: { width: number; style: string; color: Color };
+    left: { width: number; style: string; color: Color };
+  };
+  assert.equal(border.top.width, 2);
+  assert.equal(border.right.width, 2);
+  assert.equal(border.left.width, 16);
+  assert.equal(border.top.style, "solid");
+  assert.equal(border.left.style, "solid");
+  assert.deepEqual(border.top.color, RED);
+  assert.deepEqual(border.left.color, RED);
+});
+
+void test("::first-letter background-color does not paint the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "background", value: "red" },
+        { property: "background-color", value: "green" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.deepEqual(style["backgroundColor"], { r: 0, g: 0, b: 0, a: 0 });
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLetterBackgroundColor"], GREEN);
+});
+
+void test("::first-line background-color does not paint the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "background", value: "red" },
+        { property: "background-color", value: "green" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.deepEqual(style["backgroundColor"], { r: 0, g: 0, b: 0, a: 0 });
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterBackgroundColor"], undefined);
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLineBackgroundColor"], GREEN);
+});
+
+void test("::first-letter background-image keeps the shorthand repeat", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "background", value: "url(a.png) no-repeat" },
+        { property: "background-image", value: "url(b.png)" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["backgroundImage"], "none");
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLetterBackgroundImage"], {
+    image: "url(b.png)",
+    repeat: "no-repeat",
+    size: "auto",
+    position: "0% 0%",
+  });
+});
+
+void test("::first-letter linear-gradient is kept as the background image", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "background-image", value: "linear-gradient(to right, red, blue)" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  const image = (style as unknown as Record<string, { image: string } | undefined>)["firstLetterBackgroundImage"];
+  assert.equal(image?.image, "linear-gradient(to right, red, blue)");
+});
+
+void test("::first-letter radial-gradient is kept as the background image", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-letter",
+      specificity: [0, 0, 2],
+      declarations: [{ property: "background-image", value: "radial-gradient(red, blue)" }],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  const image = (style as unknown as Record<string, { image: string } | undefined>)["firstLetterBackgroundImage"];
+  assert.equal(image?.image, "radial-gradient(red, blue)");
+});
+
+void test("::first-line background-image does not paint the element", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "p", parent: 0, children: [] },
+  ]);
+  const sheet = buildSheet([
+    {
+      selector: "p::first-line",
+      specificity: [0, 0, 2],
+      declarations: [
+        { property: "background", value: "url(a.png) no-repeat" },
+        { property: "background-image", value: "url(b.png)" },
+      ],
+    },
+  ]);
+  const style = cascade(dom, [sheet], nodeId(1));
+  assert.equal(style["backgroundImage"], "none");
+  assert.equal((style as unknown as Record<string, unknown>)["firstLetterBackgroundImage"], undefined);
+  assert.deepEqual((style as unknown as Record<string, unknown>)["firstLineBackgroundImage"], {
+    image: "url(b.png)",
+    repeat: "no-repeat",
+    size: "auto",
+    position: "0% 0%",
+  });
+});
+
 void test("a property from a matching type rule is computed (Req 11.1)", () => {
   const sheet = buildSheet([{ selector: "div", specificity: [0, 0, 1], declarations: [{ property: "color", value: "red" }] }]);
   const style = cascade(DOM, [sheet], nodeId(1));

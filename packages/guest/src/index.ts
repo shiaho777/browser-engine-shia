@@ -61,15 +61,21 @@ export {
   Event,
   UIEvent,
   MouseEvent,
+  PointerEvent,
   KeyboardEvent,
   CustomEvent,
   FocusEvent,
   InputEvent,
   WheelEvent,
   CompositionEvent,
+  MessageEvent,
+  CloseEvent,
   EventTarget,
   type EventInit,
+  type MessageEventInit,
+  type CloseEventInit,
   type MouseEventInit,
+  type PointerEventInit,
   type KeyboardEventInit,
 } from "./event-system.js";
 
@@ -100,12 +106,49 @@ export {
   DEFAULT_BROWSER_UA,
   type NetworkStack,
   type NetworkRequest,
+  type ServiceWorkerInterceptor,
   type NetworkResponse,
+  type StreamingNetworkResponse,
   type BrowserNetworkStack,
   type BrowserNetworkOptions,
   type BrowserNetworkEvent,
 } from "./network.js";
-export { CookieJar, type StoredCookie } from "./cookie-jar.js";
+export { CookieJar, type StoredCookie, type CookieSendContext } from "./cookie-jar.js";
+export { HttpCache, type CacheEntry } from "./http-cache.js";
+// ---- CORS (RFC 0028): safelists, preflight validation+cache, settings attr ----
+export {
+  CORS_SAFELISTED_METHODS,
+  CorsCache,
+  acaoAllows,
+  crossoriginSettings,
+  exposedHeaderNames,
+  filterCorsResponseHeaders,
+  isCorsSafelistedRequestHeader,
+  needsCorsPreflight,
+  nonSafelistedHeaderNames,
+  validatePreflight,
+  type CorsSettings,
+} from "./cors.js";
+// ---- HSTS + baseline mixed content (RFC 0029) ------------------------------
+export {
+  HstsStore,
+  isPotentiallyTrustworthyUrl,
+  mixedContentVerdict,
+  type MixedContentVerdict,
+} from "./hsts.js";
+// ---- COEP/COOP/CORP + agent-cluster flags (RFC 0031) ---------------------
+export {
+  coepApplies,
+  coopSeversOpenerLink,
+  corpAllows,
+  crossOriginIsolated,
+  parseCoep,
+  parseCoop,
+  parseCorp,
+  type Coep,
+  type Coop,
+  type Corp,
+} from "./coep.js";
 export { makeBlobClass, makeFileClass, ObjectUrlRegistry, globalObjectUrls, type GuestBlob, type GuestFile } from "./blob.js";
 
 // ---- aborting (DOM §3.2): AbortController / AbortSignal --------------------
@@ -113,6 +156,56 @@ export { AbortController, AbortSignal, DOMException } from "./abort.js";
 
 // ---- guest fetch over the reused stack (Requirements 16.5, 16.7) ----------
 export { createGuestFetch, type GuestFetch, type GuestResponse } from "./fetch.js";
+
+// ---- Fetch API primitives (RFC 0019): spec-shaped guest classes ------------
+export {
+  makeFetchApi,
+  makeHeaders,
+  makeBufferedStream,
+  bodyToBytes,
+  adaptResponseLike,
+  probeHeaders,
+  type FetchApi,
+  type FetchCore,
+  type GuestHeaders,
+  type GuestRequest,
+  type GuestResponse as FetchApiResponse,
+  type GuestReadableStream,
+  type GuestStreamReader,
+  type HeadersInit,
+  type NormalizedRequest,
+  type RawFetchResult,
+} from "./fetch-api.js";
+
+// ---- WebSocket (RFC 0022): engine-side RFC 6455 handshake+framing ---------
+export {
+  makeWebSocketApi,
+  createWsLoopback,
+  nodeWsTransport,
+  wsAccept,
+  buildHandshakeRequest,
+  parseHandshakeResponse,
+  encodeClientFrame,
+  encodeFrame,
+  WsFrameParser,
+  WsProtocolError,
+  OP_TEXT,
+  OP_BINARY,
+  OP_CONT,
+  OP_CLOSE,
+  OP_PING,
+  OP_PONG,
+  type WsTransport,
+  type RawSocket,
+  type WebSocketDeps,
+  type WebSocketApi,
+  type WsRealm,
+  type GuestWebSocket,
+  type GuestWebSocketCtor,
+  type WsLoopbackServer,
+  type ParsedFrame,
+  type HandshakeResponse,
+} from "./websocket.js";
 
 // ---- guest-boundary value coercion (spec-like ToString for unknowns) ------
 export { coerceGuestString } from "./coerce.js";

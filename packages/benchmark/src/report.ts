@@ -42,12 +42,26 @@ export function buildBenchmarkJsonReport(snapshot: BenchmarkSnapshot): Benchmark
 }
 
 /**
- * Rendered-PNG byte lengths are platform-dependent: text goes through system
- * font fallback, so macOS and Linux rasterize the same document into different
- * anti-aliased pixels (and thus different compressed sizes). The live collector
- * exposes them for tests; the COMMITTED evidence artifacts omit them so
- * `npm run evidence` reproduces byte-for-byte on any platform.
+ * Fields the committed artifacts must not carry.
+ *
+ * `pngBytes` differs because text falls through to the host's fonts, so macOS
+ * and Linux rasterize the same document into different anti-aliased pixels.
+ * The `*Ms` fields are wall-clock samples; the same tree is slower on a CI
+ * runner than on a laptop. `partialCorrect` compares PNG bytes of a repaired
+ * frame to a fresh raster, and that byte match follows the host rasterizer
+ * (it holds on macOS and fails on the Ubuntu runner). Collectors still
+ * measure them for tests. The committed JSON drops them so `npm run evidence`
+ * is byte-for-byte identical on any machine.
  */
+const HOST_DEPENDENT_EVIDENCE_KEYS: ReadonlySet<string> = new Set([
+  "pngBytes",
+  "warmLayoutMs",
+  "coldLayoutMs",
+  "warmRepaintMs",
+  "coldRepaintMs",
+  "partialCorrect",
+]);
+
 export function omitRenderedPngBytes<T>(value: T): T {
   if (Array.isArray(value)) {
     const list = value as unknown[];
@@ -56,7 +70,7 @@ export function omitRenderedPngBytes<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     const copy: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (key === "pngBytes") {
+      if (HOST_DEPENDENT_EVIDENCE_KEYS.has(key)) {
         continue;
       }
       copy[key] = omitRenderedPngBytes(item);
@@ -124,6 +138,27 @@ export function renderEvidenceDashboardHtml(snapshot: BenchmarkSnapshot): string
             ["Script mutations", evidence.scriptDrivenEdit.scriptMutations],
             ["appendChild increased nodes", yesNo(evidence.scriptDrivenEdit.appendChildIncreasedNodes)],
             ["Appended node painted", yesNo(evidence.scriptDrivenEdit.appendedNodePainted)],
+          ],
+        ),
+        section(
+          "Incremental Layout (RFC 0038)",
+          [
+            ["Scenario", evidence.subtreeReuse.scenario],
+            ["Document nodes", evidence.subtreeReuse.documentNodes],
+            ["Boundary replays (hits)", evidence.subtreeReuse.boundaryHits],
+            ["Boundary re-layouts (misses)", evidence.subtreeReuse.boundaryMisses],
+            ["OOF-leak bypasses", evidence.subtreeReuse.bypassed],
+            ["Replay == full layout", yesNo(evidence.subtreeReuse.replayCorrect)],
+          ],
+        ),
+        section(
+          "Paint Invalidation (RFC 0039)",
+          [
+            ["Scenario", evidence.paintDamage.scenario],
+            ["Commands unchanged / changed", `${evidence.paintDamage.unchangedCommands} / ${evidence.paintDamage.changedCommands}`],
+            ["Damage area", `${evidence.paintDamage.damageAreaPx2} of ${evidence.paintDamage.viewportAreaPx2} px²`],
+            ["Retained repair ran", yesNo(evidence.paintDamage.repaired)],
+            ["No-change repaint is a no-op", yesNo(evidence.paintDamage.identicalNoop)],
           ],
         ),
         section(

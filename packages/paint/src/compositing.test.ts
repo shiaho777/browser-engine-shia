@@ -82,6 +82,10 @@ interface StyleSpec {
   readonly backgroundColor?: Color;
   readonly opacity?: number;
   readonly transform?: Matrix;
+  readonly transformOrigin?: string;
+  readonly translate?: string;
+  readonly rotate?: string;
+  readonly scale?: string;
   readonly zIndex?: number;
 }
 
@@ -97,6 +101,10 @@ function makeStyle(spec: StyleSpec = {}): ComputedStyle {
   };
   if (spec.opacity !== undefined) style["opacity"] = spec.opacity;
   if (spec.transform !== undefined) style["transform"] = spec.transform;
+  if (spec.transformOrigin !== undefined) style["transformOrigin"] = spec.transformOrigin;
+  if (spec.translate !== undefined) style["translate"] = spec.translate;
+  if (spec.rotate !== undefined) style["rotate"] = spec.rotate;
+  if (spec.scale !== undefined) style["scale"] = spec.scale;
   if (spec.zIndex !== undefined) style["zIndex"] = spec.zIndex;
   return deepFreeze(style as unknown as ComputedStyle);
 }
@@ -260,4 +268,72 @@ void test("nested layers: a transformed parent with an opaque child nests push/p
   const layerOps = ops(list.commands).filter((o) => o === "push-layer" || o === "pop-layer");
   // Two layers, properly nested: push (node1), push (node2), pop (node2), pop (node1).
   assert.deepEqual(layerOps, ["push-layer", "push-layer", "pop-layer", "pop-layer"]);
+});
+
+void test("transform-origin pins the rotation about a resolved point (not the centre)", () => {
+  // `transform-origin: 0 0` on a 50×50 box at (10,20): T(o)·scale(2)·T(−o)
+  // with o=(10,20) ⇒ e = 10 − 2·10 = −10, f = 20 − 2·20 = −20.
+  const scale2: Matrix = [2, 0, 0, 2, 0, 0];
+  const tree = buildTree([
+    { id: 0, node: 0, box: box(0, 0, 100, 100), children: [1] },
+    { id: 1, node: 1, box: box(10, 20, 50, 50) },
+  ]);
+  const styles = styleTable(
+    new Map([[1, makeStyle({ transform: scale2, transformOrigin: "0 0" })]]),
+  );
+  const list = paint(tree, styles);
+  const push = list.commands.find((c) => c.op === "push-layer");
+  assert.ok(push !== undefined && push.op === "push-layer");
+  assert.deepEqual([...push.transform], [2, 0, 0, 2, -10, -20], "origin baked at the top-left corner");
+});
+
+void test("transform-origin keywords + percentages resolve against the border box", () => {
+  // `transform-origin: right bottom` = box's right-bottom corner (60,70) for
+  // the 50×50 child at (10,20); `50% 50%` = its centre (35,45).
+  const scale2: Matrix = [2, 0, 0, 2, 0, 0];
+  const tree = buildTree([
+    { id: 0, node: 0, box: box(0, 0, 100, 100), children: [1] },
+    { id: 1, node: 1, box: box(10, 20, 50, 50) },
+  ]);
+  const styles = styleTable(
+    new Map([[1, makeStyle({ transform: scale2, transformOrigin: "right bottom" })]]),
+  );
+  const list = paint(tree, styles);
+  const push = list.commands.find((c) => c.op === "push-layer");
+  assert.ok(push !== undefined && push.op === "push-layer");
+  assert.deepEqual([...push.transform], [2, 0, 0, 2, -60, -70], "origin = right-bottom corner");
+});
+
+void test("individual transform properties compose translate·rotate·scale before `transform`", () => {
+  // translate "10px 20px" + scale "2" → T(10,20)·S(2) — applied left of a
+  // declared `transform` matrix per CSS Transforms L2.
+  const tree = buildTree([
+    { id: 0, node: 0, box: box(0, 0, 100, 100), children: [1] },
+    { id: 1, node: 1, box: box(0, 0, 50, 50) },
+  ]);
+  const styles = styleTable(
+    new Map([[1, makeStyle({ translate: "10px 20px", scale: "2" })]]),
+  );
+  const list = paint(tree, styles);
+  const push = list.commands.find((c) => c.op === "push-layer");
+  assert.ok(push !== undefined && push.op === "push-layer");
+  // T·S = [2,0,0,2,10,20]; origin-baked about centre (25,25):
+  // e = 10 + 25 − 2·25 = −15, f = 20 + 25 − 2·25 = −5.
+  assert.deepEqual([...push.transform], [2, 0, 0, 2, -15, -5], "translate·scale composed, origin-baked");
+});
+
+void test("`rotate: 90deg` (individual property) emits the rotation matrix", () => {
+  const tree = buildTree([
+    { id: 0, node: 0, box: box(0, 0, 100, 100), children: [1] },
+    { id: 1, node: 1, box: box(0, 0, 50, 50) },
+  ]);
+  const styles = styleTable(new Map([[1, makeStyle({ rotate: "90deg" })]]));
+  const list = paint(tree, styles);
+  const push = list.commands.find((c) => c.op === "push-layer");
+  assert.ok(push !== undefined && push.op === "push-layer");
+  // rotate(π/2) = [0,1,−1,0]; origin-baked about centre (25,25):
+  // e = 25 − (0·25 + (−1)·25) = 50, f = 25 − (1·25 + 0·25) = 0.
+  const [a, b, c, d, e, f] = push.transform;
+  assert.ok(Math.abs(a) < 1e-9 && Math.abs(b - 1) < 1e-9 && Math.abs(c + 1) < 1e-9 && Math.abs(d) < 1e-9);
+  assert.ok(Math.abs(e - 50) < 1e-9 && Math.abs(f) < 1e-9);
 });

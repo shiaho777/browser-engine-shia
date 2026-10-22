@@ -162,13 +162,21 @@ function parserCallFor(grammar: ValueGrammar): ParserCall {
         expr: `parseLengthOrKeyword(value, ${stringArrayLiteral(grammar.keywords)})`,
         primitive: "parseLengthOrKeyword",
       };
-    case "edges":
-      return { expr: "parseEdgesLength(value)", primitive: "parseEdgesLength" };
-    case "integer":
-      return {
-        expr: `parseInteger(value, ${boundsLiteral(grammar.min, grammar.max)})`,
-        primitive: "parseInteger",
-      };
+    case "edges": {
+      const keywords = grammar.keywords ?? [];
+      const expr = keywords.length === 0
+        ? "parseEdgesLength(value)"
+        : `parseEdgesLength(value, ${stringArrayLiteral(keywords)})`;
+      return { expr, primitive: "parseEdgesLength" };
+    }
+    case "integer": {
+      const keywords = grammar.keywords ?? [];
+      const bounds = boundsLiteral(grammar.min, grammar.max);
+      const expr = keywords.length === 0
+        ? `parseInteger(value, ${bounds})`
+        : `parseInteger(value, ${bounds}, ${stringArrayLiteral(keywords)})`;
+      return { expr, primitive: "parseInteger" };
+    }
     case "number":
       return {
         expr: `parseNumber(value, ${boundsLiteral(grammar.min, grammar.max)})`,

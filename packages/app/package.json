@@ -24,6 +24,7 @@
     "@browser-engine/cascade": "0.0.0",
     "@browser-engine/cli": "0.0.0",
     "@browser-engine/html-parser": "0.0.0",
+    "@browser-engine/ipc": "0.0.0",
     "@browser-engine/ir": "0.0.0",
     "@browser-engine/layout": "0.0.0",
     "@browser-engine/paint": "0.0.0"

@@ -116,7 +116,7 @@ void test("qComputed produces a real ComputedStyle (cascade implemented — task
   assert.equal(style["float"], "none");
   assert.equal(style["opacity"], 1);
   assert.equal(style["transform"], "none");
-  assert.equal(style["zIndex"], 0);
+  assert.equal(style["zIndex"], "auto");
   // No geometry leaks into ComputedStyle (Req 3.3) and the result is frozen.
   assert.equal("x" in style, false);
   assert.equal("box" in style, false);

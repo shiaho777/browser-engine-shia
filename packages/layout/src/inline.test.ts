@@ -86,6 +86,9 @@ interface StyleSpec {
   readonly height?: number | "auto";
   readonly margin?: Edges<Px>;
   readonly fontSize?: number;
+  readonly direction?: "ltr" | "rtl";
+  /** Extra computed-style entries (font CSS props etc.) carried verbatim. */
+  readonly extras?: Readonly<Record<string, unknown>>;
 }
 
 /** Build a frozen, geometry-free ComputedStyle from a partial spec. */
@@ -98,6 +101,8 @@ function makeStyle(spec: StyleSpec = {}): ComputedStyle {
     width: spec.width ?? "auto",
     height: spec.height ?? "auto",
     backgroundColor: TRANSPARENT,
+    direction: spec.direction ?? "ltr",
+    ...(spec.extras ?? {}),
   };
   return deepFreeze(style as unknown as ComputedStyle);
 }
@@ -252,7 +257,14 @@ void test("injecting a custom shaper changes the measured width (the seam is con
   const wideShaper: TextShaper = {
     shapeLine(text: string, font: ShapingFont): ShapedRun {
       const perGlyph = font.fontSize * 1.0; // 2× the metrics placeholder's 0.5.
-      const glyphs = Array.from({ length: text.length }, () => ({ advance: px(perGlyph) }));
+      const glyphs = Array.from({ length: text.length }, (_ch, i) => ({
+        advance: px(perGlyph),
+        glyphId: text.codePointAt(i) ?? 0,
+        faceIndex: 0,
+        xOffset: px(0),
+        yOffset: px(0),
+        cluster: i,
+      }));
       return { advance: px(text.length * perGlyph), glyphs };
     },
   };
@@ -295,6 +307,89 @@ void test("the default shaper equals the metrics placeholder (re-exported from i
 // ---------------------------------------------------------------------------
 // Block-flow y stays monotonic with wrapped inline content (task 3.7 invariant).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Bidi integration (RFC 0002): the engine itemizes text into directional runs
+// and words in VISUAL order; the shaper then reverses glyphs inside RTL runs.
+// A recording shaper emulates the contract (returns visual-order glyphs, one
+// glyph per code unit, glyphId = code point) so assertions inspect the stream.
+// ---------------------------------------------------------------------------
+
+/** A TextShaper that reverses glyph order for rtl runs, like HarfBuzz does. */
+function recordingShaper(calls: { text: string; direction?: string }[]): TextShaper {
+  return {
+    shapeLine(text: string, font: ShapingFont): ShapedRun {
+      calls.push({ text, ...(font.direction === undefined ? {} : { direction: font.direction }) });
+      const glyphs = [...text].map((ch, i) => ({
+        advance: px(8),
+        glyphId: ch.codePointAt(0) ?? 0,
+        faceIndex: 0,
+        xOffset: px(0),
+        yOffset: px(0),
+        cluster: i,
+      }));
+      // A real shaper emits RTL runs in VISUAL order (reversed clusters).
+      if (font.direction === "rtl") glyphs.reverse();
+      return { advance: px(text.length * 8), glyphs };
+    },
+  };
+}
+
+void test("RFC 0002: a pure-RTL two-word string reverses WORD order, not just glyphs", () => {
+  // Logical "שלום עולם" (shalom olam). UAX #9 at word level: the visual order
+  // is עולם then שלום — and each word's glyphs are reversed by the shaper.
+  const calls: { text: string; direction?: string }[] = [];
+  const dom = divWithText("\u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd");
+  const tree = layout(dom, BLOCK_STYLE, { shaper: recordingShaper(calls) });
+  const text = textFragmentOf(tree);
+  const ids = text.text!.glyphs.map((g) => g.glyphId);
+  // Full visual sequence: ם ל ו ע  ם ו ל ש  (word order AND glyph order flipped).
+  assert.deepEqual(ids, [0x5dd, 0x5dc, 0x5d5, 0x5e2, 0x5dd, 0x5d5, 0x5dc, 0x5e9]);
+  // The shaper saw each word with rtl direction (run-level parity).
+  const wordCalls = calls.filter((c) => c.direction === "rtl");
+  assert.ok(wordCalls.length >= 2, "each Hebrew word was shaped as an rtl run");
+});
+
+void test("RFC 0002: RTL words reverse between LTR anchors (mixed bidi line)", () => {
+  // "a שלום עולם b": the RTL segment's two words swap places; the Latin
+  // anchors keep their positions.
+  const calls: { text: string; direction?: string }[] = [];
+  const dom = divWithText("a \u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd b");
+  const tree = layout(dom, BLOCK_STYLE, { shaper: recordingShaper(calls) });
+  const text = textFragmentOf(tree);
+  const ids = text.text!.glyphs.map((g) => g.glyphId);
+  // Visual: a | םלוע | םולש | b  (each Hebrew word's letters run right-to-left)
+  assert.deepEqual(
+    ids,
+    [0x61, 0x5dd, 0x5dc, 0x5d5, 0x5e2, 0x5dd, 0x5d5, 0x5dc, 0x5e9, 0x62],
+    "Latin anchors flank the reversed RTL segment",
+  );
+});
+
+void test("RFC 0002: faceIndex flows from the shaper through to LaidGlyph", () => {
+  const fallbackShaper: TextShaper = {
+    shapeLine(text: string): ShapedRun {
+      const glyphs = [...text].map((ch, i) => ({
+        advance: px(8),
+        glyphId: ch.codePointAt(0) ?? 0,
+        // Even code units come from face 0, odd from face 1 — a stand-in for
+        // the HarfBuzz adapter's per-glyph fallback decision.
+        faceIndex: i % 2,
+        xOffset: px(0),
+        yOffset: px(0),
+        cluster: i,
+      }));
+      return { advance: px(text.length * 8), glyphs };
+    },
+  };
+  const tree = layout(divWithText("ab"), BLOCK_STYLE, { shaper: fallbackShaper });
+  const text = textFragmentOf(tree);
+  assert.deepEqual(
+    text.text!.glyphs.map((g) => g.faceIndex),
+    [0, 1],
+    "per-glyph faceIndex survives layout into the TextRun",
+  );
+});
 
 void test("wrapped text keeps the block-flow y-monotonic invariant among siblings", () => {
   // document → div → [ block a(h=10), text(wrapping), block c(h=20) ].
@@ -359,4 +454,83 @@ void test("inline layout output is deep-frozen and deterministic (Req 3.2 / 2.7)
   for (const [id, fragA] of a.fragments) {
     assert.deepEqual(fragA, b.fragments.get(id));
   }
+});
+
+// ---------------------------------------------------------------------------
+// RFC 0005: computed font properties cross the shaping seam verbatim.
+// ---------------------------------------------------------------------------
+
+void test("computed font CSS reaches the shaper as ShapingFont.css", () => {
+  const dom = buildDom([
+    { id: 0, kind: "document", parent: null, children: [1] },
+    { id: 1, kind: "element", tag: "div", parent: 0, children: [2] },
+    { id: 2, kind: "text", text: "fi AV", parent: 1, children: [] },
+  ]);
+  const styles = styleTable(
+    new Map<number, ComputedStyle>([
+      [1, makeStyle({ display: "block" })],
+      [
+        2,
+        makeStyle({
+          extras: {
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontStyle: "italic",
+            fontStretch: "condensed",
+            fontKerning: "none",
+            fontVariantCaps: "small-caps",
+            fontVariantLigatures: "no-common-ligatures",
+            fontVariantPosition: "sup",
+            fontVariantEastAsian: "traditional ruby",
+            fontVariantAlternates: "styleset(1, 4)",
+            fontVariantNumeric: "oldstyle-nums",
+            fontFeatureSettings: '"liga" 0',
+            fontVariationSettings: '"wght" 700',
+            fontOpticalSizing: "none",
+            fontSynthesis: "none",
+          },
+        }),
+      ],
+    ]),
+  );
+  const seen: ShapingFont[] = [];
+  const capture: TextShaper = {
+    shapeLine(text: string, font: ShapingFont): ShapedRun {
+      seen.push(font);
+      return defaultShaper.shapeLine(text, font);
+    },
+  };
+  layout(dom, styles, { viewportWidth: px(800), shaper: capture });
+
+  assert.ok(seen.length > 0, "shaper consulted for the text run");
+  const css = seen[0]!.css;
+  assert.ok(css !== undefined);
+  assert.equal(css.family, "Georgia, 'Times New Roman', serif");
+  assert.equal(css.style, "italic");
+  assert.equal(css.stretch, "condensed");
+  assert.equal(css.kerning, "none");
+  assert.equal(css.variantCaps, "small-caps");
+  assert.equal(css.variantLigatures, "no-common-ligatures");
+  assert.equal(css.variantPosition, "sup");
+  assert.equal(css.variantEastAsian, "traditional ruby");
+  assert.equal(css.variantAlternates, "styleset(1, 4)");
+  assert.equal(css.variantNumeric, "oldstyle-nums");
+  assert.equal(css.featureSettings, '"liga" 0');
+  assert.equal(css.variationSettings, '"wght" 700');
+  assert.equal(css.opticalSizing, "none");
+  assert.equal(css.synthesis, "none");
+});
+
+void test("initial font values keep the css bag empty (defaults elided)", () => {
+  const dom = divWithText("plain");
+  const seen: ShapingFont[] = [];
+  const capture: TextShaper = {
+    shapeLine(text: string, font: ShapingFont): ShapedRun {
+      seen.push(font);
+      return defaultShaper.shapeLine(text, font);
+    },
+  };
+  layout(dom, BLOCK_STYLE, { viewportWidth: px(800), shaper: capture });
+  const css = seen[0]!.css;
+  assert.ok(css !== undefined);
+  assert.deepEqual(Object.keys(css), [], "no defaults leak into the seam");
 });

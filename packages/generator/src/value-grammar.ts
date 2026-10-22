@@ -65,6 +65,8 @@ export interface LengthOrKeywordGrammar {
 export interface EdgesGrammar {
   readonly kind: "edges";
   readonly of: "length";
+  /** Keywords a side may be, such as `auto` on `inset-block`. */
+  readonly keywords?: readonly string[];
 }
 
 /** Parse `value` as an `<integer>` (e.g. `z-index`, a grid track count). */
@@ -74,6 +76,8 @@ export interface IntegerGrammar {
   readonly min?: number;
   /** Optional inclusive upper bound the parsed integer is clamped to. */
   readonly max?: number;
+  /** Keywords accepted beside the integer, such as `z-index: auto`. */
+  readonly keywords?: readonly string[];
 }
 
 /** Parse `value` as a `<number>` (e.g. `opacity`). */
@@ -135,12 +139,12 @@ export function lengthOr(...keywords: readonly string[]): LengthOrKeywordGrammar
 }
 
 /** `edges()` — a 1-to-4 `<length>` quad (the shorthand expansion). */
-export function edges(): EdgesGrammar {
-  return { kind: "edges", of: "length" };
+export function edges(keywords: readonly string[] = []): EdgesGrammar {
+  return { kind: "edges", of: "length", keywords };
 }
 
 /** `integer({ min, max })` — an `<integer>` grammar, optionally clamped. */
-export function integer(bounds: { readonly min?: number; readonly max?: number } = {}): IntegerGrammar {
+export function integer(bounds: { readonly min?: number; readonly max?: number; readonly keywords?: readonly string[] } = {}): IntegerGrammar {
   return { kind: "integer", ...bounds };
 }
 

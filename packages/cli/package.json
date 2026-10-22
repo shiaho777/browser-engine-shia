@@ -20,6 +20,7 @@
     "@browser-engine/cascade": "0.0.0",
     "@browser-engine/css-parser": "0.0.0",
     "@browser-engine/font": "0.0.0",
+    "@browser-engine/generator": "0.0.0",
     "@browser-engine/guest": "0.0.0",
     "@browser-engine/html-parser": "0.0.0",
     "@browser-engine/ir": "0.0.0",
@@ -28,7 +29,8 @@
     "@browser-engine/paint": "0.0.0",
     "@browser-engine/scoreboard": "0.0.0",
     "@browser-engine/test-harness": "0.0.0",
-    "jpeg-js": "^0.4.4"
+    "jpeg-js": "^0.4.4",
+    "@browser-engine/gpu": "0.0.0"
   },
   "devDependencies": {
     "fast-check": "4.8.0"

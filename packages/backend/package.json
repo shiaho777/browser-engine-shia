@@ -13,8 +13,9 @@
     "test": "tsc --build && node --test dist/*.test.js"
   },
   "dependencies": {
-    "@browser-engine/ir": "0.0.0",
     "@browser-engine/font": "0.0.0",
-    "@browser-engine/gpu": "0.0.0"
+    "@browser-engine/gpu": "0.0.0",
+    "@browser-engine/ir": "0.0.0",
+    "canvaskit-wasm": "0.41.1"
   }
 }

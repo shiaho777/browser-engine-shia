@@ -27,12 +27,12 @@
 <div id="flex-order"><div id="fo1"></div><div id="fo2"></div><div id="fo3"></div></div>
 <script>
 test(function () {
-  // 320px container, 10px gap, two 100px items
-  // fg1 starts at 0, fg2 starts at 110 (100 + 10 gap)
+  // Viewport coordinates include the 8px body margin (nested body → x=16).
+  // The gap itself is still 110px: 16 and 126.
   var r1 = document.getElementById("fg1").getBoundingClientRect();
   var r2 = document.getElementById("fg2").getBoundingClientRect();
-  assert_equals(r1.x, 0, "first item at x=0");
-  assert_equals(r2.x, 110, "second item at x=110 (100 + 10px gap)");
+  assert_equals(r1.x, 16, "first item at the container content edge");
+  assert_equals(r2.x, 126, "second item is 100px plus the 10px gap");
 }, "flex gap creates space between items");
 
 test(function () {
@@ -40,9 +40,9 @@ test(function () {
   var r2 = document.getElementById("fo2").getBoundingClientRect();
   var r1 = document.getElementById("fo1").getBoundingClientRect();
   var r3 = document.getElementById("fo3").getBoundingClientRect();
-  assert_equals(r2.x, 0, "order 1 item at x=0");
-  assert_equals(r1.x, 50, "order 2 item at x=50");
-  assert_equals(r3.x, 100, "order 3 item at x=100");
+  assert_equals(r2.x, 16, "order 1 item at the container content edge");
+  assert_equals(r1.x, 66, "order 2 item is 50px later");
+  assert_equals(r3.x, 116, "order 3 item is another 50px later");
 }, "flex order reorders items");
 </script>
 </body>

@@ -328,3 +328,34 @@ void test("unknown vendor-prefixed properties are kept verbatim (forward-compati
   assert.equal(decls.find((d) => d.property === "-webkit-tap-highlight-color")?.value, "transparent");
   assert.equal(decls.find((d) => d.property === "-webkit-font-smoothing")?.value, "antialiased");
 });
+
+// ---------------------------------------------------------------------------
+// @font-face (RFC 0006): descriptor blocks land on sheet.fontFaces, nested
+// inside @media/@supports only when the condition matches, never validated
+// against the property grammar (range descriptors survive).
+// ---------------------------------------------------------------------------
+
+void test("@font-face descriptor blocks land on sheet.fontFaces", () => {
+  const sheet = parse(
+    "@font-face { font-family: 'My Webfont'; src: url(a.woff) format('woff'), local('Sys'); font-weight: 100 900 }" +
+      "p { font-family: 'My Webfont' }",
+  );
+  assert.equal(sheet.rules.length, 1, "style rule still parses");
+  const faces = sheet.fontFaces ?? [];
+  assert.equal(faces.length, 1);
+  const props = faces[0]!.declarations.map((d) => d.property);
+  assert.deepEqual(props, ["font-family", "src", "font-weight"]);
+  assert.equal(faces[0]!.declarations[2]!.value, "100 900", "range descriptor kept verbatim");
+});
+
+void test("@font-face inside @media is conditional", () => {
+  const on = parse("@media screen { @font-face { font-family: X; src: url(x.ttf) } }");
+  const off = parse("@media print { @font-face { font-family: X; src: url(x.ttf) } }");
+  assert.equal((on.fontFaces ?? []).length, 1);
+  assert.equal((off.fontFaces ?? []).length, 0);
+});
+
+void test("a sheet without @font-face has no fontFaces field populated", () => {
+  const sheet = parse("p { color: red }");
+  assert.ok(sheet.fontFaces === undefined || sheet.fontFaces.length === 0);
+});

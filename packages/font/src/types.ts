@@ -65,6 +65,41 @@ export interface FontFace {
   metricsOf(glyphId: number): GlyphMetrics;
   /** The (curve-bearing) outline of a glyph id; empty contours for a blank glyph. */
   outlineOf(glyphId: number): GlyphOutline;
+  /**
+   * The face's raw sfnt bytes, retained so a rasterization backend can hand the
+   * same font file to an external scaler (e.g. Skia's FreeType) instead of
+   * re-rasterizing outlines itself, and so the HarfBuzz adapter can create an
+   * `hb_face`/`hb_font` over the identical font file. Present whenever the face
+   * was parsed from bytes; callers MUST NOT mutate the array (shared, not
+   * copied — same typed-array caveat as the IR contract).
+   */
+  readonly data?: Uint8Array;
+  /**
+   * The face's index inside a TrueType/OpenType COLLECTION (`ttcf`), when the
+   * bytes are a collection. Absent/zero for a standalone sfnt file. The
+   * in-repo parser reads single-face sfnts today; the field exists so external
+   * consumers (HarfBuzz `hb_face_create` index, Skia typefaces) can name the
+   * right face inside a collection the moment collections are loadable.
+   */
+  readonly collectionIndex?: number;
+  /**
+   * The face's own `OS/2.usWeightClass` (400/700/…) when the table is present —
+   * backends compare it against a run's requested weight to decide whether
+   * SYNTHETIC bolding is needed (a genuinely-bold face is never double-bolded;
+   * RFC 0006 `font-synthesis`).
+   */
+  readonly weight?: number;
+  /**
+   * `OS/2.sxHeight` in font units when the table is version 2 or newer.
+   * Divide by `unitsPerEm` for the em ratio `vertical-align: middle` uses.
+   */
+  readonly xHeight?: number;
+  /** OS/2 fsSelection bit 0. Absent ⇒ the face is not known to be italic. */
+  readonly italic?: boolean;
+  /** OS/2 ySubscriptYOffset in font units (negative ⇒ below the baseline). */
+  readonly subscriptOffset?: number;
+  /** OS/2 ySuperscriptYOffset in font units (positive ⇒ above the baseline). */
+  readonly superscriptOffset?: number;
 }
 
 /**
@@ -88,5 +123,37 @@ export interface GlyphCoverageSource {
   advanceEm(glyphId: number): number;
   readonly ascentEm: number;
   raster(glyphId: number, fontSizePx: number): GlyphRaster;
+}
+
+/**
+ * The post-shaping rasterization seam (RFC 0002). Once text is REALLY shaped,
+ * the DisplayList's `text` command carries `(faceIndex, glyphId)` pairs — a
+ * real font-local gid plus which face it belongs to — so a backend needs only
+ * "rasterize THIS gid of THIS face at THIS size", nothing more. The
+ * code-point→glyph resolution of {@link GlyphCoverageSource} is the SHAPER's
+ * job now; it must never leak back into a rasterizer.
+ *
+ * `faceIndex` indexes the SAME face table the pipeline shaper resolved against
+ * (the table injected at backend construction — the contract is positional:
+ * identical list, identical order, on both sides of the boundary).
+ */
+export interface GlyphRasterSource {
+  /** Em ascent of the PRIMARY face — the shared baseline metric for a run. */
+  readonly ascentEm: number;
+  /**
+   * Rasterize `glyphId` of `faces[faceIndex]` at `fontSizePx`. An out-of-range
+   * face or glyph yields an empty raster (a `.notdef` is itself a real glyph
+   * id — `outlineOf(0)` draws the font's own box, never a fabricated blank).
+   */
+  raster(faceIndex: number, glyphId: number, fontSizePx: number): GlyphRaster;
+  /**
+   * The face's own `OS/2.usWeightClass` (RFC 0006) — the backends compare it
+   * against a run's requested `fontWeight` to decide whether SYNTHETIC bolding
+   * is needed (a genuinely-bold face is never double-bolded). Absent on
+   * hand-rolled sources ⇒ treated as 400.
+   */
+  faceWeight?(faceIndex: number): number | undefined;
+  /** True when the face's OS/2 fsSelection marks it italic. */
+  faceItalic?(faceIndex: number): boolean | undefined;
 }
 

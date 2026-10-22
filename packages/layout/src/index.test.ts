@@ -185,7 +185,7 @@ void test("nested blocks stack top-to-bottom with monotonically increasing y (de
   }
 });
 
-void test("a container's content height equals the sum of its children's margin-box heights (design §8.2)", () => {
+void test("a container's content height tracks the collapsed margin chain (design §8.2, RFC 0003)", () => {
   const dom = buildDom([
     { id: 0, kind: "document", parent: null, children: [1] },
     { id: 1, kind: "element", tag: "div", parent: 0, children: [2, 3] },
@@ -207,7 +207,12 @@ void test("a container's content height equals the sum of its children's margin-
 
   // child 2 margin box: 15; child 3 margin box: 5 + 25 + 7 = 37; total 52.
   assert.equal(sum, 52);
-  assert.equal(div.box.height, px(sum));
+  // Under margin collapsing the content height is the last in-flow border
+  // bottom (15 + collapsed(0,5) + 25 = 45), and child 3's 7px bottom margin
+  // folds INTO the container's own bottom margin — so the margin-box extent
+  // is unchanged (45 + collapsed(0,7) = 52) while the border-box height is 45.
+  assert.equal(div.box.height, px(45));
+  assert.equal(div.box.marginBox.height, px(52));
 });
 
 // ---------------------------------------------------------------------------

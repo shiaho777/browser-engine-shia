@@ -1754,6 +1754,29 @@ const EVIDENCE: ExecutionEvidence = {
       },
     ],
   },
+  subtreeReuse: {
+    scenario: "synthetic",
+    documentNodes: 365,
+    boundaryHits: 119,
+    boundaryMisses: 1,
+    boundaryStores: 1,
+    bypassed: 0,
+    replayCorrect: true,
+    warmLayoutMs: 0.5,
+    coldLayoutMs: 4.2,
+  },
+  paintDamage: {
+    scenario: "synthetic",
+    unchangedCommands: 480,
+    changedCommands: 6,
+    damageAreaPx2: 1440,
+    viewportAreaPx2: 172800,
+    repaired: true,
+    identicalNoop: true,
+    partialCorrect: true,
+    warmRepaintMs: 1.1,
+    coldRepaintMs: 9.4,
+  },
 };
 
 void test("Req 1.1/1.2: live metrics classify hand-written vs generated vs test", () => {

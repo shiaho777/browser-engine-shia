@@ -35,12 +35,13 @@ export type { Color, DisplayValue, Edges, FlexDirection, FloatValue, PositionVal
 export type { Rect, Point, BoxGeometry } from "./geometry.js";
 
 // ---- stage 1: DOM ----------------------------------------------------------
-export type { DomTree, DomNode, DomNodeKind } from "./dom.js";
+export type { DomTree, DomNode, DomNodeKind, DomControlState } from "./dom.js";
 
 // ---- stage 2: Stylesheet ---------------------------------------------------
 export type {
   StyleSheet,
   StyleRule,
+  FontFaceRule,
   Declaration,
   Selector,
   SelectorList,
@@ -62,3 +63,5 @@ export type {
   DecodedImage,
   Matrix,
 } from "./display-list.js";
+export { diffCommands, paintCmdBounds, paintCmdEqual, unionRect } from "./display-diff.js";
+export type { ListDiff } from "./display-diff.js";

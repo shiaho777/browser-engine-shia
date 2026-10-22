@@ -132,3 +132,31 @@ void test("nonzero winding leaves a counter (hole) — outer disc minus inner di
   const bandX = Math.floor(r.width * 0.12);
   assert.ok((r.coverage[cy * r.width + bandX] ?? 0) > 0.5, "the ring band is inked");
 });
+
+void test("OS/2 version 2 sxHeight round-trips as FontFace.xHeight", () => {
+  const font: CompileFont = {
+    unitsPerEm: 1000,
+    ascent: 800,
+    descent: -200,
+    glyphs: [{ contours: [], advanceWidth: 600 }],
+    cmap: new Map(),
+    os2: { xHeight: 500 },
+  };
+  const parsed = parseTrueType(compileTrueType(font));
+  assert.equal(parsed.xHeight, 500);
+});
+
+void test("OS/2 italic and sub/superscript offsets round-trip", () => {
+  const font: CompileFont = {
+    unitsPerEm: 1000,
+    ascent: 800,
+    descent: -200,
+    glyphs: [{ contours: [], advanceWidth: 600 }],
+    cmap: new Map(),
+    os2: { italic: true, subscriptOffset: -200, superscriptOffset: 350 },
+  };
+  const parsed = parseTrueType(compileTrueType(font));
+  assert.equal(parsed.italic, true);
+  assert.equal(parsed.subscriptOffset, -200);
+  assert.equal(parsed.superscriptOffset, 350);
+});
