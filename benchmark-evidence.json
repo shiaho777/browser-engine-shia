@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 90613,
+    "handWrittenLines": 90622,
     "generatedLines": 7379,
     "testLines": 43853,
-    "totalLines": 141845,
+    "totalLines": 141854,
     "cssPropertyCount": 350,
     "domMemberCount": 552,
     "platformFeatureCount": 902,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0004966174831425955,
-    "mechanismDensity": 9.95442155099158,
+    "compatPerLoc": 0.0004965681622564058,
+    "mechanismDensity": 9.9534329412284,
     "executionEvidence": {
       "subsetCount": 8,
       "files": 114,
@@ -218,21 +218,17 @@
         "boundaryMisses": 601,
         "boundaryStores": 601,
         "bypassed": 0,
-        "replayCorrect": true,
-        "warmLayoutMs": 3.0685419999999795,
-        "coldLayoutMs": 2.894000000000233
+        "replayCorrect": true
       },
       "paintDamage": {
         "scenario": "120 static panels; text edit inside one div",
         "unchangedCommands": 56,
         "changedCommands": 2,
-        "damageAreaPx2": 3614.25,
+        "damageAreaPx2": 5324.8,
         "viewportAreaPx2": 172800,
         "repaired": true,
         "identicalNoop": true,
-        "partialCorrect": true,
-        "warmRepaintMs": 36.269250000000284,
-        "coldRepaintMs": 39.87733399999979
+        "partialCorrect": true
       },
       "resourceLoadedPage": {
         "url": "https://benchmark.test/index.html",
@@ -2015,8 +2011,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 90613,
-      "ourDisplay": "90,613 lines",
+      "ourValue": 90622,
+      "ourDisplay": "90,622 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2034,7 +2030,7 @@
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0004966174831425955,
+      "ourValue": 0.0004965681622564058,
       "ourDisplay": "0.0005 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2053,11 +2049,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 9.95442155099158,
+      "ourValue": 9.9534329412284,
       "ourDisplay": "9.95 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "902 platform features (CSS properties + DOM members) over 90,613 hand-written lines = 9.95 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "902 platform features (CSS properties + DOM members) over 90,622 hand-written lines = 9.95 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",

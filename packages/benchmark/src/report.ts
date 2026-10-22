@@ -42,12 +42,23 @@ export function buildBenchmarkJsonReport(snapshot: BenchmarkSnapshot): Benchmark
 }
 
 /**
- * Rendered-PNG byte lengths are platform-dependent: text goes through system
- * font fallback, so macOS and Linux rasterize the same document into different
- * anti-aliased pixels (and thus different compressed sizes). The live collector
- * exposes them for tests; the COMMITTED evidence artifacts omit them so
- * `npm run evidence` reproduces byte-for-byte on any platform.
+ * Fields the committed artifacts must not carry.
+ *
+ * `pngBytes` differs because text falls through to the host's fonts, so macOS
+ * and Linux rasterize the same document into different anti-aliased pixels.
+ * The `*Ms` fields are wall-clock samples; the same tree is slower on a CI
+ * runner than on a laptop. Collectors still measure them for tests. The
+ * committed JSON drops them so `npm run evidence` is byte-for-byte identical
+ * on any machine.
  */
+const HOST_DEPENDENT_EVIDENCE_KEYS: ReadonlySet<string> = new Set([
+  "pngBytes",
+  "warmLayoutMs",
+  "coldLayoutMs",
+  "warmRepaintMs",
+  "coldRepaintMs",
+]);
+
 export function omitRenderedPngBytes<T>(value: T): T {
   if (Array.isArray(value)) {
     const list = value as unknown[];
@@ -56,7 +67,7 @@ export function omitRenderedPngBytes<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     const copy: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (key === "pngBytes") {
+      if (HOST_DEPENDENT_EVIDENCE_KEYS.has(key)) {
         continue;
       }
       copy[key] = omitRenderedPngBytes(item);
@@ -135,7 +146,6 @@ export function renderEvidenceDashboardHtml(snapshot: BenchmarkSnapshot): string
             ["Boundary re-layouts (misses)", evidence.subtreeReuse.boundaryMisses],
             ["OOF-leak bypasses", evidence.subtreeReuse.bypassed],
             ["Replay == full layout", yesNo(evidence.subtreeReuse.replayCorrect)],
-            ["Layout warm / cold ms", `${evidence.subtreeReuse.warmLayoutMs.toFixed(2)} / ${evidence.subtreeReuse.coldLayoutMs.toFixed(2)}`],
           ],
         ),
         section(
@@ -147,7 +157,6 @@ export function renderEvidenceDashboardHtml(snapshot: BenchmarkSnapshot): string
             ["Retained repair ran", yesNo(evidence.paintDamage.repaired)],
             ["No-change repaint is a no-op", yesNo(evidence.paintDamage.identicalNoop)],
             ["Partial == full render (bytes)", yesNo(evidence.paintDamage.partialCorrect)],
-            ["Repaint warm / cold ms", `${evidence.paintDamage.warmRepaintMs.toFixed(2)} / ${evidence.paintDamage.coldRepaintMs.toFixed(2)}`],
           ],
         ),
         section(

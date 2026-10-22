@@ -1123,6 +1123,7 @@ function paintDamageHtml(label: string): string {
     (_, i) => `<div class="panel" id="p${i}"><p>panel ${i} body</p></div>`,
   ).join("");
   return `<!doctype html><html><head><style>
+    body { font-family: browser-engine-builtin; }
     .panel { background: #203858; height: 24px;
              margin: 1px 0; color: #dde; font-size: 11px; }
     #edit { background: #583820; color: #ffd; }
