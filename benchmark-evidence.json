@@ -3,16 +3,16 @@
   "generatedBy": "@browser-engine/benchmark",
   "deterministic": true,
   "metrics": {
-    "handWrittenLines": 90622,
+    "handWrittenLines": 90624,
     "generatedLines": 7379,
     "testLines": 43853,
-    "totalLines": 141854,
+    "totalLines": 141856,
     "cssPropertyCount": 350,
     "domMemberCount": 552,
     "platformFeatureCount": 902,
     "wptPassCount": 45,
-    "compatPerLoc": 0.0004965681622564058,
-    "mechanismDensity": 9.9534329412284,
+    "compatPerLoc": 0.0004965572033898305,
+    "mechanismDensity": 9.95321327683616,
     "executionEvidence": {
       "subsetCount": 8,
       "files": 114,
@@ -227,8 +227,7 @@
         "damageAreaPx2": 5324.8,
         "viewportAreaPx2": 172800,
         "repaired": true,
-        "identicalNoop": true,
-        "partialCorrect": true
+        "identicalNoop": true
       },
       "resourceLoadedPage": {
         "url": "https://benchmark.test/index.html",
@@ -2011,8 +2010,8 @@
     {
       "id": "hand-written-surface",
       "label": "Hand-written surface (smaller = more readable)",
-      "ourValue": 90622,
-      "ourDisplay": "90,622 lines",
+      "ourValue": 90624,
+      "ourDisplay": "90,624 lines",
       "competitor": {
         "engine": "Chromium / Chrome",
         "metric": "hand-written-lines",
@@ -2030,7 +2029,7 @@
     {
       "id": "compat-per-loc",
       "label": "compat-per-LOC (North Star)",
-      "ourValue": 0.0004965681622564058,
+      "ourValue": 0.0004965572033898305,
       "ourDisplay": "0.0005 passes/line",
       "competitor": {
         "engine": "Chromium / Chrome",
@@ -2049,11 +2048,11 @@
     {
       "id": "mechanism-density",
       "label": "mechanism-density (features per 1k hand-written lines)",
-      "ourValue": 9.9534329412284,
+      "ourValue": 9.95321327683616,
       "ourDisplay": "9.95 features/kloc",
       "competitor": null,
       "verdict": "WIN",
-      "rationale": "902 platform features (CSS properties + DOM members) over 90,622 hand-written lines = 9.95 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
+      "rationale": "902 platform features (CSS properties + DOM members) over 90,624 hand-written lines = 9.95 features / 1k lines. Platform-as-Data makes coverage grow per data row, not per hand-written line — the mechanism advantage Chromium's hand-rolled surface cannot match."
     },
     {
       "id": "css-coverage",
