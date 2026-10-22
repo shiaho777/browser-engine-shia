@@ -65,6 +65,7 @@ interface FragSpec {
   readonly node: number;
   readonly box: BoxGeometry;
   readonly children?: readonly number[];
+  readonly text?: Fragment["text"];
 }
 
 /** Build a frozen FragmentTree from a flat list of fragment specs (root id 0). */
@@ -75,6 +76,7 @@ function buildTree(specs: readonly FragSpec[], rootId = 0): FragmentTree {
       node: nodeId(spec.node),
       box: spec.box,
       children: (spec.children ?? []).map(fragmentId),
+      ...(spec.text !== undefined ? { text: spec.text } : {}),
     };
     fragments.set(fragmentId(spec.id), fragment);
   }
@@ -83,6 +85,7 @@ function buildTree(specs: readonly FragSpec[], rootId = 0): FragmentTree {
 
 const BLACK: Color = { r: 0, g: 0, b: 0, a: 1 };
 const RED: Color = { r: 255, g: 0, b: 0, a: 1 };
+const BLUE: Color = { r: 0, g: 0, b: 255, a: 1 };
 const TRANSPARENT: Color = { r: 0, g: 0, b: 0, a: 0 };
 const ZERO_EDGES: Edges<Px> = { top: px(0), right: px(0), bottom: px(0), left: px(0) };
 
@@ -184,6 +187,365 @@ function ofOp<Op extends PaintCmd["op"]>(
 // Background-color → rect.
 // ---------------------------------------------------------------------------
 
+void test("a glyph with its own fontSize is a separate text command", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(0, 0, 24, 32)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(16), fontSize: px(32) },
+          { glyphId: 66, faceIndex: 0, x: px(16), y: px(12), advance: px(8) },
+        ],
+      },
+    },
+  ]);
+  const texts = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "text");
+  assert.equal(texts.length, 2);
+  assert.equal(Number(texts[0]!.fontSize), 32);
+  assert.equal(texts[0]!.glyphs.length, 1);
+  assert.equal(Number(texts[1]!.fontSize), 16);
+  assert.equal(texts[1]!.glyphs.length, 1);
+});
+
+void test("a glyph with its own color is a separate text command", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(0, 0, 16, 16)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8), color: RED },
+          { glyphId: 66, faceIndex: 0, x: px(8), y: px(0), advance: px(8) },
+        ],
+      },
+    },
+  ]);
+  const texts = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "text");
+  assert.equal(texts.length, 2);
+  assert.deepEqual(texts[0]!.fill, RED);
+  assert.deepEqual(texts[1]!.fill, BLACK);
+  assert.equal(Number(texts[0]!.fontSize), 16);
+  assert.equal(Number(texts[1]!.fontSize), 16);
+});
+
+void test("a glyph with its own fontWeight is a separate text command", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(0, 0, 16, 16)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8), fontWeight: 700 },
+          { glyphId: 66, faceIndex: 0, x: px(8), y: px(0), advance: px(8) },
+        ],
+      },
+    },
+  ]);
+  const texts = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "text");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0]!.fontWeight, 700);
+  assert.equal(texts[1]!.fontWeight, undefined);
+});
+
+void test("a glyph with its own fontStyle is a separate text command", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(0, 0, 16, 16)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8), fontStyle: "italic" },
+          { glyphId: 66, faceIndex: 0, x: px(8), y: px(0), advance: px(8) },
+        ],
+      },
+    },
+  ]);
+  const texts = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "text");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0]!.fontStyle, "italic");
+  assert.equal(texts[1]!.fontStyle, undefined);
+});
+
+void test("::first-letter underline paints a line under the letter", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 16, 16)),
+      text: {
+        fontSize: px(16),
+        glyphs: [{ glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8) }],
+        decorations: [{ x: px(0), y: px(14.4), width: px(8), color: RED, line: "underline" }],
+      },
+    },
+  ]);
+  const lines = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "line");
+  assert.equal(lines.length, 1);
+  assert.equal(Number(lines[0]!.from.x), 10);
+  assert.equal(Number(lines[0]!.from.y), 34.4);
+  assert.equal(Number(lines[0]!.to.x), 18);
+  assert.deepEqual(lines[0]!.fill, RED);
+});
+
+void test("::first-letter border paints in the text content box", () => {
+  const edge = { width: px(2), style: "solid" as const, color: RED };
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 40, 30)),
+      text: {
+        fontSize: px(16),
+        glyphs: [{ glyphId: 65, faceIndex: 0, x: px(3), y: px(4), advance: px(8) }],
+        letterBorder: {
+          x: px(1),
+          y: px(2),
+          width: px(12),
+          height: px(20),
+          top: edge,
+          right: edge,
+          bottom: edge,
+          left: edge,
+        },
+      },
+    },
+  ]);
+  const commands = paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands;
+  const borders = ofOp(commands, "border");
+  assert.equal(borders.length, 1);
+  assert.equal(Number(borders[0]!.rect.x), 11);
+  assert.equal(Number(borders[0]!.rect.y), 22);
+  assert.equal(Number(borders[0]!.rect.width), 12);
+  assert.equal(Number(borders[0]!.rect.height), 20);
+  assert.equal(borders[0]!.edges.left.style, "solid");
+  assert.deepEqual(borders[0]!.edges.left.color, RED);
+  const texts = ofOp(commands, "text");
+  assert.equal(texts.length, 1);
+  assert.ok(commands.indexOf(borders[0]!) < commands.indexOf(texts[0]!));
+});
+
+void test("::first-letter background paints under the letter border", () => {
+  const edge = { width: px(2), style: "solid" as const, color: RED };
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 40, 30)),
+      text: {
+        fontSize: px(16),
+        glyphs: [{ glyphId: 65, faceIndex: 0, x: px(3), y: px(4), advance: px(8) }],
+        letterBackground: {
+          x: px(1),
+          y: px(2),
+          width: px(12),
+          height: px(20),
+          color: RED,
+        },
+        letterBorder: {
+          x: px(1),
+          y: px(2),
+          width: px(12),
+          height: px(20),
+          top: edge,
+          right: edge,
+          bottom: edge,
+          left: edge,
+        },
+      },
+    },
+  ]);
+  const commands = paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands;
+  const rects = ofOp(commands, "rect");
+  const borders = ofOp(commands, "border");
+  const texts = ofOp(commands, "text");
+  assert.equal(rects.length, 1);
+  assert.equal(Number(rects[0]!.rect.x), 11);
+  assert.equal(Number(rects[0]!.rect.y), 22);
+  assert.equal(Number(rects[0]!.rect.width), 12);
+  assert.equal(Number(rects[0]!.rect.height), 20);
+  assert.deepEqual(rects[0]!.fill, RED);
+  assert.ok(commands.indexOf(rects[0]!) < commands.indexOf(borders[0]!));
+  assert.ok(commands.indexOf(borders[0]!) < commands.indexOf(texts[0]!));
+});
+
+void test("::first-line background paints under the first-letter background", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 40, 32)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8) },
+          { glyphId: 66, faceIndex: 0, x: px(0), y: px(16), advance: px(8) },
+        ],
+        lineBackground: {
+          x: px(0),
+          y: px(0),
+          width: px(40),
+          height: px(16),
+          color: BLUE,
+        },
+        letterBackground: {
+          x: px(0),
+          y: px(0),
+          width: px(8),
+          height: px(16),
+          color: RED,
+        },
+      },
+    },
+  ]);
+  const commands = paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands;
+  const rects = ofOp(commands, "rect");
+  const texts = ofOp(commands, "text");
+  assert.equal(rects.length, 2);
+  assert.equal(Number(rects[0]!.rect.x), 10);
+  assert.equal(Number(rects[0]!.rect.y), 20);
+  assert.equal(Number(rects[0]!.rect.width), 40);
+  assert.equal(Number(rects[0]!.rect.height), 16);
+  assert.deepEqual(rects[0]!.fill, BLUE);
+  assert.deepEqual(rects[1]!.fill, RED);
+  assert.ok(commands.indexOf(rects[0]!) < commands.indexOf(rects[1]!));
+  assert.ok(commands.indexOf(rects[1]!) < commands.indexOf(texts[0]!));
+});
+
+void test("::first-letter background-image paints over the letter fill", () => {
+  const src: DecodedImage = { width: 2, height: 2, pixels: new Uint8ClampedArray(16).fill(255) };
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 40, 30)),
+      text: {
+        fontSize: px(16),
+        glyphs: [{ glyphId: 65, faceIndex: 0, x: px(2), y: px(2), advance: px(8) }],
+        letterBackground: {
+          x: px(0),
+          y: px(0),
+          width: px(12),
+          height: px(20),
+          color: RED,
+        },
+        letterImage: {
+          x: px(0),
+          y: px(0),
+          width: px(12),
+          height: px(20),
+          originX: px(2),
+          originY: px(2),
+          originWidth: px(8),
+          originHeight: px(16),
+          image: "url(dot.png)",
+          repeat: "no-repeat",
+          size: "8px 16px",
+          position: "0% 0%",
+        },
+      },
+    },
+  ]);
+  const commands = paint(tree, styleTable(new Map([[0, makeStyle()]])), undefined, {
+    imageBySrc: (url) => (url === "dot.png" ? src : undefined),
+  }).commands;
+  const rects = ofOp(commands, "rect");
+  const images = ofOp(commands, "image");
+  const texts = ofOp(commands, "text");
+  assert.equal(rects.length, 1);
+  assert.equal(images.length, 1);
+  assert.equal(Number(images[0]!.rect.x), 12);
+  assert.equal(Number(images[0]!.rect.y), 22);
+  assert.equal(Number(images[0]!.rect.width), 8);
+  assert.equal(Number(images[0]!.rect.height), 16);
+  assert.equal(images[0]!.src, src);
+  assert.ok(commands.indexOf(rects[0]!) < commands.indexOf(images[0]!));
+  assert.ok(commands.indexOf(images[0]!) < commands.indexOf(texts[0]!));
+});
+
+void test("::first-line background-image paints under the letter fill", () => {
+  const src: DecodedImage = { width: 2, height: 2, pixels: new Uint8ClampedArray(16).fill(255) };
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(10, 20, 40, 32)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8) },
+          { glyphId: 66, faceIndex: 0, x: px(0), y: px(16), advance: px(8) },
+        ],
+        lineImage: {
+          x: px(0),
+          y: px(0),
+          width: px(40),
+          height: px(16),
+          originX: px(0),
+          originY: px(0),
+          originWidth: px(40),
+          originHeight: px(16),
+          image: "url(dot.png)",
+          repeat: "no-repeat",
+          size: "40px 16px",
+          position: "0% 0%",
+        },
+        letterBackground: {
+          x: px(0),
+          y: px(0),
+          width: px(8),
+          height: px(16),
+          color: RED,
+        },
+      },
+    },
+  ]);
+  const commands = paint(tree, styleTable(new Map([[0, makeStyle()]])), undefined, {
+    imageBySrc: (url) => (url === "dot.png" ? src : undefined),
+  }).commands;
+  const rects = ofOp(commands, "rect");
+  const images = ofOp(commands, "image");
+  const texts = ofOp(commands, "text");
+  assert.equal(images.length, 1);
+  assert.equal(Number(images[0]!.rect.x), 10);
+  assert.equal(Number(images[0]!.rect.y), 20);
+  assert.equal(Number(images[0]!.rect.width), 40);
+  assert.equal(Number(images[0]!.rect.height), 16);
+  assert.equal(images[0]!.src, src);
+  assert.equal(rects.length, 1);
+  assert.ok(commands.indexOf(images[0]!) < commands.indexOf(rects[0]!));
+  assert.ok(commands.indexOf(rects[0]!) < commands.indexOf(texts[0]!));
+});
+
+void test("glyphs that share the run fontSize stay one text command", () => {
+  const tree = buildTree([
+    {
+      id: 0,
+      node: 0,
+      box: box(rect(0, 0, 16, 16)),
+      text: {
+        fontSize: px(16),
+        glyphs: [
+          { glyphId: 65, faceIndex: 0, x: px(0), y: px(0), advance: px(8) },
+          { glyphId: 66, faceIndex: 0, x: px(8), y: px(0), advance: px(8) },
+        ],
+      },
+    },
+  ]);
+  const texts = ofOp(paint(tree, styleTable(new Map([[0, makeStyle()]]))).commands, "text");
+  assert.equal(texts.length, 1);
+  assert.equal(Number(texts[0]!.fontSize), 16);
+  assert.equal(texts[0]!.glyphs.length, 2);
+});
+
 void test("a background-color element emits a rect with the borderBox geometry and the fill colour (Req 3.5)", () => {
   // A single element fragment (no children) with a red background.
   const tree = buildTree([{ id: 0, node: 0, box: box(rect(10, 20, 100, 40)) }]);
@@ -205,22 +567,61 @@ void test("a transparent background (alpha 0) emits no rect command", () => {
   assert.equal(ofOp(list.commands, "rect").length, 0);
 });
 
-void test("a background-image:url() emits an image command resolved via imageBySrc", () => {
+void test("a background-image:url() with no-repeat emits an image command resolved via imageBySrc", () => {
   // A 2×2 solid decoded image supplied through the imageBySrc resolver.
   const src: DecodedImage = { width: 2, height: 2, pixels: new Uint8ClampedArray(16).fill(255) };
   const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 60)) }]);
   const styles = styleTable(
-    new Map([[0, makeStyle({ extra: { backgroundImage: "url(https://example.com/bg.png)" } })]]),
+    new Map([[0, makeStyle({
+      extra: {
+        backgroundImage: "url(https://example.com/bg.png)",
+        backgroundRepeat: "no-repeat",
+        backgroundSize: "80px 60px",
+      },
+    })]]),
   );
 
   const list = paint(tree, styles, undefined, {
     imageBySrc: (url) => (url === "https://example.com/bg.png" ? src : undefined),
   });
   const images = ofOp(list.commands, "image");
-  assert.equal(images.length, 1, "a background-image emits exactly one image command");
+  assert.equal(images.length, 1, "a no-repeat background-image emits one image command");
   // The image paints into the padding box (here equal to the full box).
   assert.deepEqual(images[0]!.rect, { x: px(0), y: px(0), width: px(80), height: px(60) });
   assert.equal(images[0]!.src, src);
+});
+
+void test("linear-gradient paints to the right across the border box", () => {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 40)) }]);
+  const styles = styleTable(new Map([[0, makeStyle({
+    extra: { backgroundImage: "linear-gradient(to right, #ff0000, #0000ff)" },
+  })]]));
+  const grads = ofOp(paint(tree, styles).commands, "linear-gradient");
+  assert.equal(grads.length, 1);
+  assert.equal(Number(grads[0]!.rect.width), 80);
+  assert.equal(Number(grads[0]!.rect.height), 40);
+  assert.equal(grads[0]!.angle, 90);
+  assert.equal(grads[0]!.stops.length, 2);
+  assert.deepEqual(grads[0]!.stops[0]!.color, RED);
+  assert.equal(grads[0]!.stops[0]!.offset, 0);
+  assert.deepEqual(grads[0]!.stops[1]!.color, BLUE);
+  assert.equal(grads[0]!.stops[1]!.offset, 1);
+});
+
+void test("radial-gradient paints from the center of the border box", () => {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 40)) }]);
+  const styles = styleTable(new Map([[0, makeStyle({
+    extra: { backgroundImage: "radial-gradient(circle, #ff0000, #0000ff)" },
+  })]]));
+  const grads = ofOp(paint(tree, styles).commands, "radial-gradient");
+  assert.equal(grads.length, 1);
+  assert.equal(Number(grads[0]!.rect.width), 80);
+  assert.equal(Number(grads[0]!.rect.height), 40);
+  assert.equal(grads[0]!.stops.length, 2);
+  assert.deepEqual(grads[0]!.stops[0]!.color, RED);
+  assert.equal(grads[0]!.stops[0]!.offset, 0);
+  assert.deepEqual(grads[0]!.stops[1]!.color, BLUE);
+  assert.equal(grads[0]!.stops[1]!.offset, 1);
 });
 
 void test("a background-image with no resolver emits no image command", () => {
@@ -240,7 +641,10 @@ void test("background-color and background-image are both painted (color under i
     new Map([
       [
         0,
-        makeStyle({ backgroundColor: RED, extra: { backgroundImage: "url(bg.png)" } }),
+        makeStyle({
+          backgroundColor: RED,
+          extra: { backgroundImage: "url(bg.png)", backgroundRepeat: "no-repeat" },
+        }),
       ],
     ]),
   );
@@ -623,6 +1027,41 @@ void test("a real border longhand triple paints a border command (no synthetic d
   }
 });
 
+void test("collapsed table borders keep the wider shared edge and drop the loser", () => {
+  const tree = buildTree([
+    { id: 0, node: 0, box: box(rect(0, 0, 100, 80)), children: [1, 2] },
+    { id: 1, node: 1, box: box(rect(0, 0, 100, 40)), children: [3, 4] },
+    { id: 2, node: 2, box: box(rect(0, 40, 100, 40)), children: [5] },
+    { id: 3, node: 3, box: box(rect(0, 0, 50, 40)) },
+    { id: 4, node: 4, box: box(rect(50, 0, 50, 40)) },
+    { id: 5, node: 5, box: box(rect(0, 0, 50, 40)) },
+  ]);
+  const thin = uniformBorder(1, "solid", RED);
+  const thick = uniformBorder(4, "solid", { r: 0, g: 0, b: 255, a: 1 });
+  const styles = styleTable(
+    new Map([
+      [0, makeStyle({ extra: { display: "table", borderCollapse: "collapse" } })],
+      [1, makeStyle({ extra: { display: "table-row" } })],
+      [2, makeStyle({ extra: { display: "table-row" } })],
+      [3, makeStyle({ border: thin, extra: { display: "table-cell" } })],
+      [4, makeStyle({ border: thick, extra: { display: "table-cell" } })],
+      [5, makeStyle({ border: uniformBorder(6, "solid", RED), extra: { display: "table-cell" } })],
+    ]),
+  );
+  const list = paint(tree, styles);
+  const borders = ofOp(list.commands, "border");
+  const byX = (x: number, y: number) =>
+    borders.find((b) => Number(b.rect.x) === x && Number(b.rect.y) === y);
+  const left = byX(0, 0)!;
+  const right = byX(50, 0)!;
+  const below = byX(0, 40)!;
+  assert.equal(left.edges.right.style, "none", "1px right edge loses to the 4px neighbor");
+  assert.equal(right.edges.left.width, 4, "wider left edge of the right cell wins");
+  assert.equal(left.edges.left.width, 1, "outer edge is not a shared conflict");
+  assert.equal(left.edges.bottom.style, "none", "1px bottom loses to the 6px cell below");
+  assert.equal(below.edges.top.width, 6);
+});
+
 void test("the initial border longhands (none/0 on every edge) emit NO border command", () => {
   // A box that explicitly carries the initial border longhands must paint
   // exactly like a box with no border fields at all — preserving byte-for-byte
@@ -764,6 +1203,26 @@ void test("a filter establishes a compositing layer carrying the filter string",
   assert.ok(ofOp(list.commands, "pop-layer").length === 1, "the layer is balanced");
 });
 
+void test("will-change: transform establishes a layer while the transform is still identity", () => {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 40, 20)) }]);
+  const styles = styleTable(
+    new Map([[0, makeStyle({ extra: { willChange: "transform" }, backgroundColor: RED })]]),
+  );
+  const list = paint(tree, styles);
+  const push = ofOp(list.commands, "push-layer")[0];
+  assert.ok(push !== undefined, "the hint promotes a compositing layer");
+  assert.deepEqual(push.transform, [1, 0, 0, 1, 0, 0]);
+  assert.equal(ofOp(list.commands, "pop-layer").length, 1);
+});
+
+void test("will-change: auto does not establish a layer", () => {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 40, 20)) }]);
+  const styles = styleTable(
+    new Map([[0, makeStyle({ extra: { willChange: "auto" }, backgroundColor: RED })]]),
+  );
+  assert.equal(ofOp(paint(tree, styles).commands, "push-layer").length, 0);
+});
+
 void test("a blurred box-shadow wraps its rect in a blur-filter layer", () => {
   const tree = buildTree([{ id: 0, node: 0, box: box(rect(10, 10, 40, 20)) }]);
   const styles = styleTable(new Map([[0, makeStyle({ extra: { boxShadow: "2px 2px 8px #000000" } })]]));
@@ -781,4 +1240,201 @@ void test("a zero-blur box-shadow stays a plain rect (no layer)", () => {
   const list = paint(tree, styles);
   assert.equal(ofOp(list.commands, "push-layer").length, 0);
   assert.equal(ofOp(list.commands, "rect").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Background layer engine (RFC 0008): multi-layer, size/position/repeat,
+// origin/clip, fixed attachment → `image` / `tile` commands.
+// ---------------------------------------------------------------------------
+
+const DOT2: DecodedImage = {
+  width: 2,
+  height: 2,
+  pixels: new Uint8ClampedArray(16).fill(255),
+};
+const DOT4: DecodedImage = {
+  width: 4,
+  height: 4,
+  pixels: new Uint8ClampedArray(64).fill(128),
+};
+
+function bgPaint(extra: Record<string, unknown>, viewport?: Rect): PaintCmd[] {
+  const tree = buildTree([{ id: 0, node: 0, box: box(rect(0, 0, 80, 60)) }]);
+  const styles = styleTable(new Map([[0, makeStyle({ extra })]]));
+  const resolver = (url: string): DecodedImage | undefined =>
+    url.includes("a.png") ? DOT2 : url.includes("b.png") ? DOT4 : undefined;
+  const list = paint(tree, styles, undefined, {
+    imageBySrc: resolver,
+    ...(viewport !== undefined ? { viewport } : {}),
+  });
+  return [...list.commands];
+}
+
+void test("RFC 0008: a default-repeat background-image emits a `tile` command at intrinsic size", () => {
+  const cmds = bgPaint({ backgroundImage: "url(a.png)" });
+  const tiles = ofOp(cmds, "tile");
+  assert.equal(tiles.length, 1);
+  const t = tiles[0]!;
+  assert.equal(Number(t.tile.width), 2, "intrinsic 2px tile");
+  assert.equal(Number(t.tile.height), 2);
+  assert.equal(t.repeatX, true);
+  assert.equal(t.repeatY, true);
+  assert.deepEqual(
+    { x: Number(t.area.x), y: Number(t.area.y), w: Number(t.area.width), h: Number(t.area.height) },
+    { x: 0, y: 0, w: 80, h: 60 },
+    "the painting area is the border box (default background-clip)",
+  );
+});
+
+void test("RFC 0008: repeat-x emits a tile repeating only on x", () => {
+  const cmds = bgPaint({ backgroundImage: "url(a.png)", backgroundRepeat: "repeat-x" });
+  const t = cmds.find((c) => c.op === "tile") as Extract<PaintCmd, { op: "tile" }>;
+  assert.equal(t.repeatX, true);
+  assert.equal(t.repeatY, false);
+});
+
+void test("RFC 0008: background-size 40px 20px sets the tile dimensions", () => {
+  const cmds = bgPaint({ backgroundImage: "url(a.png)", backgroundSize: "40px 20px" });
+  const t = cmds.find((c) => c.op === "tile") as Extract<PaintCmd, { op: "tile" }>;
+  assert.equal(Number(t.tile.width), 40);
+  assert.equal(Number(t.tile.height), 20);
+});
+
+void test("RFC 0008: background-size cover scales the tile to cover the area (ratio kept)", () => {
+  // 4x4 image into 80x60 area → scale = max(80/4, 60/4) = 20 → 80x80 tile.
+  const cmds = bgPaint({ backgroundImage: "url(b.png)", backgroundSize: "cover", backgroundRepeat: "no-repeat" });
+  const img = cmds.find((c) => c.op === "image") as Extract<PaintCmd, { op: "image" }>;
+  assert.equal(Number(img.rect.width), 80);
+  assert.equal(Number(img.rect.height), 80);
+});
+
+void test("RFC 0008: background-size contain fits INSIDE the area (never crops)", () => {
+  // 4x4 → contain into 80x60 → scale = min(20, 15) = 15 → 60x60 tile.
+  const cmds = bgPaint({ backgroundImage: "url(b.png)", backgroundSize: "contain", backgroundRepeat: "no-repeat" });
+  const img = cmds.find((c) => c.op === "image") as Extract<PaintCmd, { op: "image" }>;
+  assert.equal(Number(img.rect.width), 60);
+  assert.equal(Number(img.rect.height), 60);
+});
+
+void test("RFC 0008: right bottom positions a no-repeat image at the far corner", () => {
+  const cmds = bgPaint({
+    backgroundImage: "url(b.png)",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "right bottom",
+  });
+  const img = cmds.find((c) => c.op === "image") as Extract<PaintCmd, { op: "image" }>;
+  assert.equal(Number(img.rect.x), 80 - 4);
+  assert.equal(Number(img.rect.y), 60 - 4);
+});
+
+void test("RFC 0008: percentage position resolves against (area − tile)", () => {
+  // 50% of (80−2)=39 on x; 50% of (60−2)=29 on y.
+  const cmds = bgPaint({
+    backgroundImage: "url(a.png)",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "50% 50%",
+  });
+  const img = cmds.find((c) => c.op === "image") as Extract<PaintCmd, { op: "image" }>;
+  assert.equal(Number(img.rect.x), 39);
+  assert.equal(Number(img.rect.y), 29);
+});
+
+void test("RFC 0008: multi-layer emits every url layer, first-listed painted LAST (topmost)", () => {
+  const cmds = bgPaint({
+    backgroundImage: "url(a.png), url(b.png)",
+    backgroundRepeat: "no-repeat, no-repeat",
+  });
+  const images = ofOp(cmds, "image");
+  assert.equal(images.length, 2);
+  assert.equal(images[0]!.src, DOT4, "b.png (second layer) paints first/under");
+  assert.equal(images[1]!.src, DOT2, "a.png (first layer) paints last/on top");
+});
+
+void test("RFC 0008: a non-url leading layer does not hide later url layers", () => {
+  const cmds = bgPaint({
+    backgroundImage: "linear-gradient(red, blue), url(b.png)",
+    backgroundRepeat: "no-repeat",
+  });
+  const images = cmds.filter((c) => c.op === "image");
+  assert.equal(images.length, 1, "the url layer survives the skipped gradient layer");
+});
+
+void test("RFC 0008: space repeat widens the step (gaps between whole tiles)", () => {
+  // area 80 wide, 2px tile → n=floor(80/2)=40 ≥2 → step = 2 + (80−80)/(40−1)…
+  // use a larger tile for a visible gap: 30px tile → n=2 → step = 30 + (80−60)/1 = 50.
+  const cmds = bgPaint({
+    backgroundImage: "url(b.png)",
+    backgroundSize: "30px 30px",
+    backgroundRepeat: "space",
+  });
+  const t = cmds.find((c) => c.op === "tile") as Extract<PaintCmd, { op: "tile" }>;
+  assert.equal(Number(t.step.x), 50);
+  assert.equal(Number(t.origin.x), 0, "first tile touches the edge");
+});
+
+void test("RFC 0008: round repeat rescales the tile so a whole count fills the axis", () => {
+  // 30px tile in 80 area → n=round(80/30)=3 → tileW=80/3.
+  const cmds = bgPaint({
+    backgroundImage: "url(b.png)",
+    backgroundSize: "30px 30px",
+    backgroundRepeat: "round",
+  });
+  const t = cmds.find((c) => c.op === "tile") as Extract<PaintCmd, { op: "tile" }>;
+  assert.ok(Math.abs(Number(t.tile.width) - 80 / 3) < 0.001);
+  assert.equal(Number(t.tile.height), 30);
+});
+
+void test("RFC 0008: background-attachment fixed re-bases origin on the viewport rect", () => {
+  const viewport = rect(0, 0, 40, 30);
+  const cmds = bgPaint(
+    {
+      backgroundImage: "url(b.png)",
+      backgroundRepeat: "no-repeat",
+      backgroundAttachment: "fixed",
+      backgroundPosition: "right bottom",
+    },
+    viewport,
+  );
+  const img = cmds.find((c) => c.op === "image") as Extract<PaintCmd, { op: "image" }>;
+  assert.equal(Number(img.rect.x), 40 - 4, "positioned against the 40px viewport, not the 80px element");
+  assert.equal(Number(img.rect.y), 30 - 4);
+});
+
+void test("RFC 0008: background-origin content-box shifts the positioning area", () => {
+  // Build a fragment with distinct content/padding/border boxes.
+  const borderBox = rect(0, 0, 80, 60);
+  const paddingBox = rect(4, 4, 72, 52);
+  const contentBox = rect(10, 10, 60, 40);
+  const geo: BoxGeometry = {
+    x: borderBox.x,
+    y: borderBox.y,
+    width: borderBox.width,
+    height: borderBox.height,
+    contentBox,
+    paddingBox,
+    borderBox,
+    marginBox: borderBox,
+  };
+  const tree = buildTree([{ id: 0, node: 0, box: geo }]);
+  const styles = styleTable(new Map([[0, makeStyle({
+    extra: {
+      backgroundImage: "url(b.png)",
+      backgroundRepeat: "no-repeat",
+      backgroundOrigin: "content-box",
+      backgroundPosition: "left top",
+    },
+  })]]));
+  const list = paint(tree, styles, undefined, { imageBySrc: () => DOT4 });
+  const img = ofOp(list.commands, "image")[0]!;
+  assert.equal(Number(img.rect.x), 10, "origin is the content box");
+  assert.equal(Number(img.rect.y), 10);
+});
+
+void test("RFC 0008: an unresolved layer emits no command but surviving layers still paint", () => {
+  const cmds = bgPaint({
+    backgroundImage: "url(missing.png), url(b.png)",
+    backgroundRepeat: "no-repeat",
+  });
+  const images = cmds.filter((c) => c.op === "image");
+  assert.equal(images.length, 1);
 });

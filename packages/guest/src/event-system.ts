@@ -20,6 +20,8 @@ export class Event {
   #type: string;
   #bubbles: boolean;
   #cancelable: boolean;
+  #composed: boolean;
+  #composedPathCache: unknown[] = [];
   #defaultPrevented = false;
   #propagationStopped = false;
   #immediatePropagationStopped = false;
@@ -38,11 +40,17 @@ export class Event {
     this.#type = String(type);
     this.#bubbles = init?.bubbles ?? false;
     this.#cancelable = init?.cancelable ?? false;
+    this.#composed = init?.composed ?? false;
   }
 
   get type(): string { return this.#type; }
   get bubbles(): boolean { return this.#bubbles; }
   get cancelable(): boolean { return this.#cancelable; }
+  /** DOM §2.7: whether the event crosses shadow-tree boundaries. */
+  get composed(): boolean { return this.#composed; }
+  /** The full propagation path recorded during dispatch (retargeting-free). */
+  composedPath(): unknown[] { return [...this.#composedPathCache]; }
+  /** @internal */ _setComposedPath(path: unknown[]): void { this.#composedPathCache = path; }
   get defaultPrevented(): boolean { return this.#defaultPrevented; }
   get target(): unknown { return this.#target; }
   /** Legacy alias of {@link target}. */
@@ -125,6 +133,7 @@ export class Event {
 export interface EventInit {
   bubbles?: boolean;
   cancelable?: boolean;
+  composed?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +237,68 @@ export interface MouseEventInit extends UIEventInit {
 }
 
 // ---------------------------------------------------------------------------
+// PointerEvent — Pointer Events Level 3
+// ---------------------------------------------------------------------------
+
+export class PointerEvent extends MouseEvent {
+  readonly #pointerId: number;
+  readonly #width: number;
+  readonly #height: number;
+  readonly #pressure: number;
+  readonly #tangentialPressure: number;
+  readonly #tiltX: number;
+  readonly #tiltY: number;
+  readonly #twist: number;
+  readonly #pointerType: string;
+  readonly #isPrimary: boolean;
+
+  constructor(type?: string, init?: PointerEventInit & MouseEventInit & UIEventInit & EventInit) {
+    super(type, init);
+    this.#pointerId = init?.pointerId ?? 0;
+    this.#width = init?.width ?? 1;
+    this.#height = init?.height ?? 1;
+    this.#pressure = init?.pressure ?? 0;
+    this.#tangentialPressure = init?.tangentialPressure ?? 0;
+    this.#tiltX = init?.tiltX ?? 0;
+    this.#tiltY = init?.tiltY ?? 0;
+    this.#twist = init?.twist ?? 0;
+    this.#pointerType = init?.pointerType ?? "";
+    this.#isPrimary = init?.isPrimary ?? false;
+  }
+
+  get pointerId(): number { return this.#pointerId; }
+  get width(): number { return this.#width; }
+  get height(): number { return this.#height; }
+  get pressure(): number { return this.#pressure; }
+  get tangentialPressure(): number { return this.#tangentialPressure; }
+  get tiltX(): number { return this.#tiltX; }
+  get tiltY(): number { return this.#tiltY; }
+  get twist(): number { return this.#twist; }
+  get pointerType(): string { return this.#pointerType; }
+  get isPrimary(): boolean { return this.#isPrimary; }
+  get altitudeAngle(): number { return Math.PI / 2; }
+  get azimuthAngle(): number { return 0; }
+
+  /** §10.1: coalesced events are a UA-input-source concept — this engine has
+   * no raw-input pipeline, so the honest answer is a single-element list. */
+  getCoalescedEvents(): PointerEvent[] { return [this]; }
+  getPredictedEvents(): PointerEvent[] { return []; }
+}
+
+export interface PointerEventInit extends MouseEventInit {
+  pointerId?: number;
+  width?: number;
+  height?: number;
+  pressure?: number;
+  tangentialPressure?: number;
+  tiltX?: number;
+  tiltY?: number;
+  twist?: number;
+  pointerType?: string;
+  isPrimary?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // KeyboardEvent
 // ---------------------------------------------------------------------------
 
@@ -324,6 +395,68 @@ export class CustomEvent extends Event {
 
 export interface CustomEventInit extends EventInit {
   detail?: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// MessageEvent (HTML §9.4.2) — postMessage and WebSocket/BroadcastChannel data
+// ---------------------------------------------------------------------------
+
+export interface MessageEventInit extends EventInit {
+  data?: unknown;
+  origin?: string;
+  lastEventId?: string;
+  source?: unknown;
+  ports?: readonly unknown[];
+}
+
+export class MessageEvent extends Event {
+  readonly #data: unknown;
+  readonly #origin: string;
+  readonly #lastEventId: string;
+  readonly #source: unknown;
+  readonly #ports: readonly unknown[];
+
+  constructor(type?: string, init?: MessageEventInit) {
+    super(type, init);
+    this.#data = init?.data ?? null;
+    this.#origin = init?.origin ?? "";
+    this.#lastEventId = init?.lastEventId ?? "";
+    this.#source = init?.source ?? null;
+    this.#ports = init?.ports ?? [];
+  }
+
+  get data(): unknown { return this.#data; }
+  get origin(): string { return this.#origin; }
+  get lastEventId(): string { return this.#lastEventId; }
+  get source(): unknown { return this.#source; }
+  get ports(): readonly unknown[] { return this.#ports; }
+}
+
+// ---------------------------------------------------------------------------
+// CloseEvent (HTML §9.3.9) — WebSocket close handshake result
+// ---------------------------------------------------------------------------
+
+export interface CloseEventInit extends EventInit {
+  code?: number;
+  reason?: string;
+  wasClean?: boolean;
+}
+
+export class CloseEvent extends Event {
+  readonly #code: number;
+  readonly #reason: string;
+  readonly #wasClean: boolean;
+
+  constructor(type?: string, init?: CloseEventInit) {
+    super(type, init);
+    this.#code = init?.code ?? 0;
+    this.#reason = init?.reason ?? "";
+    this.#wasClean = init?.wasClean ?? false;
+  }
+
+  get code(): number { return this.#code; }
+  get reason(): string { return this.#reason; }
+  get wasClean(): boolean { return this.#wasClean; }
 }
 
 // ---------------------------------------------------------------------------

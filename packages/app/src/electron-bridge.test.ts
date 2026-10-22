@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { HOME_URL } from "./home.js";
-import { TabHost } from "./tab-session.js";
+import { TabHost } from "./tab-host.js";
 import type { PageFrame } from "./page.js";
 
 function okFrame(host: TabHost, frame: PageFrame) {
@@ -22,8 +22,9 @@ function okFrame(host: TabHost, frame: PageFrame) {
   };
 }
 
-void test("electron-shaped host supports tabs type and form edit", async () => {
+void test("electron-shaped host supports tabs type and form edit", async (t) => {
   const host = new TabHost();
+  t.after(async () => host.dispose());
   const home = await host.active.navigate(HOME_URL, { viewport: { width: 900, height: 700 } });
   const homePayload = okFrame(host, home);
   assert.equal(homePayload.ok, true);
@@ -35,19 +36,21 @@ void test("electron-shaped host supports tabs type and form edit", async () => {
   assert.equal(host.list().length, 2);
   assert.equal(demo.url, "engine://form");
 
-  const page = host.active.page!;
-  let x = 80;
-  let y = 180;
-  for (const fragment of page.fragmentTree.fragments.values()) {
-    const node = page.dom.nodes.get(fragment.node);
-    if (node?.kind === "element" && node.tag === "textarea") {
-      const box = fragment.box.borderBox;
-      x = Number(box.x) + 8;
-      y = Number(box.y) + 8;
-      break;
+  // The renderer owns the fragment tree — find the editable node the same
+  // way the chrome does: hit-testing over the wire.
+  let found: { x: number; y: number } | null = null;
+  for (let y = 0; y < demo.height && found === null; y += 8) {
+    for (let x = 0; x < demo.width; x += 8) {
+      const hit = await host.active.hitTestAt(x, y);
+      if (hit.editable !== null) {
+        found = { x, y };
+        break;
+      }
     }
   }
-  const click = await host.active.clickAt(x, y);
+  assert.ok(found !== null, "expected an editable hit on the form page");
+
+  const click = await host.active.clickAt(found.x, found.y);
   assert.equal(click.navigated, false);
   assert.ok(click.editable);
 
@@ -56,7 +59,7 @@ void test("electron-shaped host supports tabs type and form edit", async () => {
   assert.ok(typed.bytes > 0);
   assert.ok(typed.frameRev >= 2);
 
-  const first = host.list().find((t) => t.id !== host.activeId);
+  const first = host.list().find((tab) => tab.id !== host.activeId);
   assert.ok(first);
   host.select(first.id);
   assert.ok(host.active.frame !== null);

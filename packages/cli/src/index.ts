@@ -96,8 +96,14 @@ export {
   warmDecodeImageBytes,
   collectFirstImageNodes,
   imageSourceCandidates,
+  parseSrcset,
+  parseSizes,
+  tryDecode,
+  decodeDataUrl,
   type ImageLoader,
   type AsyncImageLoader,
+  type ImageSourceContext,
+  type SrcsetCandidate,
 } from "./images.js";
 export {
   loadResources,
@@ -107,12 +113,30 @@ export {
   cacheLoader,
   defaultFetch,
   documentBaseUrl,
+  documentReferrerPolicy,
+  collectCrossoriginSettings,
+  collectSubresourceDestinations,
   type FetchFn,
   type ResourceCache,
   type ResourceLoadEvent,
   type ResourceLoadResult,
 } from "./loader.js";
-export { pipelineShaper, pipelineGlyphSource, pipelinePrimaryFontName, pipelineFaces } from "./fonts.js";
+export {
+  pipelineShaper,
+  pipelineShaperFor,
+  pipelineFontRegistry,
+  pipelineRasterSource,
+  pipelineFaceTable,
+  pipelinePrimaryFontName,
+  pipelineFaces,
+  pipelineBoldFaces,
+} from "./fonts.js";
+export {
+  registerFontFaces,
+  registerFontFacesSync,
+  type WebFontEvent,
+  type WebFontOptions,
+} from "./webfonts.js";
 
 // ---- M3: the live document session (DOM mutation → incremental re-render) ---
 export {
@@ -136,12 +160,14 @@ export {
   NodeStruct,
   NodeAttrs,
   DocRoot,
+  LayoutDamage,
   qFineSheets,
   qFineComputed,
   qFineLayoutStyle,
   qFineLayout,
   qFinePaint,
 } from "./fine.js";
+export type { DomMutation, DomMutationSink, LayoutDamageStore } from "./fine.js";
 
 // ---- M3.2: scripting bridge (real V8 JavaScript drives the DOM) ------------
 export { runScript, buildDocumentApi, type ScriptResult } from "./script.js";
@@ -191,14 +217,62 @@ export {
   runEventDrivenReal,
   runScriptsOnSession,
   runScriptsOnSessionReal,
+  installNavigationGlobals,
   type EventDrivenRun,
   type GuestBrowserFetch,
+  type NavigationHost,
   type ScriptNetworkOptions,
+  type SessionStorageBag,
+  type StorageAreaLike,
 } from "./event-loop.js";
 export { runModuleScripts, isEsmSupported, type ModuleEntry, type ModuleRunResult } from "./esm-runner.js";
+export {
+  ServiceWorkerRegistry,
+  createServiceWorkerContainer,
+  type ServiceWorkerRegistryDeps,
+  type SwContainerDeps,
+  type SwState,
+} from "./service-worker.js";
+export {
+  SharedWorkerRegistry,
+  makeSharedWorkerCtor,
+  type SharedWorkerGlobalDeps,
+} from "./shared-worker-global.js";
+
+// ---- RFC 0035: <video>/<audio> — decode + playback engine ------------------
+export {
+  MediaEngine,
+  mediaDescriptors,
+  wavDecoder,
+  ffmpegDecoder,
+  defaultMediaDecoders,
+  canPlayMime,
+  type MediaClock,
+  type MediaDecoder,
+  type MediaEngineDeps,
+  type MediaFetchInit,
+  type MediaProbeResult,
+  type DecodedAudio,
+  type MediaElementState,
+} from "./media.js";
 
 // ---- UA + document stylesheet collection -----------------------------------
 export { documentStylesheets, uaStylesheet } from "./stylesheets.js";
+
+// ---- RFC 0027: Content-Security-Policy -------------------------------------
+export {
+  CspContext,
+  cspFromHeaders,
+  cspFromMeta,
+  cspHash,
+  documentCsp,
+  parseCspValue,
+  type CspFetchKind,
+  type CspInlineTarget,
+  type CspPolicy,
+  type CspVerdict,
+  type CspViolation,
+} from "./csp.js";
 
 // ---- §3.12 Phase 1 vertical-slice fixtures (reftest baseline + scoreboard) -
 // The `<div>hello</div>` reftest baseline (Req 14.3) and the first real WPT

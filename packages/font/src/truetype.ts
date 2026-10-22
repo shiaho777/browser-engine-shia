@@ -21,10 +21,25 @@ interface TableRec {
   readonly length: number;
 }
 
-/** Parse an sfnt byte buffer into a {@link FontFace}. Throws on malformed input. */
-export function parseTrueType(bytes: Uint8Array): FontFace {
+/**
+ * Parse an sfnt byte buffer into a {@link FontFace}. Throws on malformed input.
+ * `faceIndex` selects a member of a `ttcf` collection (0/default = standalone
+ * or first member); each member is a self-contained sfnt directory.
+ */
+export function parseTrueType(bytes: Uint8Array, faceIndex = 0): FontFace {
   const r = new Reader(bytes);
-  const sfntVersion = r.uint32();
+  let sfntVersion = r.uint32();
+  if (sfntVersion === 0x74746366) {
+    // "ttcf" header: version(4), numFonts(4), faceOffsets[numFonts].
+    r.skip(4);
+    const numFonts = r.uint32();
+    if (faceIndex < 0 || faceIndex >= numFonts) {
+      throw new Error(`font: ttcf face index ${faceIndex} out of range (${numFonts} faces)`);
+    }
+    r.seek(12 + faceIndex * 4);
+    r.seek(r.uint32());
+    sfntVersion = r.uint32();
+  }
   // 0x00010000 = TrueType outlines; "true"/"ttcf" variants; "OTTO" = CFF (no glyf).
   if (sfntVersion === 0x4f54544f) {
     throw new Error("font: OpenType/CFF (OTTO) outlines are not supported — need a glyf-based TrueType font");
@@ -95,6 +110,34 @@ export function parseTrueType(bytes: Uint8Array): FontFace {
   const glyf = need("glyf");
   const cmap = parseCmap(r, need("cmap").offset);
 
+  // ---- OS/2: usWeightClass (optional — some minimal fonts omit OS/2) -------
+  const os2 = tables.get("OS/2");
+  let weight: number | undefined;
+  let xHeight: number | undefined;
+  let italic = false;
+  let subscriptOffset: number | undefined;
+  let superscriptOffset: number | undefined;
+  if (os2 !== undefined && os2.length >= 6) {
+    r.seek(os2.offset);
+    const version = r.uint16();
+    r.seek(os2.offset + 4);
+    weight = r.uint16();
+    if (os2.length >= 26) {
+      r.seek(os2.offset + 16);
+      subscriptOffset = r.int16();
+      r.seek(os2.offset + 24);
+      superscriptOffset = r.int16();
+    }
+    if (os2.length >= 64) {
+      r.seek(os2.offset + 62);
+      italic = (r.uint16() & 0x1) !== 0;
+    }
+    if (version >= 2 && os2.length >= 88) {
+      r.seek(os2.offset + 86);
+      xHeight = r.int16();
+    }
+  }
+
   const outlineCache = new Map<number, GlyphOutline>();
   const readOutline = (glyphId: number): GlyphOutline => {
     const cached = outlineCache.get(glyphId);
@@ -109,6 +152,13 @@ export function parseTrueType(bytes: Uint8Array): FontFace {
     numGlyphs,
     ascent,
     descent,
+    data: bytes,
+    ...(faceIndex > 0 ? { collectionIndex: faceIndex } : {}),
+    ...(weight !== undefined ? { weight } : {}),
+    ...(xHeight !== undefined ? { xHeight } : {}),
+    ...(italic ? { italic: true } : {}),
+    ...(subscriptOffset !== undefined && subscriptOffset !== 0 ? { subscriptOffset } : {}),
+    ...(superscriptOffset !== undefined && superscriptOffset !== 0 ? { superscriptOffset } : {}),
     glyphIdForCodePoint: (cp: number): number => cmap.get(cp) ?? 0,
     metricsOf: (glyphId: number): GlyphMetrics => ({
       advanceWidth: advances[Math.min(glyphId, numGlyphs - 1)] ?? 0,

@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { parseTrueType } from "./truetype.js";
 import type { FontFace } from "./types.js";
 
-export function loadTrueTypeFontFromBytes(bytes: Uint8Array): FontFace | null {
+export function loadTrueTypeFontFromBytes(bytes: Uint8Array, faceIndex = 0): FontFace | null {
   try {
-    return parseTrueType(bytes);
+    return parseTrueType(bytes, faceIndex);
   } catch {
     return null;
   }
@@ -86,14 +86,14 @@ export function preferredSystemTrueTypePaths(): string[] {
   return out;
 }
 
-export function loadTrueTypeFontFromPath(path: string): FontFace | null {
+export function loadTrueTypeFontFromPath(path: string, faceIndex = 0): FontFace | null {
   try {
     if (!existsSync(path)) return null;
     const st = statSync(path);
     if (!st.isFile()) return null;
-    if (!/\.ttf$/i.test(path)) return null;
+    if (!/\.(ttf|ttc|otf)$/i.test(path)) return null;
     const bytes = new Uint8Array(readFileSync(path));
-    return loadTrueTypeFontFromBytes(bytes);
+    return loadTrueTypeFontFromBytes(bytes, faceIndex);
   } catch {
     return null;
   }

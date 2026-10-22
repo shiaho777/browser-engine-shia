@@ -49,22 +49,65 @@ interface LayerFrame {
   readonly clipDepth: number;
 }
 
-/** Run a full display program serially on the GPU pipeline; returns the surface. */
-export function renderProgram(program: DisplayProgram): GpuSurface {
+/**
+ * Run a full display program serially on the GPU pipeline; returns the surface.
+ *
+ * RFC 0039 partial repaint: `options.into` reuses a previous frame's pixel
+ * buffer and `options.damage` restricts writes to that rect — every draw is
+ * scissored through `clipStack[0]`, so pixels outside the damage rect retain
+ * their previous content. Preconditions the caller must honour (the function
+ * self-enforces them by falling back to a full clear):
+ *  - `into` must be `w*h*4` bytes of the PREVIOUS program's output.
+ *  - `damage` must cover every pixel that differs — the differ's union.
+ * Layers carrying a `transform` or `filter` resample/write outside their own
+ * content bounds, so their presence expands the damage rect to the full frame.
+ */
+export function renderProgram(
+  program: DisplayProgram,
+  options?: { readonly damage?: ClipRect; readonly into?: Uint8ClampedArray },
+): GpuSurface {
   const w = program.width;
   const h = program.height;
-  const base = new Uint8ClampedArray(w * h * 4);
-  // Initialise the base target to the (opaque) background.
-  for (let i = 0; i < w * h; i += 1) {
-    base[i * 4] = program.background.r;
-    base[i * 4 + 1] = program.background.g;
-    base[i * 4 + 2] = program.background.b;
-    base[i * 4 + 3] = clamp01(program.background.a) * 255;
+  let damage = options?.damage;
+  if (damage !== undefined) {
+    for (const command of program.commands) {
+      if (command.op !== "push-layer") continue;
+      const transformed =
+        command.transform !== undefined && !isIdentity(command.transform);
+      const filtered = command.filter !== undefined && command.filter !== "none";
+      if (transformed || filtered) {
+        damage = undefined;
+        break;
+      }
+    }
+  }
+  const base =
+    damage !== undefined &&
+    options?.into !== undefined &&
+    options.into.length === w * h * 4
+      ? options.into
+      : new Uint8ClampedArray(w * h * 4);
+  // Initialise the base target to the (opaque) background — inside the damage
+  // rect only when retaining, everywhere on a fresh buffer.
+  if (damage !== undefined && base === options?.into) {
+    fillRect(base, w, damage, program.background);
+  } else {
+    for (let i = 0; i < w * h; i += 1) {
+      base[i * 4] = program.background.r;
+      base[i * 4 + 1] = program.background.g;
+      base[i * 4 + 2] = program.background.b;
+      base[i * 4 + 3] = clamp01(program.background.a) * 255;
+    }
   }
 
   const targets: Uint8ClampedArray[] = [base];
   const frames: LayerFrame[] = [];
-  const clipStack: ClipRect[] = [{ x0: 0, y0: 0, x1: w, y1: h }];
+  const clipStack: ClipRect[] = [
+    damage !== undefined && base === options?.into
+      ? damage
+      : { x0: 0, y0: 0, x1: w, y1: h },
+  ];
+  const damageActive = base === options?.into && damage !== undefined;
   const current = (): Uint8ClampedArray => targets[targets.length - 1] as Uint8ClampedArray;
 
   for (const command of program.commands) {
@@ -84,7 +127,7 @@ export function renderProgram(program: DisplayProgram): GpuSurface {
       if (frame === undefined) continue;
       targets.pop();
       if (frame.filter !== undefined) applyFilter(frame.buf, w, h, frame.filter);
-      compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform);
+      compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform, damageActive ? damage : undefined);
       while (clipStack.length > frame.clipDepth) clipStack.pop();
     } else {
       applyCommand(current(), w, 0, h, clipStack, command);
@@ -94,10 +137,28 @@ export function renderProgram(program: DisplayProgram): GpuSurface {
     const frame = frames.pop() as LayerFrame;
     targets.pop();
     if (frame.filter !== undefined) applyFilter(frame.buf, w, h, frame.filter);
-    compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform);
+    compositeLayer(current(), frame.buf, w, h, frame.opacity, frame.transform, damageActive ? damage : undefined);
   }
 
   return { width: w, height: h, pixels: base };
+}
+
+/** Clear `clip` to the opaque background (row-wise memset for a rect). */
+function fillRect(buf: Uint8ClampedArray, w: number, clip: ClipRect, color: GpuColor): void {
+  const a = clamp01(color.a) * 255;
+  const x0 = Math.max(0, Math.floor(clip.x0));
+  const y0 = Math.max(0, Math.floor(clip.y0));
+  const x1 = Math.min(w, Math.ceil(clip.x1));
+  const y1 = Math.min(buf.length / (w * 4), Math.ceil(clip.y1));
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const i = (y * w + x) * 4;
+      buf[i] = color.r;
+      buf[i + 1] = color.g;
+      buf[i + 2] = color.b;
+      buf[i + 3] = a;
+    }
+  }
 }
 
 function isIdentity(m: Matrix6): boolean {
@@ -112,26 +173,34 @@ function compositeLayer(
   h: number,
   opacity: number,
   transform: Matrix6 | null,
+  clip?: ClipRect,
 ): void {
   if (opacity <= 0) return;
+  const x0 = clip !== undefined ? Math.max(0, Math.floor(clip.x0)) : 0;
+  const y0 = clip !== undefined ? Math.max(0, Math.floor(clip.y0)) : 0;
+  const x1 = clip !== undefined ? Math.min(w, Math.ceil(clip.x1)) : w;
+  const y1 = clip !== undefined ? Math.min(h, Math.ceil(clip.y1)) : h;
   if (transform === null) {
-    for (let p = 0; p < w * h; p += 1) {
-      const a = (layer[p * 4 + 3] as number) / 255;
-      if (a <= 0) continue;
-      blendInto(dest, p * 4, {
-        r: layer[p * 4] as number,
-        g: layer[p * 4 + 1] as number,
-        b: layer[p * 4 + 2] as number,
-        a: a * opacity,
-      });
+    for (let y = y0; y < y1; y += 1) {
+      for (let x = x0; x < x1; x += 1) {
+        const p = y * w + x;
+        const a = (layer[p * 4 + 3] as number) / 255;
+        if (a <= 0) continue;
+        blendInto(dest, p * 4, {
+          r: layer[p * 4] as number,
+          g: layer[p * 4 + 1] as number,
+          b: layer[p * 4 + 2] as number,
+          a: a * opacity,
+        });
+      }
     }
     return;
   }
   const inv = invert(transform);
   if (inv === null) return;
   const [ia, ib, ic, id, ie, iff] = inv;
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
       const dx = x + 0.5;
       const dy = y + 0.5;
       const sample = bilinear(layer, w, h, ia * dx + ic * dy + ie - 0.5, ib * dx + id * dy + iff - 0.5);

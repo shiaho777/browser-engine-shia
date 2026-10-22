@@ -21,10 +21,38 @@ import vm from "node:vm";
 
 import type { NodeId } from "@browser-engine/ir";
 
-import { FineSession } from "./fine.js";
+import { FineSession, type DocumentIsolation } from "./fine.js";
+import { CSS } from "./css-supports.js";
+import { createMatchMedia } from "./match-media.js";
+import { createMediaPreferences } from "./preferences.js";
+import { makeWorkerCtor } from "./worker-global.js";
+import { makeSharedWorkerCtor, SharedWorkerRegistry } from "./shared-worker-global.js";
 import { buildDocumentApi } from "./script.js";
+import { createServiceWorkerContainer } from "./service-worker.js";
 import { BROWSER_USER_AGENT, defaultFetch, type FetchFn } from "./loader.js";
-import { coerceGuestString, makeBlobClass, makeFileClass, globalObjectUrls } from "@browser-engine/guest";
+import {
+  coerceGuestString,
+  makeBlobClass,
+  makeFileClass,
+  globalObjectUrls,
+  makeFetchApi,
+  adaptResponseLike,
+  DOMException,
+  UIEvent as GuestUIEvent,
+  MouseEvent as GuestMouseEvent,
+  PointerEvent as GuestPointerEvent,
+  KeyboardEvent as GuestKeyboardEvent,
+  FocusEvent as GuestFocusEvent,
+  InputEvent as GuestInputEvent,
+  WheelEvent as GuestWheelEvent,
+  CompositionEvent as GuestCompositionEvent,
+  type FetchApi,
+  type NormalizedRequest,
+  type RawFetchResult,
+  type WsTransport,
+  mixedContentVerdict,
+  isPotentiallyTrustworthyUrl,
+} from "@browser-engine/guest";
 
 export type GuestBrowserFetch = (
   input: unknown,
@@ -41,6 +69,12 @@ export type GuestBrowserFetch = (
 
 export interface ScriptNetworkOptions {
   readonly browserFetch?: GuestBrowserFetch;
+  /**
+   * RFC 0022: raw-socket transport for guest `new WebSocket(...)` —
+   * `nodeWsTransport()` for real TCP/TLS, `createWsLoopback()` for tests.
+   * Unset ⇒ sockets fail closed (error + 1006 close events, spec-shaped).
+   */
+  readonly wsTransport?: WsTransport;
   /**
    * Keep guest intervals alive after the initial flush so a host can keep
    * pumping the returned `drain`/`flushAsync` hooks for continuous rendering.
@@ -60,6 +94,169 @@ export interface ScriptNetworkOptions {
    * used as the vm filename so guest stack frames identify the script.
    */
   readonly scriptUrls?: readonly (string | null)[];
+  /** RFC 0013: iframe nodeId → child context window proxy (contentWindow). */
+  readonly frameLookup?: (nodeId: import("@browser-engine/ir").NodeId) => unknown;
+  /**
+   * RFC 0010: the session's navigation bridge. When present, the sandbox's
+   * `location`/`history` become LIVE objects delegating here (real
+   * navigations, real pushState). Absent ⇒ the legacy static stubs.
+   */
+  readonly sessionHost?: NavigationHost;
+  /**
+   * RFC 0010: session-scoped storage to install as `localStorage`/
+   * `sessionStorage`. Absent ⇒ fresh per-boot memory stores (harness paths).
+   */
+  readonly storage?: SessionStorageBag;
+  /**
+   * Live viewport geometry getter (IntersectionObserver root bounds; scroll
+   * offsets move the viewport in document space between evaluations).
+   */
+  readonly viewport?: () => {
+    readonly width: number;
+    readonly height: number;
+    readonly scrollY: number;
+  };
+  /**
+   * RFC 0027: the document's CSP context. `connect-src` gates guest
+   * `fetch`/XHR/WebSocket targets, `script-src` gates dynamic `<script>`
+   * injection, and `style-src`/`style-src-attr` flow through the session's
+   * cascade gate. Absent ⇒ no policy (the default for harness paths).
+   */
+  readonly csp?: import("./csp.js").CspContext | null;
+  /**
+   * RFC 0032: the dedicated worker-script byte channel — `destination:
+   * "worker"`, `mode: "same-origin"`, `credentials: "same-origin"` per
+   * Fetch §"fetch a classic worker script" (classic worker URLs are
+   * same-origin-restricted). Absent ⇒ the runner's generic `fetchFn`.
+   */
+  readonly fetchWorkerSource?: (url: string) => Promise<Uint8Array | undefined>;
+  /**
+   * RFC 0033: `drawImage(imgEl)` source resolution — element NodeId → the
+   * decoded pixels the page's resource pass produced. Absent ⇒ `<img>`
+   * sources draw nothing (canvas/canvas sources still work).
+   */
+  readonly canvasImageSource?: (nodeId: import("@browser-engine/ir").NodeId) => import("@browser-engine/ir").DecodedImage | undefined;
+  /**
+   * RFC 0034: the session's service-worker registry — installs
+   * `navigator.serviceWorker` (a real container: register/ready/controller/
+   * message events) and lets `respondWith` interception see this page.
+   * Absent ⇒ `navigator.serviceWorker` is undefined.
+   */
+  readonly serviceWorkerRegistry?: import("./service-worker.js").ServiceWorkerRegistry;
+  /**
+   * RFC 0042: the shared-worker registry — one instance per network stack /
+   * browsing-context tree so same-(url,name) connects share one realm.
+   * Absent ⇒ a per-session registry (intra-page sharing still works).
+   */
+  readonly sharedWorkerRegistry?: import("./shared-worker-global.js").SharedWorkerRegistry;
+  /**
+   * RFC 0042: the shared worker-script byte channel — `destination:
+   * "sharedworker"`, `mode: "same-origin"`. Absent ⇒ fetchWorkerSource, then
+   * the runner's generic fetchFn.
+   */
+  readonly fetchSharedWorkerSource?: (url: string) => Promise<Uint8Array | undefined>;
+  /**
+   * RFC 0035: the document's media engine (`<video>`/`<audio>` — fetch,
+   * probe, playback clock). The runner binds dispatch + the loop clock;
+   * element wrappers get the HTMLMediaElement surface.
+   */
+  readonly media?: import("./media.js").MediaEngine;
+}
+
+/**
+ * The session's navigation bridge (RFC 0010) — a structural interface so the
+ * app layer's `SessionHost` satisfies it without a dependency edge. Guest
+ * `location`/`history` delegate to these methods; navigation intent is queued
+ * asynchronously (real navigation happens after the current task).
+ */
+export interface NavigationHost {
+  /** The committed document URL — `location.href` reads this live. */
+  currentUrl: string;
+  /** `history.state` — mutated synchronously by pushState/replaceState. */
+  currentState: unknown;
+  scrollRestoration: "auto" | "manual";
+  readonly historyLength: number;
+  /**
+   * Commit a new document URL before its scripts run — the host reflects the
+   * NEW page during boot (guest `location.assign` resolves against it).
+   */
+  commit(url: string, state?: unknown): void;
+  assign(url: string): void;
+  replace(url: string): void;
+  /**
+   * RFC 0011: activation-behavior sink — a/area clicks and form submissions.
+   * `init` carries target/method/body; the host applies target dispatch
+   * (_blank/_parent/_top) and queues the intent. Optional: absent ⇒
+   * activation falls back to assign semantics.
+   */
+  submit?(url: string, init?: {
+    replace?: boolean;
+    target?: string;
+    method?: string;
+    body?: string;
+    contentType?: string;
+  }): void;
+  navigateTarget?(url: string, target: string, init?: {
+    replace?: boolean;
+    method?: string;
+    body?: string;
+    contentType?: string;
+  }): void;
+  reload(): void;
+  setHash(fragment: string): void;
+  back(): void;
+  forward(): void;
+  go(delta?: number): void;
+  pushState(state: unknown, url?: string | null): void;
+  replaceState(state: unknown, url?: string | null): void;
+  /**
+   * `window.open(url, target, features)` — synchronous: returns the opened
+   * navigable's WindowProxy, or null (noopener/remote/unavailable).
+   */
+  openWindow?(
+    url: string | undefined,
+    target: string | undefined,
+    features: string | undefined,
+  ): unknown;
+  /**
+   * The realm's own `window` object — set by installNavigationGlobals so
+   * `window.open(url,'_self')` can return the identical proxy (spec: _self's
+   * WindowProxy IS the caller's own).
+   */
+  selfWindow?: unknown;
+  /** `window.close()` — gated on scriptOpened inside the host (spec). */
+  closeWindow?(): void;
+  /**
+   * `window.opener.postMessage` — routes a JSON-cloned payload to the tab
+   * whose id is `targetTabId`, through the browser-process router.
+   */
+  postMessageRemote?(
+    targetTabId: number,
+    data: unknown,
+    targetOrigin: string | null,
+  ): void;
+  /** The opener tab's id — null ⇒ `window.opener` is null (noopener/none). */
+  openerTabId?: number | null;
+  /** `window.focus()` — asks the shell to activate this tab. */
+  focusWindow?(): void;
+  /** `opener.focus()`/`e.source.focus()` — activate a REMOTE tab. */
+  focusRemote?(targetTabId: number): void;
+}
+
+/** The Web Storage shape the sandbox exposes (structural — StorageImpl-compatible). */
+export interface StorageAreaLike {
+  readonly length: number;
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  clear(): void;
+  key(index: number): string | null;
+}
+
+/** Session-provided storage pair (RFC 0010). */
+export interface SessionStorageBag {
+  readonly localStorage: StorageAreaLike;
+  readonly sessionStorage: StorageAreaLike;
 }
 
 /** The outcome of an event-driven run: work performed + DOM mutations. */
@@ -79,13 +276,52 @@ export interface EventDrivenRun {
   readonly getMutations?: () => number;
   readonly drain?: () => void;
   readonly flushAsync?: () => Promise<void>;
+  /** RFC 0032: terminate every dedicated worker this document spawned —
+   *  worker threads survive page teardown otherwise (unref'd ≠ collected). */
+  readonly disposeWorkers?: () => void;
+  /**
+   * RFC 0033: rasterize every live `<canvas>`'s op log to its current
+   * bitmap — the paint path pulls this lazily per frame.
+   */
+  readonly canvasBitmaps?: () => ReadonlyMap<import("@browser-engine/ir").NodeId, import("@browser-engine/ir").DecodedImage>;
+  /**
+   * RFC 0011: dispatch a UI click at a DOM node — identical to `el.click()`
+   * (event + activation behavior). Lets the host's hit-tested clicks honor
+   * listeners/preventDefault.
+   */
+  readonly clickElement?: (nodeId: import("@browser-engine/ir").NodeId) => void;
+  /** RFC 0013: dispatch an event at an element (iframe `load`, …). */
+  readonly dispatchElementEvent?: (
+    nodeId: import("@browser-engine/ir").NodeId,
+    type: string,
+    init?: Record<string, unknown>,
+  ) => void;
+  /**
+   * RFC 0020: the host's UI-input synthesis surface — real pointer/mouse/
+   * keyboard/focus/tab sequences through the shared dispatch machinery.
+   */
+  readonly ui?: {
+    readonly pointerMove: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly click: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly contextMenu: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly dblClick: (nodeId: import("@browser-engine/ir").NodeId, init?: Record<string, unknown>) => void;
+    readonly key: (detail: {
+      key: string; code?: string; repeat?: boolean; location?: number;
+      ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean;
+    }) => void;
+    readonly tab: (dir: 1 | -1) => void;
+    readonly focusedId: () => import("@browser-engine/ir").NodeId | null;
+  };
 }
 
 /** A minimal Promise-shaped thenable scheduled on the virtual loop's microtasks. */
 class Thenable<T> {
   #value: T | undefined;
+  #error: unknown;
   #settled = false;
+  #failed = false;
   readonly #cbs: ((v: T) => void)[] = [];
+  readonly #rcbs: ((e: unknown) => void)[] = [];
   constructor(private readonly loop: VirtualEventLoop) {}
 
   resolve(value: T): void {
@@ -94,26 +330,47 @@ class Thenable<T> {
     this.#value = value;
     for (const cb of this.#cbs) this.loop.microtask(() => cb(value));
     this.#cbs.length = 0;
+    this.#rcbs.length = 0;
+  }
+
+  reject(reason: unknown): void {
+    if (this.#settled) return;
+    this.#settled = true;
+    this.#failed = true;
+    this.#error = reason;
+    for (const cb of this.#rcbs) this.loop.microtask(() => cb(reason));
+    this.#cbs.length = 0;
+    this.#rcbs.length = 0;
   }
 
   then(onFulfilled: (v: T) => unknown, onRejected?: (e: unknown) => unknown): Thenable<unknown> {
-    void onRejected;
     const next = new Thenable<unknown>(this.loop);
     const run = (v: T): void => {
       const result = onFulfilled(v);
       if (result instanceof Thenable) {
-        result.then((r) => next.resolve(r));
+        result.then((r) => next.resolve(r), (e) => next.reject(e));
       } else {
         next.resolve(result);
       }
     };
-    // This thenable never rejects (errors resolve to { ok: false }), but the
-    // platform surface needs the two-argument then + catch passthrough so
-    // `fetch(...).catch(...)` and `promise.then(ok, err)` chains work.
+    const runRejected = (e: unknown): void => {
+      if (onRejected === undefined) {
+        next.reject(e);
+        return;
+      }
+      const result = onRejected(e);
+      if (result instanceof Thenable) {
+        result.then((r) => next.resolve(r), (e2) => next.reject(e2));
+      } else {
+        next.resolve(result);
+      }
+    };
     if (this.#settled) {
-      this.loop.microtask(() => run(this.#value as T));
+      if (this.#failed) this.loop.microtask(() => runRejected(this.#error));
+      else this.loop.microtask(() => run(this.#value as T));
     } else {
       this.#cbs.push(run);
+      this.#rcbs.push(runRejected);
     }
     return next;
   }
@@ -128,10 +385,16 @@ class Thenable<T> {
       fn();
       next.resolve(v);
     };
+    const runRejected = (e: unknown): void => {
+      fn();
+      next.reject(e);
+    };
     if (this.#settled) {
-      this.loop.microtask(() => run(this.#value as T));
+      if (this.#failed) this.loop.microtask(() => runRejected(this.#error));
+      else this.loop.microtask(() => run(this.#value as T));
     } else {
       this.#cbs.push(run);
+      this.#rcbs.push(runRejected);
     }
     return next;
   }
@@ -145,7 +408,7 @@ interface Timer {
 }
 
 /** A virtual-clock event loop: microtask FIFO + due-ordered macrotask timers. */
-class VirtualEventLoop {
+export class VirtualEventLoop {
   readonly #microtasks: (() => void)[] = [];
   readonly #timers: Timer[] = [];
   #raf: { id: number; cb: (t: number) => void; cancelled: boolean }[] = [];
@@ -206,6 +469,15 @@ class VirtualEventLoop {
   onAnimationFrame(onFrame: (now: number) => void, hasWork: () => boolean): void {
     this.#onFrame = onFrame;
     this.#frameWork = hasWork;
+  }
+
+  /**
+   * The loop's virtual clock in ms (0 until the first drain step; RFC 0035 —
+   * media playback anchors here so `video.currentTime` advances exactly with
+   * the timers the loop fires).
+   */
+  now(): number {
+    return this.#clock;
   }
 
   microtask(fn: () => void): void {
@@ -318,125 +590,12 @@ class VirtualEventLoop {
 
 
 
-function emptyRect(): object {
-  return {
-    x: 0,
-    y: 0,
-    width: 0,
-    height: 0,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    toJSON() {
-      return this;
-    },
-  };
-}
-
-function createObserverStub(kind: "mutation" | "resize" | "intersection" | "performance", cb?: unknown): {
-  observe: (...args: unknown[]) => void;
-  unobserve: (...args: unknown[]) => void;
-  disconnect: () => void;
-  takeRecords: () => unknown[];
-  root?: unknown;
-  rootMargin?: string;
-  thresholds?: number[];
-} {
-  const targets = new Set<unknown>();
-  let disconnected = false;
-  const deliver = (target: unknown): void => {
-    if (disconnected || typeof cb !== "function") return;
-    queueMicrotask(() => {
-      if (disconnected || typeof cb !== "function") return;
-      try {
-        if (kind === "intersection") {
-          const rect = emptyRect();
-          (cb as (entries: unknown[], obs: unknown) => void)(
-            [
-              {
-                target,
-                isIntersecting: true,
-                intersectionRatio: 1,
-                boundingClientRect: rect,
-                intersectionRect: rect,
-                rootBounds: null,
-                time: performance.now(),
-              },
-            ],
-            observer,
-          );
-        } else if (kind === "resize") {
-          (cb as (entries: unknown[], obs: unknown) => void)(
-            [
-              {
-                target,
-                contentRect: emptyRect(),
-                borderBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-                contentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-                devicePixelContentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-              },
-            ],
-            observer,
-          );
-        }
-      } catch {
-        // Guest/page code may throw here; swallowed by design.
-      }
-    });
-  };
-  const observer = {
-    observe: (target?: unknown) => {
-      if (target === undefined || disconnected) return;
-      targets.add(target);
-      if (kind === "intersection" || kind === "resize") deliver(target);
-    },
-    unobserve: (target?: unknown) => {
-      targets.delete(target);
-    },
-    disconnect: () => {
-      disconnected = true;
-      targets.clear();
-    },
-    takeRecords: () => [],
-    root: null,
-    rootMargin: "0px",
-    thresholds: [0],
-  };
-  return observer;
-}
-
-function installObserverGlobals(sandbox: Record<string, unknown>): void {
-  const make =
-    (kind: "mutation" | "resize" | "intersection" | "performance") =>
-    function Observer(this: unknown, cb?: unknown) {
-      return createObserverStub(kind, cb);
-    };
-  const PerformanceObserver = make("performance") as unknown as {
-    new (cb?: unknown): ReturnType<typeof createObserverStub>;
-    supportedEntryTypes?: readonly string[];
-  };
-  PerformanceObserver.supportedEntryTypes = [
-    "element",
-    "event",
-    "largest-contentful-paint",
-    "layout-shift",
-    "longtask",
-    "mark",
-    "measure",
-    "navigation",
-    "paint",
-    "resource",
-    "visibility-state",
-  ];
-  sandbox["MutationObserver"] = make("mutation");
-  sandbox["ResizeObserver"] = make("resize");
-  sandbox["IntersectionObserver"] = make("intersection");
-  sandbox["PerformanceObserver"] = PerformanceObserver;
-}
+// Observer globals (MutationObserver/ResizeObserver/IntersectionObserver and a
+// shell PerformanceObserver) are REAL implementations installed by
+// buildDocumentApi's `globals` — nothing to stub here.
 
 
-function installEventTarget(sandbox: Record<string, unknown>): void {
+function installEventTarget(sandbox: Record<string, unknown>, fetchApi?: FetchApi): void {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   const addEventListener = (type: unknown, fn: unknown): void => {
     if (typeof fn !== "function") return;
@@ -458,23 +617,67 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
       event !== null && typeof event === "object" && "type" in event
         ? coerceGuestString(event.type)
         : coerceGuestString(event);
-    const set = listeners.get(type);
-    if (set === undefined) return true;
-    for (const fn of set) {
+    // Host-origin events are plain objects — give them the platform event
+    // surface (preventDefault honored only when cancelable, per DOM §2.9).
+    let prevented = false;
+    if (event !== null && typeof event === "object") {
+      const ev = event as {
+        preventDefault?: unknown;
+        defaultPrevented?: boolean;
+        cancelable?: boolean;
+        returnValue?: unknown;
+      };
+      if (typeof ev.preventDefault !== "function") {
+        ev.preventDefault = (): void => {
+          if (ev.cancelable === true) {
+            ev.defaultPrevented = true;
+          }
+        };
+      }
+    }
+    // `window.onhashchange = fn` style property listeners fire alongside
+    // addEventListener listeners (DOM §2.7 event handler attributes). A
+    // non-undefined return on beforeunload-style handlers means "prompt"
+    // (legacy returnValue semantics, HTML §5.11.1).
+    const propHandler = sandbox[`on${type}`];
+    if (typeof propHandler === "function") {
       try {
-        fn(event);
+        const ret = (propHandler as (e: unknown) => unknown)(event);
+        if (typeof ret === "string" || ret === false) prevented = true;
       } catch {
         // Guest/page code may throw here; swallowed by design.
       }
     }
-    return true;
+    const set = listeners.get(type);
+    if (set !== undefined) {
+      for (const fn of set) {
+        try {
+          fn(event);
+        } catch {
+          // Guest/page code may throw here; swallowed by design.
+        }
+      }
+    }
+    if (event !== null && typeof event === "object") {
+      const ev = event as {
+        defaultPrevented?: boolean;
+        returnValue?: unknown;
+      };
+      if (ev.defaultPrevented === true) prevented = true;
+      if (ev.returnValue === false || typeof ev.returnValue === "string") {
+        prevented = true;
+      }
+    }
+    return !prevented;
   };
   sandbox["addEventListener"] = addEventListener;
   sandbox["removeEventListener"] = removeEventListener;
   sandbox["dispatchEvent"] = dispatchEvent;
   sandbox["onerror"] = null;
   sandbox["onload"] = null;
-  sandbox["getComputedStyle"] = (_el?: unknown) => new Proxy(
+  // A static fallback only when the document API did not provide the real
+  // computed-style facade (external-sandbox contexts).
+  if (sandbox["getComputedStyle"] === undefined) sandbox["getComputedStyle"] = (_el?: unknown) => new Proxy(
     {
       display: "block",
       visibility: "visible",
@@ -579,12 +782,19 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   sandbox["MathMLElement"] = function MathMLElement() {};
   if (sandbox["Document"] === undefined) sandbox["Document"] = DocumentCtor;
   if (sandbox["DocumentFragment"] === undefined) sandbox["DocumentFragment"] = DocumentFragmentCtor;
+  // RFC 0020: real typed event classes — guard-installed so the
+  // document API's realm constructors (which carry the dispatch hooks)
+  // always win when present.
   if (sandbox["Event"] === undefined) sandbox["Event"] = EventCtor;
   if (sandbox["CustomEvent"] === undefined) sandbox["CustomEvent"] = CustomEventCtor;
-  sandbox["MouseEvent"] = EventCtor;
-  sandbox["KeyboardEvent"] = EventCtor;
-  sandbox["FocusEvent"] = EventCtor;
-  sandbox["PointerEvent"] = EventCtor;
+  if (sandbox["UIEvent"] === undefined) sandbox["UIEvent"] = GuestUIEvent;
+  if (sandbox["MouseEvent"] === undefined) sandbox["MouseEvent"] = GuestMouseEvent;
+  if (sandbox["PointerEvent"] === undefined) sandbox["PointerEvent"] = GuestPointerEvent;
+  if (sandbox["KeyboardEvent"] === undefined) sandbox["KeyboardEvent"] = GuestKeyboardEvent;
+  if (sandbox["FocusEvent"] === undefined) sandbox["FocusEvent"] = GuestFocusEvent;
+  if (sandbox["InputEvent"] === undefined) sandbox["InputEvent"] = GuestInputEvent;
+  if (sandbox["WheelEvent"] === undefined) sandbox["WheelEvent"] = GuestWheelEvent;
+  if (sandbox["CompositionEvent"] === undefined) sandbox["CompositionEvent"] = GuestCompositionEvent;
   sandbox["Image"] = ImageCtor;
   sandbox["HTMLImageElement"] = ImageCtor;
   sandbox["XMLHttpRequest"] = function XMLHttpRequest(this: {
@@ -619,13 +829,17 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
   if (sandbox["URLSearchParams"] === undefined) sandbox["URLSearchParams"] = URLSearchParams;
   if (sandbox["AbortController"] === undefined) sandbox["AbortController"] = AbortController;
   if (sandbox["AbortSignal"] === undefined) sandbox["AbortSignal"] = AbortSignal;
-  // Fetch API primitives (Fetch §5): guest code constructs Headers/Request/
-  // Response directly (fetch polyfills, API clients). The host realm's undici
-  // classes are the real implementations — exposing them binds construction
-  // to the same shapes our fetch impl returns.
-  if (sandbox["Headers"] === undefined) sandbox["Headers"] = Headers;
-  if (sandbox["Request"] === undefined) sandbox["Request"] = Request;
-  if (sandbox["Response"] === undefined) sandbox["Response"] = Response;
+  // Fetch API primitives (Fetch §5, RFC 0019): the guest realm's OWN
+  // spec-shaped classes — `instanceof` works, `Response.clone()`/`bodyUsed`/
+  // `body` streams are real, and `fetch()` returns true `Response` instances.
+  // The caller supplies the per-document api bundle so sandbox classes and
+  // the runner's fetch impl share ONE class set (`instanceof` must hold for
+  // guest-constructed Requests passed back into fetch).
+  const api = fetchApi ?? makeFetchApi("about:blank");
+  if (sandbox["Headers"] === undefined) sandbox["Headers"] = api.Headers;
+  if (sandbox["Request"] === undefined) sandbox["Request"] = api.Request;
+  if (sandbox["Response"] === undefined) sandbox["Response"] = api.Response;
+  if (sandbox["ReadableStream"] === undefined) sandbox["ReadableStream"] = api.ReadableStream;
   if (sandbox["FormData"] === undefined) sandbox["FormData"] = FormData;
   if (sandbox["Blob"] === undefined) sandbox["Blob"] = makeBlobClass();
   if (sandbox["File"] === undefined) sandbox["File"] = makeFileClass();
@@ -638,34 +852,63 @@ function installEventTarget(sandbox: Record<string, unknown>): void {
 }
 
 
-function installXMLHttpRequest(
+/**
+ * XMLHttpRequest (XHR §4, RFC 0019) over the guest `fetch` — the same
+ * transport every fetch call uses, so redirects/cookies/network errors are
+ * shared behavior. Spec-correct event semantics: a received HTTP response
+ * (ANY status — 404 included) completes with `load`; `error` is reserved
+ * for transport failure; `abort`/`timeout` are their own events.
+ *
+ * Real surface: `getAllResponseHeaders`/`getResponseHeader` read the
+ * response's enumerable header list; `responseType` decodes
+ * ""/text/json/arraybuffer/blob; `abort()` cancels the in-flight fetch;
+ * `timeout` rejects via AbortSignal.timeout; `upload` exists as an
+ * XHRUpload-shaped target (no synthetic progress — honest).
+ */
+export function installXMLHttpRequest(
   sandbox: Record<string, unknown>,
   doFetch: (input: unknown, init?: unknown) => Promise<object>,
   baseUrl: string,
 ): void {
+  // DOMException instances thrown to guest code must be the realm's own
+  // (installed on the sandbox after vm context creation) so guest
+  // `instanceof DOMException` holds.
+  const domError = (message: string, name: string): Error =>
+    new ((sandbox["DOMException"] as typeof DOMException | undefined) ?? DOMException)(
+      message,
+      name,
+    );
   type XhrSelf = {
     readyState: number;
     status: number;
     statusText: string;
     responseText: string;
+    responseXML: object | null;
     response: unknown;
     responseURL: string;
     responseType: string;
+    responseUrl: string;
     withCredentials: boolean;
     timeout: number;
+    upload: object;
     onreadystatechange: ((this: XhrSelf, ev?: unknown) => void) | null;
     onload: ((this: XhrSelf, ev?: unknown) => void) | null;
     onerror: ((this: XhrSelf, ev?: unknown) => void) | null;
     onloadend: ((this: XhrSelf, ev?: unknown) => void) | null;
     onloadstart: ((this: XhrSelf, ev?: unknown) => void) | null;
-    open: (method: unknown, url: unknown) => void;
+    onabort: ((this: XhrSelf, ev?: unknown) => void) | null;
+    ontimeout: ((this: XhrSelf, ev?: unknown) => void) | null;
+    onprogress: ((this: XhrSelf, ev?: unknown) => void) | null;
+    open: (method: unknown, url: unknown, async?: unknown, user?: unknown, password?: unknown) => void;
     setRequestHeader: (name: unknown, value: unknown) => void;
+    overrideMimeType: (mime: unknown) => void;
     send: (body?: unknown) => void;
     abort: () => void;
     getAllResponseHeaders: () => string;
     getResponseHeader: (name: unknown) => string | null;
     addEventListener: (type: unknown, fn: unknown) => void;
     removeEventListener: (type: unknown, fn: unknown) => void;
+    dispatchEvent: (ev: unknown) => boolean;
   };
   const Ctor = function XMLHttpRequest(this: XhrSelf) {
     // Aliased once here because `self` is captured across the async XHR
@@ -676,8 +919,10 @@ function installXMLHttpRequest(
     self.status = 0;
     self.statusText = "";
     self.responseText = "";
+    self.responseXML = null;
     self.response = "";
     self.responseURL = "";
+    self.responseUrl = "";
     self.responseType = "";
     self.withCredentials = false;
     self.timeout = 0;
@@ -686,11 +931,46 @@ function installXMLHttpRequest(
     self.onerror = null;
     self.onloadend = null;
     self.onloadstart = null;
+    self.onabort = null;
+    self.ontimeout = null;
+    self.onprogress = null;
     let method = "GET";
     let url = "";
     const headers: Record<string, string> = {};
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
-    let aborted = false;
+    let sendFlag = false;
+    let abortController: AbortController | null = null;
+    let responseHeaders:
+      | { get(n: unknown): string | null; entries?: () => Iterable<[string, string]> }
+      | null = null;
+    let mimeOverride: string | null = null;
+    const uploadListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+    // `upload` is an XMLHttpRequestUpload — a real event target surface; we
+    // never fabricate progress bytes for it.
+    self.upload = {
+      addEventListener: (type: unknown, fn: unknown) => {
+        if (typeof fn !== "function") return;
+        const key = String(type);
+        let set = uploadListeners.get(key);
+        if (set === undefined) {
+          set = new Set();
+          uploadListeners.set(key, set);
+        }
+        set.add(fn as (...args: unknown[]) => void);
+      },
+      removeEventListener: (type: unknown, fn: unknown) => {
+        const set = uploadListeners.get(String(type));
+        if (set === undefined || typeof fn !== "function") return;
+        set.delete(fn as (...args: unknown[]) => void);
+      },
+      onloadstart: null,
+      onprogress: null,
+      onload: null,
+      onloadend: null,
+      onerror: null,
+      onabort: null,
+      ontimeout: null,
+    };
     const emit = (type: string): void => {
       const prop = ({
         readystatechange: self.onreadystatechange,
@@ -698,10 +978,14 @@ function installXMLHttpRequest(
         error: self.onerror,
         loadend: self.onloadend,
         loadstart: self.onloadstart,
+        abort: self.onabort,
+        timeout: self.ontimeout,
+        progress: self.onprogress,
       } as Record<string, ((this: XhrSelf, ev?: unknown) => void) | null>)[type];
+      const ev = { type, target: self, currentTarget: self };
       if (typeof prop === "function") {
         try {
-          prop.call(self);
+          prop.call(self, ev);
         } catch {
           // Guest/page code may throw here; swallowed by design.
         }
@@ -710,14 +994,36 @@ function installXMLHttpRequest(
       if (set !== undefined) {
         for (const fn of set) {
           try {
-            fn.call(self);
+            fn.call(self, ev);
           } catch {
             // Guest/page code may throw here; swallowed by design.
           }
         }
       }
     };
-    self.open = (m: unknown, u: unknown) => {
+    const emitUpload = (type: string): void => {
+      const up = self.upload as Record<string, unknown>;
+      const prop = up[`on${type}`];
+      const ev = { type, target: self.upload, currentTarget: self.upload };
+      if (typeof prop === "function") {
+        try {
+          (prop as (ev: unknown) => void).call(self.upload, ev);
+        } catch {
+          // Guest/page code may throw here; swallowed by design.
+        }
+      }
+      const set = uploadListeners.get(type);
+      if (set !== undefined) {
+        for (const fn of set) {
+          try {
+            fn.call(self.upload, ev);
+          } catch {
+            // Guest/page code may throw here; swallowed by design.
+          }
+        }
+      }
+    };
+    self.open = (m: unknown, u: unknown, async?: unknown, _user?: unknown, _password?: unknown) => {
       method = (m === undefined || m === null ? "GET" : coerceGuestString(m)).toUpperCase();
       const raw = coerceGuestString(u);
       try {
@@ -725,53 +1031,223 @@ function installXMLHttpRequest(
       } catch {
         url = raw;
       }
+      if (async === false) {
+        throw domError("Synchronous XMLHttpRequest is not supported", "InvalidAccessError");
+      }
+      sendFlag = false;
+      abortController = null;
+      responseHeaders = null;
       self.readyState = 1;
       self.status = 0;
       self.statusText = "";
       self.responseText = "";
       self.response = "";
+      self.responseURL = "";
+      self.responseUrl = "";
       emit("readystatechange");
     };
     self.setRequestHeader = (name: unknown, value: unknown) => {
+      if (self.readyState !== 1 || sendFlag) {
+        throw domError("setRequestHeader must be called after open() and before send()", "InvalidStateError");
+      }
       headers[String(name)] = String(value);
     };
+    self.overrideMimeType = (mime: unknown) => {
+      mimeOverride = coerceGuestString(mime);
+    };
     self.send = (body?: unknown) => {
-      if (self.readyState !== 1) return;
-      aborted = false;
+      if (self.readyState !== 1 || sendFlag) {
+        throw domError("send() requires readyState OPENED", "InvalidStateError");
+      }
+      sendFlag = true;
+      abortController = new AbortController();
+      const ctrl = abortController;
+      let timedOut = false;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      if (self.timeout > 0) {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          ctrl.abort();
+        }, self.timeout);
+      }
       self.readyState = 2;
       emit("readystatechange");
       emit("loadstart");
-      const init: Record<string, unknown> = { method, headers };
+      if (body !== undefined && body !== null) emitUpload("loadstart");
+      const init: Record<string, unknown> = { method, headers, signal: ctrl.signal };
+      // RFC 0028: XHR is a CORS-mode fetch; withCredentials maps to
+      // credentials "include" (XHR §"the send() method" + Fetch §4.2).
+      init["mode"] = "cors";
+      init["credentials"] = self.withCredentials ? "include" : "same-origin";
       if (body !== undefined && body !== null && method !== "GET" && method !== "HEAD") {
         init["body"] = body;
       }
+      const settle = (): void => {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+      };
       void Promise.resolve(doFetch(url, init))
         .then(async (res) => {
-          if (aborted) return;
+          if (!sendFlag) return; // aborted meanwhile
           const status = Number((res as { status?: unknown }).status ?? 0);
-          const ok = Boolean((res as { ok?: unknown }).ok ?? (status >= 200 && status < 300));
           const rawResUrl = (res as { url?: unknown }).url;
           const resUrl = rawResUrl === undefined || rawResUrl === null ? url : coerceGuestString(rawResUrl);
-          let text = "";
-          const textFn = (res as { text?: unknown }).text;
-          if (typeof textFn === "function") {
-            text = String(await (textFn as () => Promise<unknown>).call(res));
-          }
+          const resHeaders = (res as { headers?: unknown }).headers;
+          responseHeaders =
+            typeof resHeaders === "object" && resHeaders !== null
+              ? (resHeaders as { get(n: unknown): string | null; entries?: () => Iterable<[string, string]> })
+              : null;
           self.status = status;
-          self.statusText = ok ? "OK" : "Error";
+          self.statusText = "";
           self.responseURL = resUrl;
-          self.responseText = text;
-          self.response = text;
+          self.responseUrl = resUrl;
+          let text = "";
+          let parsed: unknown = "";
+          const rtype = self.responseType;
+          // RFC 0040: when the fetch body is a live stream, XHR reads it
+          // chunk-wise — readyState 3 + a ProgressEvent per wire chunk with
+          // real loaded/total; responseText tracks the prefix as it lands.
+          const liveBody = (res as { body?: unknown }).body;
+          const canStream =
+            liveBody !== null &&
+            liveBody !== undefined &&
+            typeof (liveBody as { getReader?: unknown }).getReader === "function";
+          if (canStream && sendFlag) {
+            const totalHeader = responseHeaders?.get("content-length");
+            const total = totalHeader !== null && totalHeader !== undefined ? Number(totalHeader) : NaN;
+            const reader = (liveBody as { getReader(): { read(): Promise<{ value?: Uint8Array; done: boolean }> } }).getReader();
+            const parts: Uint8Array[] = [];
+            let loaded = 0;
+            const dec = new TextDecoder();
+            const textParts: string[] = [];
+            for (;;) {
+              if (!sendFlag) {
+                // abort() mid-body — cancel the wire, drop the load path.
+                void (reader as { cancel?: (r?: unknown) => Promise<void> }).cancel?.("aborted");
+                break;
+              }
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value === undefined) continue;
+              parts.push(value);
+              loaded += value.byteLength;
+              textParts.push(dec.decode(value, { stream: true }));
+              if (rtype === "" || rtype === "text") {
+                self.responseText = textParts.join("");
+                self.response = self.responseText;
+              }
+              self.readyState = 3;
+              emit("readystatechange");
+              const loadedEv = loaded;
+              const totalEv = Number.isFinite(total) ? total : 0;
+              const computable = Number.isFinite(total);
+              // ProgressEvent shape: listeners read ev.loaded/total.
+              const ev = {
+                type: "progress",
+                target: self,
+                currentTarget: self,
+                loaded: loadedEv,
+                total: totalEv,
+                lengthComputable: computable,
+              };
+              if (typeof self.onprogress === "function") {
+                try {
+                  self.onprogress.call(self, ev);
+                } catch {
+                  // Guest/page code may throw here; swallowed by design.
+                }
+              }
+              const pset = listeners.get("progress");
+              if (pset !== undefined) {
+                for (const fn of pset) {
+                  try {
+                    fn.call(self, ev);
+                  } catch {
+                    // Guest/page code may throw here; swallowed by design.
+                  }
+                }
+              }
+            }
+            if (!sendFlag) return; // aborted
+            textParts.push(dec.decode());
+            const all = new Uint8Array(loaded);
+            let off = 0;
+            for (const p of parts) {
+              all.set(p, off);
+              off += p.byteLength;
+            }
+            text = textParts.join("");
+            if (rtype === "arraybuffer") {
+              parsed = all.buffer.slice(0, all.byteLength);
+            } else if (rtype === "blob") {
+              const BlobCtor = makeBlobClass();
+              parsed = new BlobCtor([all], { type: responseHeaders?.get("content-type") ?? "" });
+            } else if (rtype === "json") {
+              try {
+                parsed = JSON.parse(text) as unknown;
+              } catch {
+                parsed = null;
+              }
+            } else {
+              parsed = text;
+            }
+          } else if (rtype === "arraybuffer" || rtype === "blob") {
+            const abFn = (res as { arrayBuffer?: unknown }).arrayBuffer;
+            const buf = typeof abFn === "function" ? await (abFn as () => Promise<ArrayBuffer>).call(res) : new ArrayBuffer(0);
+            if (rtype === "arraybuffer") parsed = buf;
+            else {
+              const BlobCtor = makeBlobClass();
+              parsed = new BlobCtor([buf], { type: responseHeaders?.get("content-type") ?? "" });
+            }
+          } else {
+            const textFn = (res as { text?: unknown }).text;
+            if (typeof textFn === "function") {
+              text = String(await (textFn as () => Promise<unknown>).call(res));
+            }
+            if (rtype === "json") {
+              try {
+                parsed = JSON.parse(text) as unknown;
+              } catch {
+                parsed = null;
+              }
+            } else {
+              parsed = text;
+            }
+          }
+          // MIME override applies to the text/json decode path (charset is
+          // UTF-8 throughout — the engine's single decoding boundary).
+          void mimeOverride;
+          if (!sendFlag) return;
+          self.responseText = rtype === "" || rtype === "text" ? text : "";
+          if (!sendFlag) return;
+          self.response = parsed;
           self.readyState = 3;
           emit("readystatechange");
+          emit("progress");
           self.readyState = 4;
           emit("readystatechange");
-          if (status >= 200 && status < 300) emit("load");
-          else emit("error");
+          // Spec: ANY received HTTP response completes with `load` — a 404 is
+          // a successful completion, not a network error.
+          emit("load");
+          if (body !== undefined && body !== null) {
+            emitUpload("load");
+            emitUpload("loadend");
+          }
           emit("loadend");
+          settle();
         })
         .catch(() => {
-          if (aborted) return;
+          settle();
+          if (!sendFlag) return;
+          if (timedOut) {
+            self.readyState = 4;
+            self.response = "";
+            self.responseText = "";
+            emit("readystatechange");
+            emit("timeout");
+            emit("loadend");
+            return;
+          }
+          // Aborted via abort() — the abort() path already emitted.
           self.status = 0;
           self.statusText = "";
           self.responseText = "";
@@ -783,11 +1259,31 @@ function installXMLHttpRequest(
         });
     };
     self.abort = () => {
-      aborted = true;
+      if (!sendFlag) return;
+      sendFlag = false;
+      abortController?.abort();
       self.readyState = 0;
+      emit("abort");
+      emit("loadend");
     };
-    self.getAllResponseHeaders = () => "";
-    self.getResponseHeader = (_name: unknown) => null;
+    self.getAllResponseHeaders = () => {
+      if (responseHeaders === null) return "";
+      const h = responseHeaders;
+      if (typeof h.entries === "function") {
+        const lines: string[] = [];
+        for (const [k, v] of h.entries()) lines.push(`${k}: ${v}`);
+        return lines.length > 0 ? lines.join("\r\n") + "\r\n" : "";
+      }
+      // Structural headers (older stubs): probe the common names.
+      const out: string[] = [];
+      for (const name of ["content-type", "content-length", "etag", "last-modified", "cache-control", "expires", "date", "server", "location", "set-cookie"]) {
+        const v = h.get(name);
+        if (v !== null) out.push(`${name}: ${v}`);
+      }
+      return out.length > 0 ? out.join("\r\n") + "\r\n" : "";
+    };
+    self.getResponseHeader = (name: unknown) =>
+      responseHeaders === null ? null : responseHeaders.get(name);
     self.addEventListener = (type: unknown, fn: unknown) => {
       if (typeof fn !== "function") return;
       const key = String(type);
@@ -802,6 +1298,11 @@ function installXMLHttpRequest(
       const set = listeners.get(String(type));
       if (set === undefined || typeof fn !== "function") return;
       set.delete(fn as (...args: unknown[]) => void);
+    };
+    self.dispatchEvent = (ev: unknown) => {
+      const t = (ev as { type?: unknown })?.type;
+      emit(typeof t === "string" ? t : coerceGuestString(t ?? ""));
+      return true;
     };
   } as unknown as {
     new (): XhrSelf;
@@ -820,47 +1321,184 @@ function installXMLHttpRequest(
 }
 
 
+/**
+ * RFC 0010: install `location`/`history`/`localStorage`/`sessionStorage`.
+ * With a session host they are LIVE objects delegating to it (real
+ * navigations queue as intents; pushState's URL update is synchronously
+ * visible). Without one — harness/WPT paths — they are the historical
+ * static stubs. Shared by the classic and module script runners so both
+ * script kinds observe identical navigation semantics.
+ */
+export function installNavigationGlobals(
+  sandbox: Record<string, unknown>,
+  href: string,
+  host?: NavigationHost,
+  storage?: SessionStorageBag,
+): void {
+  const location: Record<string, unknown> = {};
+  const urlParts = (raw: string): Record<string, string> => {
+    try {
+      const u = new URL(raw);
+      return {
+        protocol: u.protocol,
+        host: u.host,
+        hostname: u.hostname,
+        port: u.port,
+        pathname: u.pathname,
+        search: u.search,
+        hash: u.hash,
+        origin: u.origin,
+      };
+    } catch {
+      return {
+        protocol: "",
+        host: "",
+        hostname: "",
+        port: "",
+        pathname: "",
+        search: "",
+        hash: "",
+        origin: "",
+      };
+    }
+  };
+  if (host !== undefined) {
+    const live = host;
+    for (const part of ["protocol", "host", "hostname", "port", "pathname", "search", "origin"]) {
+      Object.defineProperty(location, part, {
+        get: () => urlParts(live.currentUrl)[part] ?? "",
+        enumerable: true,
+      });
+    }
+    Object.defineProperty(location, "href", {
+      get: () => live.currentUrl,
+      set: (v: unknown) => live.assign(String(v)),
+      enumerable: true,
+    });
+    Object.defineProperty(location, "hash", {
+      get: () => urlParts(live.currentUrl)["hash"] ?? "",
+      set: (v: unknown) => live.setHash(String(v)),
+      enumerable: true,
+    });
+    location["toString"] = () => live.currentUrl;
+    location["assign"] = (u: unknown) => live.assign(String(u));
+    location["replace"] = (u: unknown) => live.replace(String(u));
+    location["reload"] = () => live.reload();
+  } else {
+    const parts = urlParts(href);
+    for (const [k, v] of Object.entries(parts)) location[k] = v;
+    location["href"] = href;
+    location["toString"] = () => href;
+    location["assign"] = (_u: unknown) => {};
+    location["replace"] = (_u: unknown) => {};
+    location["reload"] = () => {};
+  }
+  const history: Record<string, unknown> = {};
+  if (host !== undefined) {
+    const live = host;
+    Object.defineProperty(history, "length", {
+      get: () => live.historyLength,
+      enumerable: true,
+    });
+    Object.defineProperty(history, "state", {
+      get: () => live.currentState,
+      enumerable: true,
+    });
+    Object.defineProperty(history, "scrollRestoration", {
+      get: () => live.scrollRestoration,
+      set: (v: unknown) => {
+        if (v === "auto" || v === "manual") live.scrollRestoration = v;
+      },
+      enumerable: true,
+    });
+    history["back"] = () => live.back();
+    history["forward"] = () => live.forward();
+    history["go"] = (n?: unknown) => live.go(Number(n) || 0);
+    // pushState's URL arg is optional in the spec (omitted ⇒ current URL).
+    const toUrlArg = (u: unknown): string | null => {
+      if (u === undefined || u === null) return null;
+      if (typeof u === "string") return u;
+      if (typeof u === "number" || typeof u === "boolean" || typeof u === "bigint") return String(u);
+      const s = (u as { toString?: () => unknown }).toString?.();
+      return typeof s === "string" ? s : null;
+    };
+    history["pushState"] = (s?: unknown, _t?: unknown, u?: unknown) =>
+      live.pushState(s, toUrlArg(u));
+    history["replaceState"] = (s?: unknown, _t?: unknown, u?: unknown) =>
+      live.replaceState(s, toUrlArg(u));
+  } else {
+    Object.assign(history, {
+      length: 1,
+      state: null,
+      scrollRestoration: "auto",
+      back: () => {},
+      forward: () => {},
+      go: (_n?: unknown) => {},
+      pushState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
+      replaceState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
+    });
+  }
+  // RFC 0010: session-injected storage survives navigation; without a session
+  // the historical per-boot memory stores remain (harness/WPT paths).
+  const localStorage = storage?.localStorage ?? createMemoryStorage();
+  const sessionStorage = storage?.sessionStorage ?? createMemoryStorage();
+  sandbox["location"] = location;
+  sandbox["history"] = history;
+  sandbox["localStorage"] = localStorage;
+  sandbox["sessionStorage"] = sessionStorage;
+  // `window.open` — synchronous per spec: the return value is a WindowProxy
+  // (or null for noopener/remote tabs), never a promise.
+  if (host !== undefined) {
+    const live = host;
+    const toStr = (v: unknown): string | undefined =>
+      v === undefined || v === null
+        ? undefined
+        : typeof v === "string"
+          ? v
+          : typeof v === "number" || typeof v === "boolean" || typeof v === "bigint"
+            ? String(v)
+            : undefined;
+    sandbox["open"] = (u?: unknown, t?: unknown, f?: unknown): unknown =>
+      live.openWindow?.(toStr(u), toStr(t), toStr(f)) ?? null;
+    // `window.close()` — the host silently ignores it on non-script-opened
+    // tabs (spec: only script-closable contexts may self-close).
+    sandbox["close"] = (): void => live.closeWindow?.();
+    // `window.opener` — a REPLY proxy to the opener tab (the live context
+    // lives in another worker; only postMessage crosses). null when the tab
+    // has no opener or was opened with noopener/noreferrer.
+    const openerTabId = live.openerTabId;
+    sandbox["opener"] =
+      openerTabId === undefined || openerTabId === null
+        ? null
+        : {
+            postMessage: (data: unknown, targetOrigin?: unknown): void =>
+              live.postMessageRemote?.(
+                openerTabId,
+                data,
+                typeof targetOrigin === "string" ? targetOrigin : null,
+              ),
+            focus: (): void => live.focusRemote?.(openerTabId),
+            closed: false,
+          };
+    // `window.focus()` routes to the tab strip; `window.blur()` is an honest
+    // no-op — there is no chrome focus model to move away to.
+    sandbox["focus"] = (): void => live.focusWindow?.();
+    sandbox["blur"] = (): void => {};
+  }
+}
+
 function installBrowserGlobals(
   sandbox: Record<string, unknown>,
   href: string,
   consoleCapture?: (level: string, parts: string[]) => void,
-): void {
-  let protocol = "";
-  let host = "";
-  let hostname = "";
-  let port = "";
-  let pathname = "";
-  let search = "";
-  let hash = "";
-  let origin = "";
-  try {
-    const u = new URL(href);
-    protocol = u.protocol;
-    host = u.host;
-    hostname = u.hostname;
-    port = u.port;
-    pathname = u.pathname;
-    search = u.search;
-    hash = u.hash;
-    origin = u.origin;
-  } catch {
-    // Invalid URL input: keep the raw/fallback value.
-  }
-  const location = {
-    href,
-    protocol,
-    host,
-    hostname,
-    port,
-    pathname,
-    search,
-    hash,
-    origin,
-    toString: () => href,
-    assign: (_u: unknown) => {},
-    replace: (_u: unknown) => {},
-    reload: () => {},
-  };
+  host?: NavigationHost,
+  storage?: SessionStorageBag,
+  fetchApi?: FetchApi,
+  isolation?: DocumentIsolation,
+  serviceWorker?: object,
+): FetchApi {
+  const mediaPreferences = createMediaPreferences();
+  const pageMedia = { type: "screen" as const, widthPx: 1280, heightPx: 800, resolutionDppx: 1 };
   const navigator = {
     userAgent: BROWSER_USER_AGENT,
     appName: "Netscape",
@@ -882,30 +1520,26 @@ function installBrowserGlobals(
     pdfViewerEnabled: true,
     javaEnabled: () => false,
     sendBeacon: () => true,
+    // RFC 0034: real container when a registry is wired, else undefined
+    // (the honest absence — pages feature-detect this member).
+    ...(serviceWorker !== undefined ? { serviceWorker } : {}),
+    preferences: mediaPreferences.api,
   };
-  const history = {
-    length: 1,
-    state: null,
-    scrollRestoration: "auto",
-    back: () => {},
-    forward: () => {},
-    go: (_n?: unknown) => {},
-    pushState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
-    replaceState: (_s?: unknown, _t?: unknown, _u?: unknown) => {},
-  };
-  const localStorage = createMemoryStorage();
-  const sessionStorage = createMemoryStorage();
+  // RFC 0031: `crossOriginIsolated` + `originAgentCluster` — read-only globals
+  // off the document's parsed isolation state (boot runs before scripts).
+  sandbox["crossOriginIsolated"] = isolation?.crossOriginIsolated ?? false;
+  sandbox["originAgentCluster"] = isolation?.originAgentCluster ?? false;
+  // `isSecureContext` — potentially-trustworthy origin (Secure Contexts
+  // §3.2); COOP/COEP isolation doesn't create it but implies it in practice.
+  sandbox["isSecureContext"] = isPotentiallyTrustworthyUrl(href);
+  installNavigationGlobals(sandbox, href, host, storage);
   sandbox["window"] = sandbox;
   sandbox["self"] = sandbox;
   sandbox["globalThis"] = sandbox;
   sandbox["top"] = sandbox;
   sandbox["parent"] = sandbox;
   sandbox["frames"] = sandbox;
-  sandbox["location"] = location;
   sandbox["navigator"] = navigator;
-  sandbox["history"] = history;
-  sandbox["localStorage"] = localStorage;
-  sandbox["sessionStorage"] = sessionStorage;
   // Console API (Console §1): guest output is CAPTURED into a bounded ring
   // buffer (survivable diagnostics; DevTools-parity) — never printed, never
   // dropped silently. Errors and warnings are kept even past the cap.
@@ -1079,37 +1713,8 @@ function installBrowserGlobals(
     clearMarks: () => {},
     clearMeasures: () => {},
   };
-  const viewportW = 1280;
-  const viewportH = 800;
-  sandbox["matchMedia"] = (q: unknown) => {
-    const media = coerceGuestString(q);
-    const checks: boolean[] = [];
-    const minW = /min-width:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const maxW = /max-width:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const minH = /min-height:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    const maxH = /max-height:\s*(\d+(?:\.\d+)?)px/i.exec(media);
-    if (minW) checks.push(viewportW >= Number(minW[1]));
-    if (maxW) checks.push(viewportW <= Number(maxW[1]));
-    if (minH) checks.push(viewportH >= Number(minH[1]));
-    if (maxH) checks.push(viewportH <= Number(maxH[1]));
-    if (/prefers-color-scheme:\s*light/i.test(media)) checks.push(true);
-    if (/prefers-color-scheme:\s*dark/i.test(media)) checks.push(false);
-    if (/prefers-reduced-motion:\s*no-preference/i.test(media)) checks.push(true);
-    if (/prefers-reduced-motion:\s*reduce/i.test(media)) checks.push(false);
-    if (/hover:\s*hover/i.test(media)) checks.push(true);
-    if (/pointer:\s*fine/i.test(media)) checks.push(true);
-    const matches = checks.length === 0 ? false : checks.every(Boolean);
-    return {
-      matches,
-      media,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      onchange: null,
-      dispatchEvent: () => false,
-    };
-  };
+  sandbox["matchMedia"] = createMatchMedia(() => mediaPreferences.environment(pageMedia));
+  sandbox["CSS"] = CSS;
   if (sandbox["setInterval"] === undefined) {
     sandbox["setInterval"] = (fn: unknown, delay?: unknown) =>
       typeof fn === "function" ? setInterval(fn as () => void, Number(delay) || 0) : 0;
@@ -1124,8 +1729,9 @@ function installBrowserGlobals(
   if (sandbox["clearTimeout"] === undefined) {
     sandbox["clearTimeout"] = (id: unknown) => clearTimeout(Number(id));
   }
-  installObserverGlobals(sandbox);
-  installEventTarget(sandbox);
+  const api = fetchApi ?? makeFetchApi(href);
+  installEventTarget(sandbox, api);
+  return api;
 }
 
 function createMemoryStorage(): {
@@ -1159,57 +1765,143 @@ export function runScriptsOnSession(
   session: FineSession,
   sources: readonly string[],
   resources: ReadonlyMap<string, string> = new Map(),
+  options: {
+    readonly wsTransport?: WsTransport;
+    readonly csp?: import("./csp.js").CspContext | null;
+    /** RFC 0033: drawImage(imgEl) source resolution (decodedImages). */
+    readonly canvasImageSource?: (
+      nodeId: import("@browser-engine/ir").NodeId,
+    ) => import("@browser-engine/ir").DecodedImage | undefined;
+    /** RFC 0034: navigator.serviceWorker backing registry. */
+    readonly serviceWorkerRegistry?: import("./service-worker.js").ServiceWorkerRegistry;
+    /** RFC 0042: shared-worker registry (absent ⇒ per-session default). */
+    readonly sharedWorkerRegistry?: import("./shared-worker-global.js").SharedWorkerRegistry;
+    /** RFC 0035: the document's media engine. */
+    readonly media?: import("./media.js").MediaEngine;
+  } = {},
 ): EventDrivenRun {
   const locationBox: { current: unknown } = { current: null };
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations } =
-    buildDocumentApi(session, { locationBox });
   const loop = new VirtualEventLoop();
+  const csp = options.csp ?? session.csp ?? null;
+  // RFC 0032: live dedicated workers spawned by this document — the run
+  // disposes them (an unref'd thread still pins `node --test` runs).
+  const liveWorkers = new Set<() => void>();
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, ui, bindWsRealm, canvasBitmaps } =
+    buildDocumentApi(session, {
+      locationBox,
+      // Observer delivery rides the SAME microtask queue guests see, so
+      // MutationObserver callbacks interleave with queueMicrotask in FIFO order.
+      queueMicrotask: (fn) => loop.microtask(fn),
+      ...(options.wsTransport !== undefined ? { wsTransport: options.wsTransport } : {}),
+      ...(options.canvasImageSource !== undefined ? { canvasImageSource: options.canvasImageSource } : {}),
+      ...(options.media !== undefined
+        ? {
+            media: options.media,
+            mediaClock: {
+              now: () => loop.now(),
+              setTimeout: (fn: () => void, ms: number) => loop.setTimeout(fn, ms),
+              clearTimeout: (id: number) => loop.clearTimeout(id),
+            },
+          }
+        : {}),
+    });
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
 
-  const resolveFetchUrl = (input: unknown): string => {
-    const raw = String(input);
-    try {
-      return new URL(raw, session.url).href;
-    } catch {
-      return raw;
-    }
-  };
-  const fetchFn = (url: unknown): Thenable<object> => {
-    const deferred = loop.deferred<object>();
-    const href = resolveFetchUrl(url);
-    const body = resources.get(href) ?? resources.get(String(url));
-    const headers = {
-      get: (name: unknown) => {
-        const key = String(name).toLowerCase();
-        if (key === "content-type") return body !== undefined ? "text/plain; charset=utf-8" : null;
-        return null;
-      },
-      has: (name: unknown) => headers.get(name) !== null,
+  // The fetch api bundle is shared with the sandbox classes (installed via
+  // installBrowserGlobals below) so `instanceof` holds for guest-constructed
+  // Request objects passed back into fetch — one bundle per document.
+  const fetchApi = makeFetchApi(session.url);
+  // Bound to the REALM's TypeError once the vm context exists (fetch
+  // rejections fire at drain time — after context creation) so guest
+  // `instanceof TypeError` holds across the realm boundary.
+  let realmTypeError: typeof TypeError | undefined;
+  const serveResource = (href: string, rawUrl: string): RawFetchResult => {
+    const body = resources.get(href) ?? resources.get(rawUrl);
+    return {
+      status: body !== undefined ? 200 : 404,
+      url: href,
+      headers: body !== undefined ? { "content-type": "text/plain; charset=utf-8" } : {},
+      body: body !== undefined ? new TextEncoder().encode(body) : new Uint8Array(),
     };
-    loop.microtask(() =>
-      deferred.resolve({
-        ok: body !== undefined,
-        status: body !== undefined ? 200 : 404,
-        url: href,
-        headers,
-        json: (): Thenable<unknown> => {
-          const t = loop.deferred<unknown>();
-          loop.microtask(() => {
-            try {
-              t.resolve(JSON.parse(body ?? "null"));
-            } catch {
-              t.resolve(null);
-            }
-          });
-          return t;
-        },
-        text: (): Thenable<string> => {
-          const t = loop.deferred<string>();
-          loop.microtask(() => t.resolve(body ?? ""));
-          return t;
-        },
-      }),
-    );
+  };
+  const fetchFn = (input: unknown, init?: unknown): Thenable<object> => {
+    // Normalization is synchronous — Request construction errors throw here,
+    // before any async step (matching the platform's argument checking).
+    const request = new fetchApi.Request(input, init);
+    const deferred = loop.deferred<object>();
+    const signal = request.signal as { aborted?: boolean } | null | undefined;
+    // RFC 0027: `connect-src` — a refused URL rejects the fetch promise with a
+    // TypeError (Fetch §5.6's network-error path), never reaching the map.
+    if (csp !== null && !csp.check("connect", request.url).allowed) {
+      loop.microtask(() =>
+        deferred.reject(
+          new TypeError(
+            `Refused to connect to '${request.url}' because it violates the document's Content Security Policy directive: "connect-src".`,
+          ),
+        ),
+      );
+      return deferred;
+    }
+    // RFC 0028: `mode:"same-origin"` is a client-side gate — a cross-origin
+    // target rejects before serving. `no-cors` resolves as an OPAQUE response
+    // (the Map transport has no ACAO headers to check, so a cors-mode request
+    // stays permissive here — the real stack enforces; documented bound).
+    let crossOriginTarget = false;
+    try {
+      crossOriginTarget = new URL(request.url).origin !== new URL(session.url).origin;
+    } catch {
+      crossOriginTarget = false;
+    }
+    if (request.mode === "same-origin" && crossOriginTarget) {
+      loop.microtask(() =>
+        deferred.reject(
+          // The realm's own TypeError — guest `instanceof TypeError` holds.
+          new (realmTypeError ?? TypeError)(
+            `Failed to fetch: request mode "same-origin" cannot fetch cross-origin URL '${request.url}'`,
+          ),
+        ),
+      );
+      return deferred;
+    }
+    // RFC 0029: baseline mixed content is CLIENT-side policy — the virtual
+    // Map transport enforces the same block rules as the real stack (fetch
+    // lands on destination "empty": blockable, not upgradable).
+    const mixed = mixedContentVerdict(request.url, session.url, "empty", request.mode);
+    if (mixed.action === "block") {
+      loop.microtask(() =>
+        deferred.reject(
+          new (realmTypeError ?? TypeError)(
+            `Mixed Content: fetch of insecure URL '${request.url}' from secure context '${session.url}' was blocked`,
+          ),
+        ),
+      );
+      return deferred;
+    }
+    const fetchUrl = mixed.action === "upgrade" ? mixed.url : request.url;
+    if (signal?.aborted === true) {
+      // Fetch §4.3: a pre-aborted signal REJECTS the fetch promise with an
+      // "AbortError" DOMException. (HTTP-level failures like 404 resolve an
+      // ok=false Response; transport errors and aborts reject.) The realm's
+      // own DOMException is installed on the sandbox after context creation.
+      loop.microtask(() =>
+        deferred.reject(
+          new ((sandbox["DOMException"] as typeof DOMException | undefined) ?? DOMException)(
+            "The operation was aborted.",
+            "AbortError",
+          ),
+        ),
+      );
+      return deferred;
+    }
+    loop.microtask(() => {
+      deferred.resolve(
+        fetchApi.responseFromRaw(
+          request.mode === "no-cors"
+            ? { status: 0, url: "", headers: {}, body: new Uint8Array(0), type: "opaque" }
+            : serveResource(fetchUrl, String(input)),
+        ),
+      );
+    });
     return deferred;
   };
 
@@ -1226,8 +1918,55 @@ export function runScriptsOnSession(
       typeof fn === "function" ? loop.requestAnimationFrame(fn as (t: number) => void) : 0,
     cancelAnimationFrame: (id: unknown) => loop.cancelAnimationFrame(Number(id)),
     fetch: fetchFn,
+    // RFC 0032: workers spawn from the sync runner too — the virtual
+    // resource map is the worker-source channel here.
+    Worker: makeWorkerCtor({
+      loop,
+      documentUrl: session.url,
+      fetchWorkerSource: (u) => {
+        const body = resources.get(u);
+        return Promise.resolve(
+          body === undefined ? undefined : new TextEncoder().encode(body),
+        );
+      },
+      csp,
+      registerWorker: (dispose) => liveWorkers.add(dispose),
+    }),
+    // RFC 0042: SharedWorker — the virtual resource map is the script
+    // channel; a caller-supplied registry shares realms across pages.
+    SharedWorker: makeSharedWorkerCtor({
+      loop,
+      documentUrl: session.url,
+      fetchWorkerSource: (u) => {
+        const body = resources.get(u);
+        return Promise.resolve(
+          body === undefined ? undefined : new TextEncoder().encode(body),
+        );
+      },
+      csp,
+      registry: options.sharedWorkerRegistry ?? new SharedWorkerRegistry(),
+      registerWorker: (dispose) => liveWorkers.add(dispose),
+    }),
   };
-  installBrowserGlobals(sandbox, session.url);
+  installBrowserGlobals(
+    sandbox,
+    session.url,
+    undefined,
+    undefined,
+    undefined,
+    fetchApi,
+    session.isolation,
+    // RFC 0034: navigator.serviceWorker — a real container when the session
+    // network stack carries a registry; inbound worker→page messages dispatch
+    // as virtual-loop tasks like every other inbound event.
+    ...(options.serviceWorkerRegistry !== undefined
+      ? [createServiceWorkerContainer({
+          registry: options.serviceWorkerRegistry,
+          pageUrl: session.url,
+          postTask: (fn) => loop.setTimeout(fn, 0),
+        })]
+      : []),
+  );
   locationBox.current = sandbox["location"];
   installXMLHttpRequest(
     sandbox,
@@ -1237,6 +1976,45 @@ export function runScriptsOnSession(
 
   let error: string | null = null;
   const context = vm.createContext(sandbox);
+  // Bind the realm's own error intrinsics so API-thrown errors pass guest
+  // `instanceof TypeError`/`instanceof DOMException` checks (host-constructed
+  // errors fail cross-realm identity).
+  {
+    const errs = vm.runInContext(
+      "({ TypeError, RangeError, ArrayBuffer, EvalError, DOMException: typeof DOMException !== \"undefined\" ? DOMException : null })",
+      context,
+    ) as { TypeError: typeof TypeError; RangeError: typeof RangeError; ArrayBuffer: typeof ArrayBuffer; EvalError: typeof EvalError; DOMException: typeof DOMException | null };
+    // Node's vm realm has no DOMException intrinsic — fall back to the
+    // guest-package class, installed as the sandbox global so guest
+    // `e instanceof DOMException` still holds.
+    const de = errs.DOMException ?? DOMException;
+    fetchApi.bindRealmErrors({ ...errs, DOMException: de });
+    sandbox["DOMException"] = de;
+    realmTypeError = errs.TypeError;
+    // RFC 0022: realm ArrayBuffer for binaryType:"arraybuffer" delivery.
+    bindWsRealm({ ArrayBuffer: errs.ArrayBuffer, TypeError: errs.TypeError });
+    // RFC 0027: `unsafe-eval` — replace the realm's eval/Function globals with
+    // throwing stubs when an enforcing policy omits the keyword.
+    if (csp !== null && !csp.allowsEval) {
+      const blockedEval = (): never => {
+        csp.violations.push({
+          directive: "script-src",
+          effectiveDirective: "script-src",
+          blockedUrl: "eval",
+          documentUrl: csp.documentUrl,
+          disposition: "enforce",
+        });
+        throw new errs.EvalError(
+          "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script",
+        );
+      };
+      sandbox["eval"] = blockedEval;
+      sandbox["Function"] = new Proxy(Function, {
+        construct: () => blockedEval(),
+        apply: () => blockedEval(),
+      });
+    }
+  }
   for (const source of sources) {
     if (source.trim() === "") continue;
     try {
@@ -1261,6 +2039,12 @@ export function runScriptsOnSession(
     context,
     getMutations: mutations,
     drain: () => loop.drain(),
+    disposeWorkers: () => {
+      for (const dispose of [...liveWorkers]) dispose();
+      liveWorkers.clear();
+    },
+    canvasBitmaps,
+    ui,
   };
 }
 
@@ -1284,12 +2068,79 @@ async function runScriptsOnSessionRealInner(
   // the sandbox is fully assembled, but appendChild can fire any time.
   let dynamicScriptEvaluator: ((nodeId: NodeId) => void) | null = null;
   let loopErrorSink: ((error: unknown) => void) | null = null;
-  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents, fireScriptElementEvent } =
+  const navHost = options.sessionHost;
+  // RFC 0032: live dedicated workers — the run disposes them on teardown.
+  const liveWorkers = new Set<() => void>();
+  const loop = new VirtualEventLoop({ realTime: true });
+  // RFC 0027: the document's CSP context — options take precedence, else the
+  // session's installed policy (set by the app layer from response headers).
+  const csp = options.csp ?? session.csp ?? null;
+  const { document, globals: domGlobals, mutations, tickAnimations, hasActiveAnimations, fireDocumentLifecycleEvents, fireScriptElementEvent, clickElement, dispatchElementEvent, ui, bindWsRealm, canvasBitmaps } =
     buildDocumentApi(session, {
       geometryMode: "stub",
       styleMode: "fast",
       locationBox,
+      queueMicrotask: (fn) => loop.microtask(fn),
+      ...(options.viewport !== undefined ? { viewport: options.viewport } : {}),
+      // RFC 0027: WebSocket targets are `connect-src` fetches — wrap the host
+      // transport so a refused URL fails the socket before any bytes move
+      // (the WS layer surfaces the throw as error + 1006 close events).
+      ...(options.wsTransport !== undefined
+        ? {
+            wsTransport: {
+              connect: (u: URL) => {
+                // RFC 0029: ws:// from a secure context is blockable mixed
+                // content (sockets aren't in the upgradable set).
+                if (u.protocol === "ws:" && isPotentiallyTrustworthyUrl(session.url)) {
+                  throw new TypeError(
+                    `Mixed Content: insecure WebSocket '${u.href}' from secure context '${session.url}' was blocked`,
+                  );
+                }
+                if (csp !== null) {
+                  const gated = csp.gateSubresourceUrl(u.href);
+                  if (gated.blocked || !csp.check("connect", gated.url).allowed) {
+                    throw new TypeError(
+                      `Refused to connect to '${u.href}' because it violates the document's Content Security Policy directive: "connect-src".`,
+                    );
+                  }
+                  if (gated.url !== u.href) u = new URL(gated.url);
+                }
+                return options.wsTransport!.connect(u);
+              },
+            } satisfies WsTransport,
+          }
+        : {}),
       onDynamicScript: (nodeId: NodeId) => dynamicScriptEvaluator?.(nodeId),
+      ...(options.canvasImageSource !== undefined ? { canvasImageSource: options.canvasImageSource } : {}),
+      ...(options.media !== undefined
+        ? {
+            media: options.media,
+            mediaClock: {
+              now: () => loop.now(),
+              setTimeout: (fn: () => void, ms: number) => loop.setTimeout(fn, ms),
+              clearTimeout: (id: number) => loop.clearTimeout(id),
+            },
+          }
+        : {}),
+      // RFC 0011: link clicks and form submissions become real host
+      // navigations — target dispatch (_blank/_parent/_top) lives in the host.
+      ...(options.frameLookup !== undefined ? { frameLookup: options.frameLookup } : {}),
+      ...(navHost !== undefined
+        ? {
+            navigator: (url: string, init?: {
+              replace?: boolean; target?: string; method?: string;
+              body?: string; contentType?: string; download?: string;
+              referrerPolicy?: string;
+            }) => {
+              if (init?.target !== undefined && navHost.navigateTarget !== undefined) {
+                navHost.navigateTarget(url, init.target, init);
+                return;
+              }
+              if (navHost.submit !== undefined) navHost.submit(url, init);
+              else navHost.assign(url);
+            },
+          }
+        : {}),
       // listener exceptions (lifecycle + document.dispatchEvent) surface as
       // the run's error instead of vanishing
       onListenerError: (error: unknown) => {
@@ -1297,7 +2148,6 @@ async function runScriptsOnSessionRealInner(
         loopErrorSink?.(error);
       },
     });
-  const loop = new VirtualEventLoop({ realTime: true });
   loop.onAnimationFrame(tickAnimations, hasActiveAnimations);
   const decoder = new TextDecoder();
   const inflight = new Set<Promise<void>>();
@@ -1312,136 +2162,127 @@ async function runScriptsOnSessionRealInner(
       return raw;
     }
   };
-  const fetchImpl = (input: unknown, init?: unknown): Promise<object> => {
-    // Fetch must return a REAL Promise: guests call .catch/.finally and race
-    // fetch against their own AbortSignal timeouts — a timeout must surface
-    // as a REJECTION (Fetch §6: abort rejects), not a resolve-only thenable
-    // that leaves the racer's outcome undefined. The inner thenable keeps the
-    // virtual-loop ordering; this wrapper adds the platform promise surface.
-    const signal =
-      init !== null && typeof init === "object" && "signal" in init
-        ? (init as { signal?: unknown }).signal
-        : undefined;
-    const abortLike = signal as { aborted?: boolean; addEventListener?: (t: string, fn: () => void) => void } | undefined;
-    const fetchCore = (): Thenable<object> => {
-    const deferred = loop.deferred<object>();
-    const job = (async (): Promise<void> => {
-      if (browserFetch !== undefined) {
-        try {
-          const response = await browserFetch(input, init);
-          loop.microtask(() => deferred.resolve(response));
-        } catch {
-          const href = resolveFetchUrl(input);
-          const headers = {
-            get: (_name: unknown) => null,
-            has: (_name: unknown) => false,
-          };
-          loop.microtask(() =>
-            deferred.resolve({
-              ok: false,
-              status: 0,
-              url: href,
-              headers,
-              json: (): Thenable<unknown> => {
-                const t = loop.deferred<unknown>();
-                loop.microtask(() => t.resolve(null));
-                return t;
-              },
-              text: (): Thenable<string> => {
-                const t = loop.deferred<string>();
-                loop.microtask(() => t.resolve(""));
-                return t;
-              },
-              arrayBuffer: (): Thenable<ArrayBuffer> => {
-                const t = loop.deferred<ArrayBuffer>();
-                loop.microtask(() => t.resolve(new ArrayBuffer(0)));
-                return t;
-              },
-            }),
-          );
-        }
-        return;
+  // RFC 0019: the guest fetch goes through the shared makeFetchApi facade —
+  // Request-input normalization, init merging (method/headers/body/mode/
+  // credentials/referrerPolicy), forbidden methods, and abort handling all
+  // live there; this runner only supplies the transport core. Responses are
+  // real guest `Response` instances (clone/bodyUsed/body stream work).
+  const fetchApi = makeFetchApi(session.url);
+  // Bound to the realm's TypeError after vm context creation so fetch
+  // rejections pass guest `instanceof TypeError` checks.
+  let realmTypeError: typeof TypeError | undefined;
+  const fetchCore = async (req: NormalizedRequest): Promise<RawFetchResult> => {
+    // RFC 0027: `connect-src` — a refused URL rejects the fetch promise with
+    // a TypeError (Fetch §5.6's "network error" path); mixed-content upgrade
+    // applies first. `blockedUrl` in the violation records the ORIGINAL URL.
+    let url = req.url;
+    if (csp !== null) {
+      const gated = csp.gateSubresourceUrl(url);
+      const refused = gated.blocked || !csp.check("connect", gated.url).allowed;
+      if (refused) {
+        throw new TypeError(
+          `Refused to connect to '${url}' because it violates the document's Content Security Policy directive: "connect-src".`,
+        );
       }
-      const href = resolveFetchUrl(input);
-      const bytes = await fetchFn(href);
-      const ok = bytes !== undefined;
-      const body = ok ? decoder.decode(bytes) : "";
-      const looksJson =
-        ok &&
-        (body.trimStart().startsWith("{") ||
-          body.trimStart().startsWith("[") ||
-          href.includes("/x/") ||
-          href.includes("api.") ||
-          href.endsWith(".json"));
-      const contentType = !ok
-        ? "text/plain"
-        : looksJson
-          ? "application/json; charset=utf-8"
-          : href.includes(".js")
-            ? "application/javascript; charset=utf-8"
-            : href.includes(".css")
-              ? "text/css; charset=utf-8"
-              : "text/html; charset=utf-8";
-      const headers = {
-        get: (name: unknown) => {
-          const key = String(name).toLowerCase();
-          if (key === "content-type") return contentType;
-          if (key === "content-length") return ok ? String(body.length) : "0";
-          return null;
-        },
-        has: (name: unknown) => headers.get(name) !== null,
-      };
-      loop.microtask(() =>
-        deferred.resolve({
-          ok,
-          status: ok ? 200 : 404,
-          url: href,
-          headers,
-          json: (): Thenable<unknown> => {
-            const t = loop.deferred<unknown>();
-            loop.microtask(() => {
-              try {
-                t.resolve(JSON.parse(body));
-              } catch {
-                t.resolve(null);
-              }
-            });
-            return t;
-          },
-          text: (): Thenable<string> => {
-            const t = loop.deferred<string>();
-            loop.microtask(() => t.resolve(body));
-            return t;
-          },
-          arrayBuffer: (): Thenable<ArrayBuffer> => {
-            const t = loop.deferred<ArrayBuffer>();
-            loop.microtask(() => t.resolve((bytes ?? new Uint8Array()).buffer as ArrayBuffer));
-            return t;
-          },
-        }),
+      url = gated.url;
+    }
+    // RFC 0029: baseline mixed content — an http target from a secure
+    // document rejects (fetch lands on destination "empty": blockable).
+    // The stack-backed browserFetch path repeats this check in the stack.
+    const mixed = mixedContentVerdict(url, session.url, "empty", req.mode);
+    if (mixed.action === "block") {
+      throw new TypeError(
+        `Mixed Content: fetch of insecure URL '${url}' from secure context '${session.url}' was blocked`,
       );
+    }
+    if (mixed.action === "upgrade") url = mixed.url;
+    // RFC 0028: `mode:"same-origin"` is a pure client-side check — it rejects
+    // cross-origin fetches regardless of transport. `no-cors` semantics on
+    // the VIRTUAL path produce an opaque response (the real stack also does
+    // ACAO enforcement + preflights; a Map transport has no server headers,
+    // so cors-mode requests stay permissive here — a documented bound).
+    const sameOriginFail = (() => {
+      if (req.mode !== "same-origin") return false;
+      try {
+        return new URL(url).origin !== new URL(session.url).origin;
+      } catch {
+        return false;
+      }
     })();
-    const tracked = job.finally(() => inflight.delete(tracked));
-    inflight.add(tracked);
-    return deferred;
-    };
-    if (abortLike !== undefined && abortLike !== null && abortLike.aborted === true) {
-      return Promise.reject(new Error("AbortError: The operation was aborted"));
+    if (sameOriginFail) {
+      // Realm TypeError — guest `instanceof TypeError` holds.
+      throw new (realmTypeError ?? TypeError)(
+        `Failed to fetch: request mode "same-origin" cannot fetch cross-origin URL '${url}'`,
+      );
     }
-    if (abortLike !== undefined && abortLike !== null && typeof abortLike.addEventListener === "function") {
-      let onAbort: (() => void) | null = null;
-      const abortRejection = new Promise<never>((_resolve, reject) => {
-        onAbort = () => reject(new Error("AbortError: The operation was aborted"));
-        abortLike.addEventListener!("abort", onAbort);
+    if (browserFetch !== undefined) {
+      // The injected stack-backed fetch gets the full init so the same
+      // transport sees exactly what the guest asked for.
+      const res = await browserFetch(url, {
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        signal: req.signal,
+        mode: req.mode,
+        credentials: req.credentials,
+        referrerPolicy: req.referrerPolicy,
       });
-      // Never leak an unhandled abort rejection when the fetch wins the race.
-      void abortRejection.catch(() => undefined);
-      return Promise.race([
-        Promise.resolve(fetchCore()),
-        abortRejection,
-      ]);
+      return adaptResponseLike(res, url);
     }
-    return Promise.resolve(fetchCore());
+    const bytes = await fetchFn(url);
+    if (req.mode === "no-cors") {
+      // Opaque filtered response — the bytes went over the (virtual) wire;
+      // guest script just can't READ them.
+      return {
+        status: 0,
+        url: "",
+        headers: {},
+        body: new Uint8Array(0),
+        type: "opaque",
+      };
+    }
+    const ok = bytes !== undefined;
+    const body = ok ? bytes : new Uint8Array();
+    const text = ok ? decoder.decode(bytes) : "";
+    const looksJson =
+      ok &&
+      (text.trimStart().startsWith("{") ||
+        text.trimStart().startsWith("[") ||
+        url.includes("/x/") ||
+        url.includes("api.") ||
+        url.endsWith(".json"));
+    const contentType = !ok
+      ? "text/plain"
+      : looksJson
+        ? "application/json; charset=utf-8"
+        : url.includes(".js")
+          ? "application/javascript; charset=utf-8"
+          : url.includes(".css")
+            ? "text/css; charset=utf-8"
+            : "text/html; charset=utf-8";
+    return {
+      status: ok ? 200 : 404,
+      url,
+      headers: { "content-type": contentType, "content-length": String(body.byteLength) },
+      body,
+    };
+  };
+  const guestFetch = fetchApi.makeFetch(fetchCore);
+  const fetchImpl = (input: unknown, init?: unknown): Promise<object> => {
+    // In-flight tracking (the flush loop waits for network work to settle):
+    // the entry is removed when the fetch resolves OR rejects — never left
+    // behind, matching the previous job-tracking semantics.
+    const work = guestFetch(input, init) as Promise<object>;
+    const tracked = work.then(
+      () => {
+        inflight.delete(tracked);
+      },
+      () => {
+        inflight.delete(tracked);
+      },
+    );
+    inflight.add(tracked);
+    return work;
   };
 
   const sandbox: Record<string, unknown> = {
@@ -1476,8 +2317,48 @@ async function runScriptsOnSessionRealInner(
       typeof fn === "function" ? loop.requestAnimationFrame(fn as (t: number) => void) : 0,
     cancelAnimationFrame: (id: unknown) => loop.cancelAnimationFrame(Number(id)),
     fetch: fetchImpl,
+    // RFC 0032: `new Worker(url)` spawns a REAL worker_threads realm — the
+    // source rides the document's fetch channel (destination "worker"),
+    // `worker-src` gates the spawn, inbound messages are loop tasks.
+    Worker: makeWorkerCtor({
+      loop,
+      documentUrl: session.url,
+      fetchWorkerSource:
+        options.fetchWorkerSource ?? ((u) => Promise.resolve(fetchFn(u))),
+      csp,
+      registerWorker: (dispose) => liveWorkers.add(dispose),
+    }),
+    // RFC 0042: `new SharedWorker(url)` — shared realm per (url,name); the
+    // stack-bound registry makes navigations/iframes share workers.
+    SharedWorker: makeSharedWorkerCtor({
+      loop,
+      documentUrl: session.url,
+      fetchWorkerSource:
+        options.fetchWorkerSource ?? ((u) => Promise.resolve(fetchFn(u))),
+      ...(options.fetchSharedWorkerSource !== undefined
+        ? { fetchSharedWorkerSource: options.fetchSharedWorkerSource }
+        : {}),
+      csp,
+      registry: options.sharedWorkerRegistry ?? new SharedWorkerRegistry(),
+      registerWorker: (dispose) => liveWorkers.add(dispose),
+    }),
   };
-  installBrowserGlobals(sandbox, session.url);
+  installBrowserGlobals(
+    sandbox,
+    session.url,
+    undefined,
+    options.sessionHost,
+    options.storage,
+    fetchApi,
+    session.isolation,
+    ...(options.serviceWorkerRegistry !== undefined
+      ? [createServiceWorkerContainer({
+          registry: options.serviceWorkerRegistry,
+          pageUrl: session.url,
+          postTask: (fn) => loop.setTimeout(fn, 0),
+        })]
+      : []),
+  );
   // document.location must be the SAME object as window.location (HTML §7.3);
   // hand the document getter the installed location after globals exist.
   locationBox.current = sandbox["location"];
@@ -1489,6 +2370,47 @@ async function runScriptsOnSessionRealInner(
 
   let error: string | null = null;
   const context = vm.createContext(sandbox);
+  // Bind realm error intrinsics (same rationale as the virtual runner).
+  {
+    const errs = vm.runInContext(
+      "({ TypeError, RangeError, ArrayBuffer, EvalError, DOMException: typeof DOMException !== \"undefined\" ? DOMException : null })",
+      context,
+    ) as { TypeError: typeof TypeError; RangeError: typeof RangeError; ArrayBuffer: typeof ArrayBuffer; EvalError: typeof EvalError; DOMException: typeof DOMException | null };
+    const de = errs.DOMException ?? DOMException;
+    fetchApi.bindRealmErrors({ ...errs, DOMException: de });
+    sandbox["DOMException"] = de;
+    realmTypeError = errs.TypeError;
+    bindWsRealm({ ArrayBuffer: errs.ArrayBuffer, TypeError: errs.TypeError });
+    // RFC 0027: `unsafe-eval` — with an enforcing script-src/default-src that
+    // lacks the keyword, the realm's `eval`/`Function` globals become throwing
+    // stubs (the VM's own eval machinery is unaffected; guest code sees
+    // EvalError like a real CSP-blocked eval).
+    if (csp !== null && !csp.allowsEval) {
+      const blockedEval = (): never => {
+        csp.violations.push({
+          directive: "script-src",
+          effectiveDirective: "script-src",
+          blockedUrl: "eval",
+          documentUrl: csp.documentUrl,
+          disposition: "enforce",
+        });
+        throw new errs.EvalError(
+          "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script",
+        );
+      };
+      sandbox["eval"] = blockedEval;
+      sandbox["Function"] = new Proxy(Function, {
+        construct: () => blockedEval(),
+        apply: () => blockedEval(),
+      });
+    }
+  }
+  // `window.open(url,'_self')` must return the realm's OWN WindowProxy — the
+  // contextified global — not a host-side wrapper (identity breaks across
+  // the vm boundary otherwise).
+  if (options.sessionHost !== undefined) {
+    options.sessionHost.selfWindow = vm.runInContext("this", context);
+  }
   // First error wins; include a short stack like the ESM runner so page
   // failures are diagnosable without a debugger.
   const formatError = (e: unknown): string => {
@@ -1534,7 +2456,18 @@ async function runScriptsOnSessionRealInner(
       });
     };
     if (src !== undefined && src !== "") {
-      const href = resolveFetchUrl(src);
+      let href = resolveFetchUrl(src);
+      // RFC 0027: `script-src` — a refused dynamic fetch behaves like a
+      // network error (element fires `error`, the loader pattern still works).
+      if (csp !== null) {
+        const gated = csp.gateSubresourceUrl(href);
+        // `<script src>` injection is a script-src-ELEM fetch.
+        if (gated.blocked || !csp.check("script", gated.url, "elem").allowed) {
+          fireScriptElementEvent(nodeId, "error");
+          return;
+        }
+        href = gated.url;
+      }
       void (async (): Promise<void> => {
         try {
           let code: string | null = null;
@@ -1555,7 +2488,21 @@ async function runScriptsOnSessionRealInner(
       })();
     } else {
       const inline = inlineScriptText(nodeId);
-      if (inline.trim() !== "") evaluate(inline, "inline-dynamic");
+      // RFC 0027: `script-src-elem`/`script-src` gates injected inline bodies —
+      // the element's nonce/hash may still unblock it (webpack-style loaders
+      // that inject nonced bootstraps keep working).
+      if (inline.trim() !== "") {
+        if (csp !== null &&
+          !csp.checkInline(
+            "script",
+            { nonce: node.attrs?.get("nonce"), text: inline.trim() },
+            "elem",
+          ).allowed) {
+          fireScriptElementEvent(nodeId, "error");
+          return;
+        }
+        evaluate(inline, "inline-dynamic");
+      }
     }
   };
   loop.onUncaught((e) => {
@@ -1635,6 +2582,34 @@ async function runScriptsOnSessionRealInner(
     getMutations: mutations,
     drain: () => loop.drain(),
     flushAsync,
+    disposeWorkers: () => {
+      for (const dispose of [...liveWorkers]) dispose();
+      liveWorkers.clear();
+    },
+    canvasBitmaps,
+    clickElement: (nodeId) => {
+      try {
+        clickElement(nodeId);
+      } catch {
+        // Guest activation code may throw here; swallowed by design.
+      }
+    },
+    dispatchElementEvent: (nodeId, type, init) => {
+      try {
+        dispatchElementEvent(nodeId, type, init);
+      } catch {
+        // Guest listeners may throw here; swallowed by design.
+      }
+    },
+    ui: {
+      pointerMove: (nodeId, init) => { try { ui.pointerMove(nodeId, init); } catch { /* guest listeners */ } },
+      click: (nodeId, init) => { try { ui.click(nodeId, init); } catch { /* guest listeners */ } },
+      contextMenu: (nodeId, init) => { try { ui.contextMenu(nodeId, init); } catch { /* guest listeners */ } },
+      dblClick: (nodeId, init) => { try { ui.dblClick(nodeId, init); } catch { /* guest listeners */ } },
+      key: (detail) => { try { ui.key(detail); } catch { /* guest listeners */ } },
+      tab: (dir) => { try { ui.tab(dir); } catch { /* guest listeners */ } },
+      focusedId: () => ui.focusedId(),
+    },
   };
 }
 

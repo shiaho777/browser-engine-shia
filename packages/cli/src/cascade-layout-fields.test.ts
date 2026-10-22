@@ -90,7 +90,7 @@ void test("Req 3.3: undeclared new properties fall back to their initial value",
   assert.equal(cs["gridTemplateColumns"], "0");
   assert.equal(cs["opacity"], 1);
   assert.equal(cs["transform"], "none");
-  assert.equal(cs["zIndex"], 0);
+  assert.equal(cs["zIndex"], "auto");
   assert.equal(cs["top"], "auto");
 });
 

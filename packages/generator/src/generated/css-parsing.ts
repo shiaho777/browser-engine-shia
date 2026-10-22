@@ -19,22 +19,22 @@ export function parseColorValue(value: string): ParseResult<unknown> {
 
 /** Parse a `display` value. */
 export function parseDisplayValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex"]);
+  return parseKeyword(value, ["block", "inline", "inline-block", "flex", "grid", "table", "none", "inline-flex", "inline-grid", "inline-table", "list-item", "-webkit-box", "-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox", "-webkit-inline-flex", "ruby", "ruby-base", "ruby-text", "ruby-base-container", "ruby-text-container"]);
 }
 
 /** Parse a `width` value. */
 export function parseWidthValue(value: string): ParseResult<unknown> {
-  return parseLengthOrKeyword(value, ["auto"]);
+  return parseLengthOrKeyword(value, ["auto", "stretch"]);
 }
 
 /** Parse a `height` value. */
 export function parseHeightValue(value: string): ParseResult<unknown> {
-  return parseLengthOrKeyword(value, ["auto"]);
+  return parseLengthOrKeyword(value, ["auto", "stretch"]);
 }
 
 /** Parse a `margin` value. */
 export function parseMarginValue(value: string): ParseResult<unknown> {
-  return parseEdgesLength(value);
+  return parseEdgesLength(value, ["auto"]);
 }
 
 /** Parse a `background-color` value. */
@@ -55,6 +55,11 @@ export function parsePositionValue(value: string): ParseResult<unknown> {
 /** Parse a `float` value. */
 export function parseFloatValue(value: string): ParseResult<unknown> {
   return parseKeyword(value, ["none", "left", "right"]);
+}
+
+/** Parse a `overlay` value. */
+export function parseOverlayValue(value: string): ParseResult<unknown> {
+  return parseKeyword(value, ["none", "auto"]);
 }
 
 /** Parse a `top` value. */
@@ -99,7 +104,7 @@ export function parseTransformValue(value: string): ParseResult<unknown> {
 
 /** Parse a `z-index` value. */
 export function parseZIndexValue(value: string): ParseResult<unknown> {
-  return parseInteger(value, {});
+  return parseInteger(value, {}, ["auto"]);
 }
 
 /** Parse a `padding` value. */
@@ -109,22 +114,22 @@ export function parsePaddingValue(value: string): ParseResult<unknown> {
 
 /** Parse a `margin-top` value. */
 export function parseMarginTopValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-right` value. */
 export function parseMarginRightValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-bottom` value. */
 export function parseMarginBottomValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `margin-left` value. */
 export function parseMarginLeftValue(value: string): ParseResult<unknown> {
-  return parseLength(value);
+  return parseLengthOrKeyword(value, ["auto"]);
 }
 
 /** Parse a `padding-top` value. */
@@ -269,7 +274,7 @@ export function parseLetterSpacingValue(value: string): ParseResult<unknown> {
 
 /** Parse a `flex-wrap` value. */
 export function parseFlexWrapValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["nowrap", "wrap", "wrap-reverse"]);
+  return parseKeyword(value, ["nowrap", "wrap", "wrap-reverse", "balance"]);
 }
 
 /** Parse a `justify-content` value. */
@@ -289,7 +294,7 @@ export function parseAlignContentValue(value: string): ParseResult<unknown> {
 
 /** Parse a `align-self` value. */
 export function parseAlignSelfValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["auto", "stretch", "flex-start", "flex-end", "center", "baseline"]);
+  return parseKeyword(value, ["auto", "normal", "stretch", "flex-start", "flex-end", "center", "baseline", "start", "end"]);
 }
 
 /** Parse a `flex-grow` value. */
@@ -304,7 +309,7 @@ export function parseFlexShrinkValue(value: string): ParseResult<unknown> {
 
 /** Parse a `flex-basis` value. */
 export function parseFlexBasisValue(value: string): ParseResult<unknown> {
-  return parseLengthOrKeyword(value, ["auto"]);
+  return parseLengthOrKeyword(value, ["auto", "content", "min-content", "max-content", "fit-content"]);
 }
 
 /** Parse a `order` value. */
@@ -429,7 +434,7 @@ export function parseTextDecorationColorValue(value: string): ParseResult<unknow
 
 /** Parse a `font-variant` value. */
 export function parseFontVariantValue(value: string): ParseResult<unknown> {
-  return parseKeyword(value, ["normal", "small-caps"]);
+  return parseString(value);
 }
 
 /** Parse a `pointer-events` value. */
@@ -772,6 +777,26 @@ export function parseGridRowValue(value: string): ParseResult<unknown> {
   return parseString(value);
 }
 
+/** Parse a `grid-row-start` value. */
+export function parseGridRowStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-row-end` value. */
+export function parseGridRowEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-column-start` value. */
+export function parseGridColumnStartValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `grid-column-end` value. */
+export function parseGridColumnEndValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
 /** Parse a `justify-items` value. */
 export function parseJustifyItemsValue(value: string): ParseResult<unknown> {
   return parseString(value);
@@ -897,6 +922,31 @@ export function parseFontVariantNumericValue(value: string): ParseResult<unknown
   return parseString(value);
 }
 
+/** Parse a `font-variant-ligatures` value. */
+export function parseFontVariantLigaturesValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-caps` value. */
+export function parseFontVariantCapsValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-position` value. */
+export function parseFontVariantPositionValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-east-asian` value. */
+export function parseFontVariantEastAsianValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
+/** Parse a `font-variant-alternates` value. */
+export function parseFontVariantAlternatesValue(value: string): ParseResult<unknown> {
+  return parseString(value);
+}
+
 /** Parse a `text-decoration-thickness` value. */
 export function parseTextDecorationThicknessValue(value: string): ParseResult<unknown> {
   return parseLength(value);
@@ -989,12 +1039,12 @@ export function parsePaddingInlineValue(value: string): ParseResult<unknown> {
 
 /** Parse a `inset-block` value. */
 export function parseInsetBlockValue(value: string): ParseResult<unknown> {
-  return parseEdgesLength(value);
+  return parseEdgesLength(value, ["auto"]);
 }
 
 /** Parse a `inset-inline` value. */
 export function parseInsetInlineValue(value: string): ParseResult<unknown> {
-  return parseEdgesLength(value);
+  return parseEdgesLength(value, ["auto"]);
 }
 
 /** Parse a `block-size` value. */
@@ -1723,6 +1773,7 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "font-size": parseFontSizeValue,
   "position": parsePositionValue,
   "float": parseFloatValue,
+  "overlay": parseOverlayValue,
   "top": parseTopValue,
   "right": parseRightValue,
   "bottom": parseBottomValue,
@@ -1866,6 +1917,10 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "grid-area": parseGridAreaValue,
   "grid-column": parseGridColumnValue,
   "grid-row": parseGridRowValue,
+  "grid-row-start": parseGridRowStartValue,
+  "grid-row-end": parseGridRowEndValue,
+  "grid-column-start": parseGridColumnStartValue,
+  "grid-column-end": parseGridColumnEndValue,
   "justify-items": parseJustifyItemsValue,
   "justify-self": parseJustifySelfValue,
   "overflow-x": parseOverflowXValue,
@@ -1891,6 +1946,11 @@ export const PROPERTY_PARSERS: Readonly<Record<string, PropertyValueParser>> = {
   "font-kerning": parseFontKerningValue,
   "font-feature-settings": parseFontFeatureSettingsValue,
   "font-variant-numeric": parseFontVariantNumericValue,
+  "font-variant-ligatures": parseFontVariantLigaturesValue,
+  "font-variant-caps": parseFontVariantCapsValue,
+  "font-variant-position": parseFontVariantPositionValue,
+  "font-variant-east-asian": parseFontVariantEastAsianValue,
+  "font-variant-alternates": parseFontVariantAlternatesValue,
   "text-decoration-thickness": parseTextDecorationThicknessValue,
   "text-underline-offset": parseTextUnderlineOffsetValue,
   "margin-block-start": parseMarginBlockStartValue,

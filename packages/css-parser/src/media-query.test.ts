@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { mediaQueryListMatches, mediaQueryMatches, DEFAULT_MEDIA_ENVIRONMENT } from "./media-query.js";
+import { mediaQueryListMatches, mediaQueryMatches, serializeMediaQueryList, DEFAULT_MEDIA_ENVIRONMENT } from "./media-query.js";
 import type { MediaEnvironment } from "./media-query.js";
 import { parseCss } from "./index.js";
 
@@ -81,9 +81,74 @@ void test("combined features with and", () => {
   assert.ok(!mediaQueryMatches("screen and (min-width: 801px) and (orientation: landscape)", SCREEN));
 });
 
-void test("unknown media feature does not match", () => {
-  assert.ok(!mediaQueryMatches("(hover: hover)", SCREEN));
+void test("input-capability features: hover/pointer match a desktop engine", () => {
+  assert.ok(mediaQueryMatches("(hover: hover)", SCREEN));
+  assert.ok(!mediaQueryMatches("(hover: none)", SCREEN));
+  assert.ok(mediaQueryMatches("(pointer: fine)", SCREEN));
+  assert.ok(!mediaQueryMatches("(pointer: coarse)", SCREEN));
+  const touch: MediaEnvironment = { type: "screen", widthPx: 800, heightPx: 600, hover: "none", pointer: "coarse" };
+  assert.ok(mediaQueryMatches("(hover: none) and (pointer: coarse)", touch));
+});
+
+void test("unknown media feature does not match, and not does not flip it", () => {
   assert.ok(!mediaQueryMatches("(unknown-feature: 5)", SCREEN));
+  assert.ok(!mediaQueryMatches("(aural-thing)", SCREEN));
+  assert.ok(!mediaQueryMatches("not (unknown-feature: 5)", SCREEN));
+  assert.ok(!mediaQueryMatches("(display-mode: random)", SCREEN));
+  assert.ok(!mediaQueryMatches("not (display-mode: random)", SCREEN));
+  assert.ok(!mediaQueryListMatches("(display-mode: random), not all and (display-mode: random)", SCREEN));
+});
+
+void test("boolean context is true for a known discrete feature", () => {
+  assert.ok(mediaQueryMatches("(prefers-color-scheme)", SCREEN));
+  assert.ok(mediaQueryMatches("(display-mode)", SCREEN));
+  assert.ok(mediaQueryMatches("(orientation)", SCREEN));
+  assert.ok(!mediaQueryMatches("(forced-colors)", SCREEN));
+  assert.ok(!mediaQueryMatches("(prefers-reduced-motion)", SCREEN));
+  assert.ok(mediaQueryListMatches("(forced-colors), not all and (forced-colors)", SCREEN));
+  assert.ok(mediaQueryListMatches("(display-mode: standalone), not all and (display-mode: standalone)", SCREEN));
+  assert.ok(mediaQueryListMatches("(prefers-color-scheme), not all and (prefers-color-scheme)", SCREEN));
+});
+
+void test("MQ4 range syntax: single and chained comparisons", () => {
+  assert.ok(mediaQueryMatches("(width >= 800px)", SCREEN));
+  assert.ok(!mediaQueryMatches("(width > 800px)", SCREEN));
+  assert.ok(mediaQueryMatches("(width < 1000px)", SCREEN));
+  assert.ok(mediaQueryMatches("(400px <= width <= 800px)", SCREEN));
+  assert.ok(!mediaQueryMatches("(400px <= width < 800px)", SCREEN));
+  assert.ok(mediaQueryMatches("(aspect-ratio >= 4/3)", SCREEN));
+  assert.ok(!mediaQueryMatches("(aspect-ratio < 1)", SCREEN));
+});
+
+void test("resolution/aspect-ratio/device dims + em units", () => {
+  const retina: MediaEnvironment = { type: "screen", widthPx: 800, heightPx: 600, resolutionDppx: 2 };
+  assert.ok(mediaQueryMatches("(min-resolution: 2dppx)", retina));
+  assert.ok(!mediaQueryMatches("(min-resolution: 2dppx)", SCREEN));
+  assert.ok(mediaQueryMatches("(resolution: 192dpi)", retina));
+  assert.ok(mediaQueryMatches("(min-width: 50em)", SCREEN)); // 50em = 800px
+  assert.ok(!mediaQueryMatches("(min-width: 51em)", SCREEN));
+  assert.ok(mediaQueryMatches("(device-width: 800px)", SCREEN));
+  assert.ok(mediaQueryMatches("(device-aspect-ratio: 4/3)", SCREEN));
+});
+
+void test("prefers-* / discrete features from the environment", () => {
+  const dark: MediaEnvironment = { type: "screen", widthPx: 800, heightPx: 600, prefersColorScheme: "dark" };
+  assert.ok(mediaQueryMatches("(prefers-color-scheme: dark)", dark));
+  assert.ok(!mediaQueryMatches("(prefers-color-scheme: light)", dark));
+  assert.ok(mediaQueryMatches("(prefers-color-scheme: light)", SCREEN));
+  const reduced: MediaEnvironment = { type: "screen", widthPx: 800, heightPx: 600, prefersReducedMotion: true };
+  assert.ok(mediaQueryMatches("(prefers-reduced-motion: reduce)", reduced));
+  assert.ok(mediaQueryMatches("(prefers-reduced-motion: no-preference)", SCREEN));
+  assert.ok(mediaQueryMatches("(color)", SCREEN));
+  assert.ok(!mediaQueryMatches("(monochrome)", SCREEN));
+  assert.ok(mediaQueryMatches("(scripting: enabled)", SCREEN));
+  assert.ok(mediaQueryMatches("(display-mode: browser)", SCREEN));
+  assert.ok(!mediaQueryMatches("(display-mode: standalone)", SCREEN));
+});
+
+void test("top-level or alternation (MQ4)", () => {
+  assert.ok(mediaQueryMatches("(min-width: 999px) or (orientation: landscape)", SCREEN));
+  assert.ok(!mediaQueryMatches("(min-width: 999px) or (orientation: portrait)", SCREEN));
 });
 
 void test("parseCss includes @media rules when condition matches", () => {
@@ -139,6 +204,31 @@ void test("parseCss @media with not prefix", () => {
 
   const sheetPrint = parseCss(new TextEncoder().encode(css), PRINT);
   assert.equal(sheetPrint.rules.length, 0);
+});
+
+void test("matchMedia serialization closes parens and marks stray closers not all", () => {
+  assert.equal(serializeMediaQueryList(""), "");
+  assert.equal(serializeMediaQueryList(" "), "");
+  assert.equal(serializeMediaQueryList(" all"), "all");
+  assert.equal(serializeMediaQueryList("all,all"), "all, all");
+  assert.equal(serializeMediaQueryList(" all , all "), "all, all");
+  assert.equal(serializeMediaQueryList("(color"), "(color)");
+  assert.equal(serializeMediaQueryList(" ( color  )  "), "(color)");
+  assert.equal(serializeMediaQueryList(" ( color   "), "(color)");
+  assert.equal(serializeMediaQueryList("color)"), "not all");
+  assert.equal(serializeMediaQueryList("  color ), ( color"), "not all, (color)");
+  assert.equal(serializeMediaQueryList(","), "not all, not all");
+  assert.equal(serializeMediaQueryList(" foo,"), "foo, not all");
+  assert.equal(serializeMediaQueryList("(min-resolution: 1x)"), "(min-resolution: 1x)");
+  assert.equal(serializeMediaQueryList("(min-resolution: calc(1x))"), "(min-resolution: calc(1dppx))");
+  assert.equal(serializeMediaQueryList("(resolution: calc(1x + 2x))"), "(resolution: calc(3dppx))");
+  assert.equal(serializeMediaQueryList("(resolution: calc(6x / 2))"), "(resolution: calc(3dppx))");
+  assert.equal(serializeMediaQueryList("(prefers-color-scheme: light)"), "(prefers-color-scheme: light)");
+  assert.equal(serializeMediaQueryList("(aspect-ratio: 1/3)"), "(aspect-ratio: 1 / 3)");
+  assert.equal(serializeMediaQueryList("(forced-colors: active/none)"), "(forced-colors: active/none)");
+  assert.equal(serializeMediaQueryList("not and"), "not all");
+  assert.equal(serializeMediaQueryList("only"), "not all");
+  assert.equal(serializeMediaQueryList("not screen"), "not screen");
 });
 
 void test("DEFAULT_MEDIA_ENVIRONMENT is screen 800x600", () => {

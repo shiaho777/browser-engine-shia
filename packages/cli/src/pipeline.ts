@@ -48,7 +48,7 @@ import { paint } from "@browser-engine/paint";
 
 import { documentStylesheets } from "./stylesheets.js";
 import { collectImages } from "./images.js";
-import { pipelineShaper } from "./fonts.js";
+import { pipelineShaperFor } from "./fonts.js";
 
 /** A document address — the pipeline's per-document cache key (design.md §7.2). */
 export type Url = string;
@@ -128,7 +128,9 @@ export const qComputed: QueryDef<NodeRef, ComputedStyle> = define((db, ref) => {
  */
 export const qLayout: QueryDef<Url, FragmentTree> = define((db, url) => {
   const dom = db.query(qDom, url);
-  return layout(dom, (node) => db.query(qComputed, { url, node }), { shaper: pipelineShaper });
+  // Scoped shaper (RFC 0006): the query sees the faces this document's
+  // `@font-face` phase registered under `url`, never another page's.
+  return layout(dom, (node) => db.query(qComputed, { url, node }), { shaper: pipelineShaperFor(url) });
 }, "qLayout");
 
 /**

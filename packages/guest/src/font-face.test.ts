@@ -38,9 +38,10 @@ function fontStack(routes: Record<string, Uint8Array>): NetworkStack & { calls: 
       calls.push(req);
       const bytes = routes[req.url];
       if (bytes === undefined) {
-        return Promise.resolve({ status: 404, ok: false, headers: {}, body: new Uint8Array() });
+        return Promise.resolve({ url: req.url, status: 404, ok: false, headers: {}, body: new Uint8Array() });
       }
       return Promise.resolve({
+        url: req.url,
         status: 200,
         ok: true,
         headers: { "content-type": "font/woff2" },

@@ -165,6 +165,16 @@ export function createAssertions(): Record<string, (...args: never[]) => unknown
       }
       fail("expected a DOMException", desc);
     },
+    promise_rejects_dom(_test: unknown, code: unknown, promise: unknown, desc?: unknown): Promise<void> {
+      const expected = typeof code === "string" ? code : String(code);
+      return Promise.resolve(promise).then(
+        () => fail(`expected rejection with ${expected}`, desc),
+        (error: unknown) => {
+          const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
+          if (name !== expected) fail(`expected ${expected} but got ${formatValue(error)}`, desc);
+        },
+      );
+    },
     assert_unreached(desc?: unknown): void {
       fail("reached unreachable code", desc);
     },

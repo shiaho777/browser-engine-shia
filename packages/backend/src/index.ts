@@ -38,4 +38,17 @@ export { ScreenshotBackend, UnsupportedPaintCommandError } from "./screenshot.js
 
 export { renderDisplayListOnGpu } from "./gpu-render.js";
 
+export type { SkiaBackendOptions } from "./skia.js";
+export {
+  SkiaBackend,
+  canvasKitIfReady,
+  createSkiaBackend,
+  loadCanvasKit,
+} from "./skia.js";
+
 export { encodeSurfaceToPng } from "./png.js";
+
+export { needsSyntheticBold } from "./embolden.js";
+
+export type { ImageFormat } from "./codecs.js";
+export { sniffImageFormat, decodeImageBytes, decodeImageBytesAsync } from "./codecs.js";

@@ -28,7 +28,7 @@ import { nodeFetchNetworkStack, type NetworkRequest, type NetworkResponse, type 
 import { GuestRuntime } from "./runtime.js";
 
 /** A deterministic in-memory stack: routes by URL to canned responses. */
-function memoryStack(routes: Record<string, NetworkResponse>): NetworkStack & { calls: NetworkRequest[] } {
+function memoryStack(routes: Record<string, Omit<NetworkResponse, "url"> & { url?: string }>): NetworkStack & { calls: NetworkRequest[] } {
   const calls: NetworkRequest[] = [];
   return {
     calls,
@@ -36,15 +36,16 @@ function memoryStack(routes: Record<string, NetworkResponse>): NetworkStack & { 
       calls.push(req);
       const route = routes[req.url];
       if (route === undefined) {
-        return Promise.resolve({ status: 404, ok: false, headers: {}, body: new Uint8Array() });
+        return Promise.resolve({ url: req.url, status: 404, ok: false, headers: {}, body: new Uint8Array() });
       }
-      return Promise.resolve(route);
+      return Promise.resolve({ url: req.url, ...route });
     },
   };
 }
 
 function textResponse(body: string, status = 200): NetworkResponse {
   return {
+    url: "https://test.local/",
     status,
     ok: status >= 200 && status < 300,
     headers: { "content-type": "text/plain" },

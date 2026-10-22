@@ -45,11 +45,48 @@ import { px } from "@browser-engine/ir";
 import type { Px } from "@browser-engine/ir";
 
 /**
- * The font parameters a shaper needs. Phase 2-4 carries only `fontSize` (the
- * one font property the cascade resolves); a real HarfBuzz adapter extends this
- * (family, weight, style, language, script) WITHOUT changing the layout caller,
- * which only ever passes the resolved style through.
+ * The font parameters a shaper needs. `fontSize` and `fontWeight` come from
+ * computed style; `direction`/`script`/`language` are the run's itemization
+ * properties (layout derives them with `bidiRuns`/`scriptRuns` — RFC 0002) —
+ * a real shaper feeds them to `hb_buffer_set_*`; the placeholders ignore them.
  */
+/**
+ * The raw computed font properties a CSS-aware shaper interprets (RFC 0005).
+ * Strings cross this seam VERBATIM — parsing `font-family` lists, feature
+ * syntax, and variation axes is the font package's job, not layout's. A
+ * shaper may ignore the whole bag (the placeholders do).
+ */
+export interface CssFontSelection {
+  /** Computed `font-family` list syntax (`"Georgia, 'Times New Roman', serif"`). */
+  readonly family?: string;
+  /** Computed `font-style` keyword (`normal`/`italic`/`oblique`). */
+  readonly style?: string;
+  /** Computed `font-stretch` (keyword or percentage). */
+  readonly stretch?: string;
+  /** Computed `font-kerning` (`auto`/`normal`/`none`). */
+  readonly kerning?: string;
+  /** Computed `font-variant-ligatures` keyword list (RFC 0006). */
+  readonly variantLigatures?: string;
+  /** Computed `font-variant-caps` keyword (RFC 0006). */
+  readonly variantCaps?: string;
+  /** Computed `font-variant-position` keyword (RFC 0006). */
+  readonly variantPosition?: string;
+  /** Computed `font-variant-east-asian` keyword list (RFC 0006). */
+  readonly variantEastAsian?: string;
+  /** Computed `font-variant-alternates` (functional notations, RFC 0006). */
+  readonly variantAlternates?: string;
+  /** Computed `font-variant-numeric` keyword list. */
+  readonly variantNumeric?: string;
+  /** Computed `font-feature-settings` (`"kern" 0, "liga" 1` …). */
+  readonly featureSettings?: string;
+  /** Computed `font-variation-settings` (`"wght" 700` …). */
+  readonly variationSettings?: string;
+  /** Computed `font-optical-sizing` (`auto`/`none`). */
+  readonly opticalSizing?: string;
+  /** Computed `font-synthesis` (`weight style`/`none` …). */
+  readonly synthesis?: string;
+}
+
 export interface ShapingFont {
   /** The computed `font-size`, in CSS pixels — the per-em the metric scales by. */
   readonly fontSize: Px;
@@ -58,17 +95,43 @@ export interface ShapingFont {
   /** The font's ascent in em units (for baseline placement). Optional: shapers
    * that don't provide it default to 0.8 × fontSize. */
   readonly ascentEm?: number;
+  /** The font's x-height in em units (OS/2 sxHeight). Absent ⇒ `vertical-align:
+   * middle` uses 0.5em, so the rise stays 0.25em. */
+  readonly xHeightEm?: number;
+  /** The element's base writing direction (`direction` property) — used as the
+   * UAX #9 itemization override. Per-run level parity still decides the buffer
+   * direction handed to a real shaper; a bare `shapeLine` call without
+   * itemization falls back to HarfBuzz's own detection when this is absent. */
+  readonly direction?: "ltr" | "rtl";
+  /** ISO 15924 script tag for the run ("Latn", "Hebr", "Arab", "Hani", …). */
+  readonly script?: string;
+  /** BCP 47 language tag for language-sensitive shaping. */
+  readonly language?: string;
+  /** The CSS font-selection block (RFC 0005) — family list, feature and
+   * variation settings — carried verbatim for the shaper to interpret. */
+  readonly css?: CssFontSelection;
 }
 
 /**
- * One shaped glyph: the horizontal advance the pen moves after drawing it. A
- * real shaper also fills positional offsets and a glyph id; this seam needs only
- * the advance to measure runs, so the placeholder leaves richer fields to the
- * HarfBuzz adapter (which produces the IR {@link Glyph} for paint).
+ * One shaped glyph (RFC 0002). `advance` is the pen movement in CSS pixels;
+ * `xOffset`/`yOffset` are the draw offset from the pen position (`yOffset`
+ * positive = DOWN, CSS-pixel space — a real shaper's font-units `y_offset`,
+ * positive up, is negated at the seam). `glyphId` is the REAL font-local glyph
+ * index the shaper selected on `faceIndex` (the pipeline face-table slot);
+ * `cluster` is the UTF-16 offset of the glyph's cluster within the shaped run.
+ *
+ * The placeholder shapers emit `glyphId = codePoint, faceIndex = 0, offsets 0`
+ * — honest scaffold, documented as such; only the HarfBuzz adapter produces
+ * true font-local ids.
  */
 export interface ShapedGlyph {
   /** Horizontal advance contributed by this glyph, in CSS pixels. */
   readonly advance: Px;
+  readonly glyphId: number;
+  readonly faceIndex: number;
+  readonly xOffset: Px;
+  readonly yOffset: Px;
+  readonly cluster: number;
 }
 
 /**
@@ -97,6 +160,17 @@ export interface TextShaper {
    * the returned advances) into glyph advances under `font`.
    */
   shapeLine(text: string, font: ShapingFont): ShapedRun;
+  /**
+   * Font metrics the shaper resolved for `font`. Absent, or an absent
+   * `xHeightEm`, keeps the 0.5em x-height approximation.
+   */
+  fontMetrics?(font: ShapingFont): {
+    readonly xHeightEm?: number;
+    /** Positive: how far `vertical-align: sub` drops the baseline, in em. */
+    readonly subscriptEm?: number;
+    /** Positive: how far `vertical-align: super` raises the baseline, in em. */
+    readonly superscriptEm?: number;
+  } | undefined;
 }
 
 /**
@@ -128,7 +202,14 @@ export const metricsShaper: TextShaper = {
     // One advance per UTF-16 code unit. Sufficient for a metric placeholder;
     // a real shaper clusters code points into glyphs.
     for (let i = 0; i < text.length; i += 1) {
-      glyphs.push({ advance: px(perGlyph) });
+      glyphs.push({
+        advance: px(perGlyph),
+        glyphId: text.codePointAt(i) ?? 0,
+        faceIndex: 0,
+        xOffset: px(0),
+        yOffset: px(0),
+        cluster: i,
+      });
     }
     return { advance: px(text.length * perGlyph), glyphs };
   },
@@ -204,15 +285,24 @@ export const proportionalShaper: TextShaper = {
   shapeLine(text: string, font: ShapingFont): ShapedRun {
     const glyphs: ShapedGlyph[] = [];
     let total = 0;
+    let i = 0;
     for (const ch of text) {
       // Iterating by code point (not UTF-16 unit) so astral glyphs measure once.
       const adv = font.fontSize * proportionalAdvanceEm(ch.codePointAt(0)!);
       for (let u = 0; u < ch.length; u += 1) {
         // Attribute the cluster advance to its first unit; trailing surrogate
         // halves contribute zero, keeping `glyphs.length === text.length`.
-        glyphs.push({ advance: px(u === 0 ? adv : 0) });
+        glyphs.push({
+          advance: px(u === 0 ? adv : 0),
+          glyphId: ch.codePointAt(0)!,
+          faceIndex: 0,
+          xOffset: px(0),
+          yOffset: px(0),
+          cluster: i,
+        });
       }
       total += adv;
+      i += ch.length;
     }
     return { advance: px(total), glyphs };
   },

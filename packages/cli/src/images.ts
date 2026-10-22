@@ -1,11 +1,13 @@
 import type { DecodedImage, DomNode, DomTree, NodeId } from "@browser-engine/ir";
 import { decodePng } from "@browser-engine/test-harness";
+import {
+  decodeImageBytes,
+  decodeImageBytesAsync,
+  sniffImageFormat,
+} from "@browser-engine/backend";
+import { canvasKitIfReady } from "@browser-engine/backend";
 import { decode as decodeJpeg } from "jpeg-js";
-import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 export type ImageLoader = (src: string) => Uint8Array | undefined;
 
@@ -47,6 +49,8 @@ export async function collectImagesAsync(
     readonly fetchFn?: AsyncImageLoader;
     readonly maxImages?: number;
     readonly timeoutMs?: number;
+    /** Per-node srcset selection context (dpr / slot width from layout). */
+    readonly sourceContext?: (node: DomNode) => ImageSourceContext | undefined;
   } = {},
 ): Promise<Map<NodeId, DecodedImage>> {
   const only = options.onlyNodes;
@@ -73,9 +77,11 @@ export async function collectImagesAsync(
     timeoutMs !== undefined && timeoutMs > 0 ? Date.now() + Math.max(timeoutMs, 200) * 2 : null;
   const resolveOne = async (node: DomNode): Promise<void> => {
     if (deadline !== null && Date.now() >= deadline) return;
-    let bytes = imageBytes(node, loadExternal);
+    let bytes = imageBytes(node, loadExternal, options.sourceContext?.(node));
     if (bytes === undefined && fetchFn !== undefined) {
-      const candidates = imageSourceCandidates(node, false).filter((src) => !src.startsWith("data:"));
+      const candidates = imageSourceCandidates(node, options.sourceContext?.(node) ?? false).filter(
+        (src) => !src.startsWith("data:"),
+      );
       const tryList = candidates.slice(0, 2);
       for (const src of tryList) {
         if (deadline !== null && Date.now() >= deadline) break;
@@ -166,7 +172,119 @@ function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
   });
 }
 
-export function imageSourceCandidates(img: DomNode, preferSmall = false): string[] {
+/** Parsed srcset candidate — `w` width descriptor or `x` density descriptor. */
+export interface SrcsetCandidate {
+  readonly url: string;
+  /** Source width in px (`w` descriptor). */
+  readonly width?: number;
+  /** Source density (`x` descriptor; default 1 when descriptors are `x`-typed). */
+  readonly density?: number;
+}
+
+/**
+ * Parse a `srcset` attribute into candidates. Per spec the URL runs to the
+ * first comma or whitespace; a trailing comma inside a URL is consumed as part
+ * of it. Malformed descriptors are ignored (the candidate is kept — the HTML
+ * spec only drops entries whose descriptor makes the candidate unusable).
+ */
+export function parseSrcset(srcset: string): readonly SrcsetCandidate[] {
+  const out: SrcsetCandidate[] = [];
+  for (const part of srcset.split(",")) {
+    const bits = part.trim().split(/\s+/);
+    const url = bits[0];
+    if (url === undefined || url.length === 0) continue;
+    let width: number | undefined;
+    let density: number | undefined;
+    for (let i = 1; i < bits.length; i += 1) {
+      const d = bits[i]!.toLowerCase();
+      if (d.endsWith("w")) {
+        const n = Number(d.slice(0, -1));
+        if (Number.isFinite(n) && n > 0) width = n;
+      } else if (d.endsWith("x")) {
+        const n = Number(d.slice(0, -1));
+        if (Number.isFinite(n) && n > 0) density = n;
+      } else if (d.endsWith("h")) {
+        const n = Number(d.slice(0, -1));
+        if (Number.isFinite(n) && n > 0) {
+          // `h` without `w` is meaningless; spec requires w+h pairs.
+          // We accept it but keep it out of density computation.
+        }
+      }
+    }
+    out.push({ url, ...(width !== undefined ? { width } : {}), ...(density !== undefined ? { density } : {}) });
+  }
+  return out;
+}
+
+/**
+ * Resolve a `sizes` attribute to a slot width in CSS px for a given viewport
+ * width. `<sizes> = <source-size-list>`: a comma list of `(<media-condition>)
+ * <length>` entries plus a trailing bare length; the first matching entry wins.
+ * Supported conditions: `min-width`/`max-width` in px; supported lengths: px,
+ * vw, em/rem (16px base). Unknown/invalid → falls through to the next entry;
+ * no match and no bare default → `100vw`.
+ */
+export function parseSizes(sizes: string, viewportWidth: number): number {
+  const entries = sizes.split(",");
+  let fallback: number | undefined;
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) continue;
+    const m = /^\(\s*(min|max)-width\s*:\s*([\d.]+)px\s*\)\s*(.+)$/.exec(trimmed);
+    if (m !== null) {
+      const condPx = Number(m[2]);
+      const ok = m[1] === "min" ? viewportWidth >= condPx : viewportWidth <= condPx;
+      if (ok) {
+        const v = parseSlotLength(m[3]!.trim(), viewportWidth);
+        if (v !== undefined) return v;
+      }
+      continue;
+    }
+    // Bare length (the list default) — only the LAST entry may be bare.
+    const v = parseSlotLength(trimmed, viewportWidth);
+    if (v !== undefined) fallback = v;
+  }
+  return fallback ?? viewportWidth;
+}
+
+function parseSlotLength(token: string, viewportWidth: number): number | undefined {
+  const m = /^([\d.]+)(px|vw|em|rem)$/.exec(token);
+  if (m === null) return token === "0" ? 0 : undefined;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return undefined;
+  switch (m[2]) {
+    case "vw": return (n / 100) * viewportWidth;
+    case "em":
+    case "rem": return n * 16;
+    default: return n;
+  }
+}
+
+/** Context for source selection — all fields optional. */
+export interface ImageSourceContext {
+  /** Prefer the smallest candidate (thumbnail/first-paint mode). */
+  readonly preferSmall?: boolean;
+  /** Device pixel ratio used for `w`/`x` source selection (default 1). */
+  readonly dpr?: number;
+  /** CSS-px slot the image will occupy (default: `sizes` attr, else 100vw). */
+  readonly slotWidth?: number;
+  /** Viewport width in CSS px — evaluates `sizes` media conditions. */
+  readonly viewportWidth?: number;
+}
+
+/**
+ * Ordered URL preference list for an `<img>` — `src`, then `data-*` fallbacks,
+ * then `srcset` ranked by density fit for `ctx.dpr`. `w` descriptors become
+ * effective densities via `width / slotWidth`; `x` descriptors are densities.
+ * Pick rule (WHATWG): smallest density ≥ dpr wins; if none qualifies, the
+ * largest density wins. Remaining candidates follow in descending density so
+ * fallbacks degrade gracefully.
+ */
+export function imageSourceCandidates(
+  img: DomNode,
+  ctx: boolean | ImageSourceContext = false,
+): string[] {
+  const options: ImageSourceContext = typeof ctx === "boolean" ? { preferSmall: ctx } : ctx;
   const out: string[] = [];
   const push = (v: string | undefined): void => {
     if (v !== undefined && v.length > 0 && !out.includes(v)) out.push(v);
@@ -176,309 +294,45 @@ export function imageSourceCandidates(img: DomNode, preferSmall = false): string
   push(img.attrs?.get("data-src-img"));
   const srcset = img.attrs?.get("srcset") ?? img.attrs?.get("data-srcset");
   if (srcset !== undefined && srcset.length > 0) {
-    const parts: { url: string; score: number }[] = [];
-    for (const part of srcset.split(",")) {
-      const bits = part.trim().split(/\s+/);
-      const url = bits[0];
-      if (url === undefined || url.length === 0) continue;
-      let score = Number.POSITIVE_INFINITY;
-      for (let i = 1; i < bits.length; i += 1) {
-        const d = bits[i]!;
-        if (d.endsWith("w")) {
-          const n = Number(d.slice(0, -1));
-          if (Number.isFinite(n)) score = n;
-        } else if (d.endsWith("x")) {
-          const n = Number(d.slice(0, -1));
-          if (Number.isFinite(n)) score = n * 1000;
-        }
-      }
-      parts.push({ url, score });
-    }
-    if (preferSmall) {
-      parts.sort((a, b) => a.score - b.score);
+    const parts = [...parseSrcset(srcset)];
+    const dpr = options.dpr ?? 1;
+    const slot =
+      options.slotWidth ??
+      (() => {
+        const sizes = img.attrs?.get("sizes") ?? img.attrs?.get("data-sizes");
+        return sizes !== undefined ? parseSizes(sizes, options.viewportWidth ?? 800) : undefined;
+      })();
+    const densityOf = (c: SrcsetCandidate): number => {
+      if (c.density !== undefined) return c.density;
+      if (c.width !== undefined) return slot !== undefined && slot > 0 ? c.width / slot : c.width / 800;
+      return 1;
+    };
+    if (options.preferSmall === true) {
+      parts.sort((a, b) => densityOf(a) - densityOf(b));
     } else {
-      parts.sort((a, b) => {
-        const ta = Math.abs((Number.isFinite(a.score) ? a.score : 800) - 640);
-        const tb = Math.abs((Number.isFinite(b.score) ? b.score : 800) - 640);
-        return ta - tb;
-      });
+      // Best fit first: smallest density ≥ dpr, else the largest available.
+      const above = parts.filter((c) => densityOf(c) >= dpr).sort((a, b) => densityOf(a) - densityOf(b));
+      const below = parts.filter((c) => densityOf(c) < dpr).sort((a, b) => densityOf(b) - densityOf(a));
+      parts.length = 0;
+      parts.push(...above, ...below);
     }
     for (const p of parts) push(p.url);
   }
   return out;
 }
 
-function imageBytes(img: DomNode, loadExternal?: ImageLoader): Uint8Array | undefined {
-  for (const src of imageSourceCandidates(img)) {
+function imageBytes(
+  img: DomNode,
+  loadExternal?: ImageLoader,
+  ctx?: ImageSourceContext,
+): Uint8Array | undefined {
+  for (const src of imageSourceCandidates(img, ctx ?? false)) {
     const data = decodeDataUrl(src);
     if (data !== undefined) return data;
     const external = loadExternal?.(src);
     if (external !== undefined) return external;
   }
   return undefined;
-}
-
-function isPng(bytes: Uint8Array): boolean {
-  return (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  );
-}
-
-function isJpeg(bytes: Uint8Array): boolean {
-  return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-}
-
-function isWebp(bytes: Uint8Array): boolean {
-  return (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  );
-}
-
-function withTempDir<T>(fn: (dir: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "bes-img-"));
-  try {
-    return fn(dir);
-  } finally {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Guest/page code may throw here; swallowed by design.
-    }
-  }
-}
-
-function decodePngFile(path: string): DecodedImage | undefined {
-  try {
-    const png = new Uint8Array(readFileSync(path));
-    const raw = decodePng(png);
-    return {
-      width: raw.width,
-      height: raw.height,
-      pixels: new Uint8ClampedArray(raw.data),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function decodeViaDwebpSync(bytes: Uint8Array): DecodedImage | undefined {
-  return withTempDir((dir) => {
-    const input = join(dir, "in.webp");
-    const output = join(dir, "out.png");
-    writeFileSync(input, bytes);
-    const result = spawnSync("dwebp", [input, "-quiet", "-o", output], { encoding: "buffer" });
-    if (result.status !== 0) return undefined;
-    return decodePngFile(output);
-  });
-}
-
-function decodeViaMagick(bytes: Uint8Array): DecodedImage | undefined {
-  return withTempDir((dir) => {
-    const input = join(dir, "in.bin");
-    const output = join(dir, "out.png");
-    writeFileSync(input, bytes);
-    for (const tool of ["magick", "convert"] as const) {
-      const result = spawnSync(tool, [input, output], { encoding: "buffer" });
-      if (result.status === 0) return decodePngFile(output);
-    }
-    const sips = spawnSync("sips", ["-s", "format", "png", input, "--out", output], {
-      encoding: "buffer",
-    });
-    if (sips.status !== 0) return undefined;
-    return decodePngFile(output);
-  });
-}
-
-function decodeViaDwebpPamSync(bytes: Uint8Array): DecodedImage | undefined {
-  return withTempDir((dir) => {
-    const input = join(dir, "in.webp");
-    writeFileSync(input, bytes);
-    const result = spawnSync("dwebp", [input, "-quiet", "-pam", "-o", "-"], {
-      encoding: "buffer",
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    if (result.status !== 0 || result.stdout === undefined) return undefined;
-    const out = result.stdout;
-    return parsePamRgba(Buffer.isBuffer(out) ? out : Buffer.from(out));
-  });
-}
-
-function decodeWebpSync(bytes: Uint8Array): DecodedImage | undefined {
-  return decodeViaDwebpPamSync(bytes) ?? decodeViaDwebpSync(bytes) ?? decodeViaMagick(bytes);
-}
-
-let dwebpActive = 0;
-const dwebpWaiters: Array<() => void> = [];
-function acquireDwebp(): Promise<void> {
-  if (dwebpActive < 8) {
-    dwebpActive += 1;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    dwebpWaiters.push(() => {
-      dwebpActive += 1;
-      resolve();
-    });
-  });
-}
-function releaseDwebp(): void {
-  dwebpActive = Math.max(0, dwebpActive - 1);
-  const next = dwebpWaiters.shift();
-  if (next !== undefined) next();
-}
-
-
-function parsePamRgba(buf: Buffer): DecodedImage | undefined {
-  const marker = Buffer.from("ENDHDR\n");
-  const end = buf.indexOf(marker);
-  if (end < 0) return undefined;
-  const header = buf.subarray(0, end).toString("latin1");
-  const widthMatch = /WIDTH\s+(\d+)/i.exec(header);
-  const heightMatch = /HEIGHT\s+(\d+)/i.exec(header);
-  const depthMatch = /DEPTH\s+(\d+)/i.exec(header);
-  if (widthMatch === null || heightMatch === null) return undefined;
-  const width = Number(widthMatch[1]);
-  const height = Number(heightMatch[1]);
-  const depth = depthMatch !== null ? Number(depthMatch[1]) : 4;
-  if (!(width > 0) || !(height > 0) || width > 8192 || height > 8192) return undefined;
-  const pixelsRaw = buf.subarray(end + marker.length);
-  const expected = width * height * depth;
-  if (pixelsRaw.length < expected) return undefined;
-  if (depth === 4) {
-    return {
-      width,
-      height,
-      pixels: new Uint8ClampedArray(pixelsRaw.buffer, pixelsRaw.byteOffset, expected),
-    };
-  }
-  if (depth === 3) {
-    const out = new Uint8ClampedArray(width * height * 4);
-    for (let i = 0, j = 0; i < expected; i += 3, j += 4) {
-      out[j] = pixelsRaw[i]!;
-      out[j + 1] = pixelsRaw[i + 1]!;
-      out[j + 2] = pixelsRaw[i + 2]!;
-      out[j + 3] = 255;
-    }
-    return { width, height, pixels: out };
-  }
-  return undefined;
-}
-
-function decodeViaDwebpPamAsync(bytes: Uint8Array): Promise<DecodedImage | undefined> {
-  return new Promise((resolve) => {
-    let dir: string;
-    try {
-      dir = mkdtempSync(join(tmpdir(), "bes-webp-"));
-    } catch {
-      resolve(undefined);
-      return;
-    }
-    const input = join(dir, "in.webp");
-    const cleanup = (): void => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // Guest/page code may throw here; swallowed by design.
-      }
-    };
-    try {
-      writeFileSync(input, bytes);
-    } catch {
-      cleanup();
-      resolve(undefined);
-      return;
-    }
-    void acquireDwebp().then(() => {
-      const child = spawn("dwebp", [input, "-quiet", "-pam", "-o", "-"], {
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      const chunks: Buffer[] = [];
-      child.stdout?.on("data", (c: Buffer) => {
-        chunks.push(c);
-      });
-      child.on("error", () => {
-        releaseDwebp();
-        cleanup();
-        resolve(decodeViaMagick(bytes));
-      });
-      child.on("close", (code) => {
-        try {
-          if (code === 0) {
-            const buf = Buffer.concat(chunks);
-            const parsed = parsePamRgba(buf);
-            if (parsed !== undefined) {
-              resolve(parsed);
-              return;
-            }
-          }
-          resolve(decodeViaMagick(bytes));
-        } finally {
-          releaseDwebp();
-          cleanup();
-        }
-      });
-    });
-  });
-}
-
-function decodeViaDwebpAsync(bytes: Uint8Array): Promise<DecodedImage | undefined> {
-  return new Promise((resolve) => {
-    let dir: string;
-    try {
-      dir = mkdtempSync(join(tmpdir(), "bes-img-"));
-    } catch {
-      resolve(undefined);
-      return;
-    }
-    const input = join(dir, "in.webp");
-    const output = join(dir, "out.png");
-    const cleanup = (): void => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // Guest/page code may throw here; swallowed by design.
-      }
-    };
-    try {
-      writeFileSync(input, bytes);
-    } catch {
-      cleanup();
-      resolve(undefined);
-      return;
-    }
-    void acquireDwebp().then(() => {
-      const child = spawn("dwebp", [input, "-quiet", "-o", output], { stdio: "ignore" });
-      child.on("error", () => {
-        releaseDwebp();
-        cleanup();
-        resolve(decodeViaMagick(bytes));
-      });
-      child.on("close", (code) => {
-        try {
-          if (code === 0) {
-            resolve(decodePngFile(output));
-          } else {
-            resolve(decodeViaMagick(bytes));
-          }
-        } finally {
-          releaseDwebp();
-          cleanup();
-        }
-      });
-    });
-  });
 }
 
 const decodeCache = new Map<string, DecodedImage | null>();
@@ -488,34 +342,58 @@ function bytesKey(bytes: Uint8Array): string {
   return createHash("sha1").update(bytes).digest("hex");
 }
 
+/**
+ * JPEG via jpeg-js — kept only as the SYNC-path fallback for JPEG when the
+ * CanvasKit module is not initialized yet. Every other raster format decodes
+ * through the Skia codec surface (RFC 0007).
+ */
+function decodeJpegFallback(bytes: Uint8Array): DecodedImage | undefined {
+  if (sniffImageFormat(bytes) !== "jpeg") return undefined;
+  const raw = decodeJpeg(bytes, { useTArray: true, formatAsRGBA: true });
+  return {
+    width: raw.width,
+    height: raw.height,
+    pixels: new Uint8ClampedArray(raw.data),
+    format: "jpeg",
+  };
+}
+
+/**
+ * Synchronous decode — used by the kernel/pipeline paths. PNG goes through the
+ * in-repo decoder; everything else goes through the Skia codecs when the WASM
+ * module is already warm (it is, once any Skia backend exists), with jpeg-js
+ * as the JPEG-only last resort.
+ */
 export function tryDecode(bytes: Uint8Array): DecodedImage | undefined {
   const key = bytesKey(bytes);
   if (decodeCache.has(key)) {
     return decodeCache.get(key) ?? undefined;
   }
   let decoded: DecodedImage | undefined;
+  let verdict = false; // whether "failed" is a real verdict vs codec-not-warm
   try {
-    if (isPng(bytes)) {
+    if (sniffImageFormat(bytes) === "png") {
+      verdict = true;
       const raw = decodePng(bytes);
       decoded = {
         width: raw.width,
         height: raw.height,
         pixels: new Uint8ClampedArray(raw.data),
+        format: "png",
       };
-    } else if (isJpeg(bytes)) {
-      const raw = decodeJpeg(bytes, { useTArray: true, formatAsRGBA: true });
-      decoded = {
-        width: raw.width,
-        height: raw.height,
-        pixels: new Uint8ClampedArray(raw.data),
-      };
-    } else if (isWebp(bytes)) {
-      decoded = decodeWebpSync(bytes);
+    } else {
+      decoded = decodeImageBytes(bytes) ?? decodeJpegFallback(bytes);
+      // A cold CanvasKit means "decode not attempted" for non-JPEG formats —
+      // do not cache the miss or the bytes stay undecodable forever.
+      verdict =
+        decoded !== undefined ||
+        sniffImageFormat(bytes) === "jpeg" ||
+        canvasKitIfReady() !== undefined;
     }
   } catch {
     decoded = undefined;
   }
-  decodeCache.set(key, decoded ?? null);
+  if (decoded !== undefined || verdict) decodeCache.set(key, decoded ?? null);
   return decoded;
 }
 
@@ -538,6 +416,11 @@ export function collectFirstImageNodes(dom: DomTree, maxImages: number): NodeId[
   return ids;
 }
 
+/**
+ * Async decode — the app/resource phase. PNG stays in-repo; all other formats
+ * decode through CanvasKit (`decodeImageBytesAsync` awaits WASM init, so WebP/
+ * GIF/BMP/ICO/AVIF always work without any host tool).
+ */
 async function tryDecodeAsync(bytes: Uint8Array): Promise<DecodedImage | undefined> {
   const key = bytesKey(bytes);
   if (decodeCache.has(key)) {
@@ -548,29 +431,19 @@ async function tryDecodeAsync(bytes: Uint8Array): Promise<DecodedImage | undefin
 
   const work = (async (): Promise<DecodedImage | undefined> => {
     try {
-      if (isPng(bytes)) {
+      if (sniffImageFormat(bytes) === "png") {
         const raw = decodePng(bytes);
         return {
           width: raw.width,
           height: raw.height,
           pixels: new Uint8ClampedArray(raw.data),
+          format: "png",
         };
       }
-      if (isJpeg(bytes)) {
-        const raw = decodeJpeg(bytes, { useTArray: true, formatAsRGBA: true });
-        return {
-          width: raw.width,
-          height: raw.height,
-          pixels: new Uint8ClampedArray(raw.data),
-        };
-      }
-      if (isWebp(bytes)) {
-        return (await decodeViaDwebpPamAsync(bytes)) ?? (await decodeViaDwebpAsync(bytes));
-      }
+      return (await decodeImageBytesAsync(bytes)) ?? decodeJpegFallback(bytes);
     } catch {
       return undefined;
     }
-    return undefined;
   })();
 
   decodeAsyncInflight.set(key, work);
@@ -583,7 +456,8 @@ async function tryDecodeAsync(bytes: Uint8Array): Promise<DecodedImage | undefin
   }
 }
 
-function decodeDataUrl(src: string): Uint8Array | undefined {
+/** Decode a `data:` URL to bytes (base64 or percent-encoded). */
+export function decodeDataUrl(src: string): Uint8Array | undefined {
   if (!src.startsWith("data:")) {
     return undefined;
   }

@@ -319,6 +319,20 @@ export const SHELL_HTML = `<!DOCTYPE html>
       });
     }
     engineLog("info", "shell ready", bridge ? "electron bridge" : "http host");
+    // Download lifecycle → status line + log panel (Electron push channel;
+    // the HTTP shell can pull the same events from /api/downloads).
+    if (bridge && typeof bridge.onDownload === "function") {
+      bridge.onDownload((f) => {
+        const label =
+          f.state === "completed"
+            ? "↓ " + f.filename + " (" + f.bytes + " B)"
+            : f.state === "failed"
+              ? "✗ " + f.filename + (f.error ? ": " + f.error : " failed")
+              : "↓ " + f.filename + " " + f.bytes + "/" + (f.totalBytes ?? "?") + " B";
+        statusLeft.textContent = label;
+        engineLog("info", "download " + f.state, f.filename + " " + f.bytes + "B");
+      });
+    }
     const wrap = document.getElementById("viewport-wrap");
     const viewportEl = document.getElementById("viewport");
     const tabsEl = document.getElementById("tabs");

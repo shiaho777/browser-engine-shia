@@ -10,8 +10,31 @@ import { startAppServer } from "./server.js";
 export { startAppServer, renderTarget, type AppServer, type NavigateResult } from "./server.js";
 export { HOME_HTML, HOME_URL, DEMO_HTML, DEMO_URL, LIVE_HTML, LIVE_URL, FONTS_HTML, FONTS_URL, FORM_HTML, FORM_URL } from "./home.js";
 export { bootFineSession, collectDocumentScripts } from "./engine-runtime.js";
-export { TabSession, TabHost, type ClickResult, type HitInfo, type TabSnapshot } from "./tab-session.js";
-export { loadPage, findLinkHref, type PageFrame, type PageState } from "./page.js";
+export { TabSession, type ClickResult, type HitInfo, type TabSnapshot } from "./tab-session.js";
+export {
+  LocalStorageRegistry,
+  SessionHistory,
+  SessionHost,
+  SessionStorageRegistry,
+  DOMExceptionShim,
+  createMemoryStorageArea,
+  sameDocumentUrl,
+  fragmentOf,
+  type NavigationIntent,
+  type NavigationInit,
+  type SessionEntry,
+  type StorageArea,
+} from "./session.js";
+export { BrowsingContext, type BrowsingContextDeps, type RetainedEntry } from "./browsing-context.js";
+export {
+  TabHost,
+  RemoteTab,
+  type ClickResult as RemoteClickResult,
+  type PumpResult,
+  type TabSnapshot as RemoteTabSnapshot,
+} from "./tab-host.js";
+export { WebContentClient, RendererDeadError } from "./webcontent-client.js";
+export { loadPage, findLinkHref, repaintPage, type PageFrame, type PageState, type PaintDamageStats } from "./page.js";
 export {
   DEFAULT_APP_VIEWPORT,
   normalizeViewport,

@@ -23,6 +23,7 @@ export interface GeneratedComputedStyleFields {
   readonly fontSize: Px;
   readonly position: PositionValue;
   readonly float: FloatValue;
+  readonly overlay: string;
   readonly top: LengthOrAuto;
   readonly right: LengthOrAuto;
   readonly bottom: LengthOrAuto;
@@ -31,12 +32,12 @@ export interface GeneratedComputedStyleFields {
   readonly gridTemplateColumns: string;
   readonly opacity: number;
   readonly transform: TransformValue;
-  readonly zIndex: number;
+  readonly zIndex: number | "auto";
   readonly padding: Edges<Px>;
-  readonly marginTop: Px;
-  readonly marginRight: Px;
-  readonly marginBottom: Px;
-  readonly marginLeft: Px;
+  readonly marginTop: number | "auto";
+  readonly marginRight: number | "auto";
+  readonly marginBottom: number | "auto";
+  readonly marginLeft: number | "auto";
   readonly paddingTop: Px;
   readonly paddingRight: Px;
   readonly paddingBottom: Px;
@@ -166,6 +167,10 @@ export interface GeneratedComputedStyleFields {
   readonly gridArea: string;
   readonly gridColumn: string;
   readonly gridRow: string;
+  readonly gridRowStart: string;
+  readonly gridRowEnd: string;
+  readonly gridColumnStart: string;
+  readonly gridColumnEnd: string;
   readonly justifyItems: string;
   readonly justifySelf: string;
   readonly overflowX: string;
@@ -191,6 +196,11 @@ export interface GeneratedComputedStyleFields {
   readonly fontKerning: string;
   readonly fontFeatureSettings: string;
   readonly fontVariantNumeric: string;
+  readonly fontVariantLigatures: string;
+  readonly fontVariantCaps: string;
+  readonly fontVariantPosition: string;
+  readonly fontVariantEastAsian: string;
+  readonly fontVariantAlternates: string;
   readonly textDecorationThickness: Px;
   readonly textUnderlineOffset: Px;
   readonly marginBlockStart: Px;
@@ -367,6 +377,7 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "fontSize",
   "position",
   "float",
+  "overlay",
   "top",
   "right",
   "bottom",
@@ -510,6 +521,10 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "gridArea",
   "gridColumn",
   "gridRow",
+  "gridRowStart",
+  "gridRowEnd",
+  "gridColumnStart",
+  "gridColumnEnd",
   "justifyItems",
   "justifySelf",
   "overflowX",
@@ -535,6 +550,11 @@ export const COMPUTED_STYLE_FIELD_NAMES: readonly string[] = [
   "fontKerning",
   "fontFeatureSettings",
   "fontVariantNumeric",
+  "fontVariantLigatures",
+  "fontVariantCaps",
+  "fontVariantPosition",
+  "fontVariantEastAsian",
+  "fontVariantAlternates",
   "textDecorationThickness",
   "textUnderlineOffset",
   "marginBlockStart",

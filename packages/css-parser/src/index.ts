@@ -91,16 +91,17 @@
 import { deepFreeze } from "@browser-engine/ir";
 import type {
   Declaration,
+  FontFaceRule,
   Selector,
   Specificity,
   StyleRule,
   StyleSheet,
 } from "@browser-engine/ir";
 import { PROPERTY_PARSERS, parsePropertyValue } from "@browser-engine/generator";
-import { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches } from "./media-query.js";
+import { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches, serializeMediaQueryList } from "./media-query.js";
 import type { MediaEnvironment } from "./media-query.js";
 export type { MediaEnvironment };
-export { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches };
+export { DEFAULT_MEDIA_ENVIRONMENT, mediaQueryListMatches, serializeMediaQueryList };
 
 export const PACKAGE_NAME = "@browser-engine/css-parser" as const;
 
@@ -119,10 +120,12 @@ export const PACKAGE_NAME = "@browser-engine/css-parser" as const;
  */
 export function parseCss(source: Uint8Array, env: MediaEnvironment = DEFAULT_MEDIA_ENVIRONMENT): StyleSheet {
   const css = new TextDecoder("utf-8").decode(source);
-  const { rules, layerOrder } = parseRulesWithLayers(stripComments(css), env);
-  const sheet = layerOrder.length > 0
-    ? { rules, layerOrder } as unknown as StyleSheet
-    : { rules } as unknown as StyleSheet;
+  const { rules, layerOrder, fontFaces } = parseRulesWithLayers(stripComments(css), env);
+  const sheet = {
+    rules,
+    ...(layerOrder.length > 0 ? { layerOrder } : {}),
+    ...(fontFaces.length > 0 ? { fontFaces } : {}),
+  } as unknown as StyleSheet;
   return deepFreeze(sheet);
 }
 
@@ -242,10 +245,17 @@ export function stylesheetsEquivalent(a: StyleSheet, b: StyleSheet): boolean {
 // source, alternating between a selector prelude and a `{ … }` block.
 // ---------------------------------------------------------------------------
 
-/** Parse result: rules + declared layer order. */
+/** Parse result: rules + declared layer order + @font-face descriptor blocks. */
 interface ParseResult {
   readonly rules: StyleRule[];
   readonly layerOrder: (readonly string[])[];
+  readonly fontFaces: FontFaceRule[];
+}
+
+/** Inner per-block parse result: rules plus any nested @font-face rules. */
+interface InnerParseResult {
+  readonly rules: StyleRule[];
+  readonly fontFaces: FontFaceRule[];
 }
 
 /**
@@ -257,8 +267,9 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
   const layerOrder: (readonly string[])[] = [];
   let order = 0;
 
-  const parse = (text: string, env2: MediaEnvironment, layerPath: readonly string[], depth: number): StyleRule[] => {
+  const parse = (text: string, env2: MediaEnvironment, layerPath: readonly string[], depth: number): InnerParseResult => {
     const rules: StyleRule[] = [];
+    const fontFaces: FontFaceRule[] = [];
     const len = text.length;
     let i = 0;
 
@@ -285,8 +296,9 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
           i = braceClose === -1 ? len : braceClose + 1;
           if (depth >= 2) continue;
           if (mediaQueryListMatches(condition, env2)) {
-            const innerRules = parse(block, env2, layerPath, depth + 1);
-            for (const inner of innerRules) {
+            const innerResult = parse(block, env2, layerPath, depth + 1);
+            fontFaces.push(...innerResult.fontFaces);
+            for (const inner of innerResult.rules) {
               rules.push({
                 selector: inner.selector,
                 declarations: inner.declarations,
@@ -323,8 +335,9 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
               layerOrder.push(innerLayerPath);
             }
 
-            const innerRules = parse(block, env2, innerLayerPath, depth + 1);
-            for (const inner of innerRules) {
+            const innerResult = parse(block, env2, innerLayerPath, depth + 1);
+            fontFaces.push(...innerResult.fontFaces);
+            for (const inner of innerResult.rules) {
               rules.push({
                 selector: inner.selector,
                 declarations: inner.declarations,
@@ -372,8 +385,9 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
           i = braceClose === -1 ? len : braceClose + 1;
           if (depth >= 2) continue;
           if (supportsConditionMatches(condition)) {
-            const innerRules = parse(block, env2, layerPath, depth + 1);
-            for (const inner of innerRules) {
+            const innerResult = parse(block, env2, layerPath, depth + 1);
+            fontFaces.push(...innerResult.fontFaces);
+            for (const inner of innerResult.rules) {
               rules.push({
                 selector: inner.selector,
                 declarations: inner.declarations,
@@ -429,14 +443,17 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
         }
 
         if (name === "font-face") {
-          // @font-face { <declarations> }
-          // Store the font-face declarations for the font system. The parser
-          // passes the block through; the font module consumes it when
-          // matching font-family. For now, skip the block.
+          // @font-face { <descriptors> } — RFC 0006. The block is a DESCRIPTOR
+          // declaration list (`font-family`, `src`, `font-weight`, …), not
+          // style declarations: parse without generated-property validation
+          // (descriptor grammars differ — e.g. `font-weight: 400 700` ranges).
           const braceOpen = findBlockStart(text, j);
           if (braceOpen === -1) break;
           const braceClose = findBlockEnd(text, braceOpen + 1);
+          const blockEnd = braceClose === -1 ? len : braceClose;
+          const block = text.slice(braceOpen + 1, blockEnd);
           i = braceClose === -1 ? len : braceClose + 1;
+          fontFaces.push({ declarations: parseDeclarations(block, false), order: order++ });
           continue;
         }
 
@@ -504,8 +521,9 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
           i = braceClose === -1 ? len : braceClose + 1;
           if (depth >= 2) continue;
           // Container queries: include rules (no container dimension tracking).
-          const innerRules = parse(block, env2, layerPath, depth + 1);
-          for (const inner of innerRules) {
+          const innerResult = parse(block, env2, layerPath, depth + 1);
+          fontFaces.push(...innerResult.fontFaces);
+          for (const inner of innerResult.rules) {
             rules.push({
               selector: inner.selector,
               declarations: inner.declarations,
@@ -560,11 +578,11 @@ function parseRulesWithLayers(input: string, env: MediaEnvironment): ParseResult
       }
     }
 
-    return rules;
+    return { rules, fontFaces };
   };
 
-  const rules = parse(input, env, [], 0);
-  return { rules, layerOrder };
+  const { rules, fontFaces } = parse(input, env, [], 0);
+  return { rules, layerOrder, fontFaces };
 }
 
 /** Find the next top-level semicolon at or after `from`, or -1 if none. */
@@ -605,7 +623,7 @@ function findTopLevelSemicolon(text: string, from: number): number {
  *
  * Unknown properties evaluate to false (the engine doesn't support them).
  */
-function supportsConditionMatches(condition: string): boolean {
+export function supportsConditionMatches(condition: string): boolean {
   return evalSupports(condition.trim());
 }
 
@@ -831,8 +849,12 @@ function computeSpecificity(selector: string): Specificity {
  * {@link Declaration}s. Malformed declarations (no colon, empty property, empty
  * value) are skipped; the value of a *known* Phase 1 property is validated by
  * the generated parser and the declaration is skipped if that validation fails.
+ *
+ * `validate = false` is for descriptor blocks (`@font-face`), whose value
+ * grammars differ from the same-named properties (range descriptors like
+ * `font-weight: 400 700`, `src` source lists) — the font stage validates them.
  */
-function parseDeclarations(block: string): Declaration[] {
+function parseDeclarations(block: string, validate = true): Declaration[] {
   const decls: Declaration[] = [];
 
   for (const piece of splitTopLevel(block, ";")) {
@@ -892,6 +914,7 @@ function parseDeclarations(block: string): Declaration[] {
       lowerValue === "unset" ||
       lowerValue === "revert";
     if (
+      validate &&
       Object.prototype.hasOwnProperty.call(PROPERTY_PARSERS, property) &&
       !lowerValue.includes("var(") &&
       !isCssWideKeyword

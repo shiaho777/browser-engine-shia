@@ -2,9 +2,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import type { DecodedImage, DisplayList, DomNode, DomTree, FragmentTree, NodeId } from "@browser-engine/ir";
-import { nodeId, px } from "@browser-engine/ir";
-import { parseHtml } from "@browser-engine/html-parser";
+import type { DecodedImage, DisplayList, DomNode, DomTree, FragmentTree, NodeId, Rect } from "@browser-engine/ir";
+import { diffCommands, nodeId, px, unionRect } from "@browser-engine/ir";
+import { parseHtml, IncrementalHtmlParser } from "@browser-engine/html-parser";
 import { createComputedStyleResolver } from "@browser-engine/cascade";
 import { layout } from "@browser-engine/layout";
 import { paint } from "@browser-engine/paint";
@@ -13,15 +13,23 @@ import { encodeSurfaceToPng, renderDisplayListOnGpu } from "@browser-engine/back
 import {
   cacheLoader,
   collectImagesAsync,
+  decodeDataUrl,
   imageSourceCandidates,
+  tryDecode,
   defaultFetch,
+  collectCrossoriginSettings,
+  collectSubresourceDestinations,
   documentBaseUrl,
+  documentCsp,
+  documentReferrerPolicy,
   documentStylesheets,
   loadResourcesWithTrace,
   warmDecodeImageBytes,
-  pipelineGlyphSource,
+  pipelineFontRegistry,
+  pipelineRasterSource,
   pipelinePrimaryFontName,
-  pipelineShaper,
+  pipelineShaperFor,
+  registerFontFaces,
   withAppendChild,
   withAttribute,
   withNewNode,
@@ -48,11 +56,35 @@ import {
   type EngineViewport,
 } from "./host-api.js";
 import { bootFineSession, createPageNetwork, type PageRuntime, type ScriptExecutionSummary } from "./engine-runtime.js";
-import { networkStackToFetchFn } from "@browser-engine/guest";
-import { normalizeFocus, paintFocusOverlay, type EditFocus } from "./focus-overlay.js";
+import type { NavigationHost, SessionStorageBag } from "@browser-engine/cli";
+import type { MediaEnvironment } from "@browser-engine/css-parser";
+import type { BrowserNetworkStack, NetworkResponse } from "@browser-engine/guest";
+import { networkStackToFetchFn, parseCoep } from "@browser-engine/guest";
+import { focusOverlayBounds, normalizeFocus, paintFocusOverlay, type EditFocus } from "./focus-overlay.js";
+import { buildAxTree } from "./a11y.js";
 export type { EditFocus } from "./focus-overlay.js";
 
 const PROFILE = process.env["ENGINE_PROFILE"] === "1";
+
+/**
+ * The `MediaEnvironment` for the live page pipeline — viewport dims, the real
+ * DPR (for `(resolution: …)`/`srcset`-consistent media queries), and the
+ * user's prefers-* settings arriving with the viewport (Electron
+ * `nativeTheme`, shell chrome, or HTTP client hints).
+ */
+function mediaEnvironmentFor(viewport: EngineViewport) {
+  return {
+    type: "screen" as const,
+    widthPx: viewport.width,
+    heightPx: viewport.height,
+    resolutionDppx: Math.max(1, Math.min(3, Number(viewport.devicePixelRatio ?? 1) || 1)),
+    ...(viewport.prefersColorScheme !== undefined
+      ? { prefersColorScheme: viewport.prefersColorScheme }
+      : {}),
+    ...(viewport.prefersReducedMotion === true ? { prefersReducedMotion: true } : {}),
+  };
+}
+
 function mark(label: string, t0: number): number {
   if (PROFILE) {
     const now = performance.now();
@@ -112,18 +144,152 @@ export interface PageState {
   readonly focus: EditFocus | null;
   /** Present when loaded with keepAlive: lets a host pump guest work + repaint. */
   readonly runtime?: PageRuntime;
+  /**
+   * RFC 0013: iframe nodeId → the child context's composited frame bitmap.
+   * Lives on the page so EVERY repaint path (scroll, relayout, traversal)
+   * keeps frames visible.
+   */
+  readonly frameImages?: ReadonlyMap<NodeId, DecodedImage>;
+  /**
+   * RFC 0027: the document's CSP context (response headers + `<meta>`), or
+   * null when no policy applies. A PARENT context reads this to gate child
+   * navigations with `frame-src`; violations accumulate on the context.
+   */
+  readonly csp?: import("@browser-engine/cli").CspContext | null;
+  /** RFC 0027: the document's own `frame-ancestors` refused embedding —
+   *  the caller (parent context) renders a blank frame instead. */
+  readonly cspBlocked?: boolean;
+  /** RFC 0028: cors-anonymous fetch channel for `@font-face` sources. */
+  readonly fontFetch?: PageImageFetch;
+  /**
+   * RFC 0031: the document's isolation policies — parsed from its response
+   * headers. A parent context reads `coep` to gate iframe subloads; the tab
+   * strip reads `coop`/`crossOriginIsolated` for the chrome UI surface.
+   */
+  readonly coep?: import("@browser-engine/guest").Coep;
+  readonly coop?: import("@browser-engine/guest").Coop;
+  readonly originAgentCluster?: boolean;
+  readonly crossOriginIsolated?: boolean;
+  /** RFC 0037: the accessibility tree for the rendered document — rebuilt
+   *  every finishPage so DOM/style/layout edits flow to AT consumers. */
+  readonly axTree?: import("./a11y.js").AXNode | null;
+  /**
+   * RFC 0038: the session's live layout-damage store — carried on the page so
+   * `repaintPage` feeds it back into `layout()`. Mutations the guest performs
+   * mark it; a repaint consumes the marks and replays undamaged boundaries.
+   */
+  readonly layoutDamage?: import("@browser-engine/cli").LayoutDamageStore;
+  /**
+   * RFC 0038: the global inputs the last layout ran with — a change bumps the
+   * damage store's epoch so stale entries can never hit.
+   */
+  readonly layoutInputs?: string;
+  /**
+   * RFC 0033: canvas engines outlive the sandbox — repaints (scroll,
+   * relayout, traversal) must re-rasterize the op logs even when no live
+   * `runtime` exists. Present whenever the page ran scripts.
+   */
+  readonly canvases?: {
+    readonly bitmaps: () => ReadonlyMap<NodeId, DecodedImage>;
+    readonly imageBox: { current: ReadonlyMap<NodeId, DecodedImage> | undefined };
+  };
+  /**
+   * RFC 0035: the document's media engine — unconditional (scriptless pages
+   * probe/frame too). `prime()` runs during each render's resource pass;
+   * `frames()` merges current frames into the paint image map; `dispose()`
+   * kills playback timers at context teardown.
+   */
+  readonly media?: import("@browser-engine/cli").MediaEngine;
+  /**
+   * RFC 0039: retained raster state — the previous frame's clipped command
+   * list, its device-pixel buffer, and the focus overlay's paint bounds. The
+   * next render diffs commands → damage rect → repairs `pixels` in place.
+   */
+  readonly raster?: {
+    readonly commands: readonly import("@browser-engine/ir").PaintCmd[];
+    readonly pixels: Uint8ClampedArray;
+    readonly w: number;
+    readonly h: number;
+    readonly focusRect: Rect | null;
+  } | null;
+  /** RFC 0039: damage stats of the LAST render — evidence surface. */
+  readonly paintDamage?: PaintDamageStats;
+  /**
+   * RFC 0040: present when the document body streamed in over the wire —
+   * `received`/`total` are wire bytes, `snapshots` counts partial-DOM parses
+   * the incremental parser produced mid-flight, `nodes` is the final count.
+   */
+  readonly documentStream?: {
+    readonly received: number;
+    readonly total: number | null;
+    readonly snapshots: number;
+    readonly nodes: number;
+  };
 }
 
 export interface LoadPageOptions {
   readonly fetchFn?: FetchFn;
   readonly viewport?: EngineViewport;
+  /** Embedded contexts legitimately render at iframe sizes — floor override. */
+  readonly viewportMinEdge?: number;
   readonly runScripts?: boolean;
   /** Keep guest timers/rAF alive after load so pumpFrames can re-render. */
   readonly keepAlive?: boolean;
+  /**
+   * RFC 0010: the SESSION's shared network stack — cookie jar and HTTP cache
+   * survive across navigations. When given, the document fetch goes through
+   * it as a real navigation (destination=document, mode=navigate, Referer
+   * from `initiator`), and the committed URL is the post-redirect `res.url`.
+   */
+  readonly network?: BrowserNetworkStack;
+  /** RFC 0010: live location/history bridge for the guest sandbox. */
+  readonly sessionHost?: NavigationHost;
+  /** RFC 0010: session-scoped local/session storage. */
+  readonly storage?: SessionStorageBag;
+  /** The URL that initiated this navigation (Referer source, SameSite ctx). */
+  readonly initiator?: string;
+  /**
+   * RFC 0011: navigation method/body — form POST submissions ride the
+   * document request as a real POST through the owned redirect loop.
+   */
+  readonly method?: string;
+  readonly body?: string;
+  readonly contentType?: string;
+  /** window.open noreferrer / explicit Referrer-Policy for the navigation. */
+  readonly referrerPolicy?: string;
+  /**
+   * Called with the document response BEFORE parsing — returning "download"
+   * consumes the response into the download path and `loadPage` returns null
+   * (the navigation is never committed).
+   */
+  readonly onNavResponse?: (res: NetworkResponse) => "page" | "download" | Promise<"page" | "download">;
+  /** RFC 0013: iframe nodeId → its child context's window proxy. */
+  readonly frameLookup?: (nodeId: NodeId) => unknown;
+  /**
+   * RFC 0027: ancestor browsing-context origins (innermost parent first) —
+   * a document's own `frame-ancestors` directive is checked against this
+   * chain once its response headers are known.
+   */
+  readonly ancestorOrigins?: readonly string[];
+  /**
+   * RFC 0031: the EMBEDDER's COEP — a cross-origin iframe navigation under
+   * `require-corp` must carry an allowing CORP (and itself be COEP'd).
+   */
+  readonly initiatorCoep?: import("@browser-engine/guest").Coep;
+  /**
+   * RFC 0031: the opener's identity+policy captured at `window.open` time —
+   * the opened document's own COOP can sever the opener link once ITS
+   * response headers are known (before any opened-document script runs).
+   */
+  readonly openerInfo?: {
+    readonly origin: string | null;
+    readonly coop: import("@browser-engine/guest").Coop;
+    readonly popup: boolean;
+  };
 }
 
 /**
- * Advance a keepAlive page by one render cycle: drain guest timers/rAF/microtasks
+ * Run one event-loop turn against a live page — timers, rAF, microtasks —
  * so pending guest work mutates the DOM, then repaint. Returns the new state, or
  * the same state unchanged when the page has no live runtime.
  */
@@ -171,6 +337,20 @@ export interface EditableHit {
   readonly width: number;
   readonly height: number;
   readonly multiline: boolean;
+}
+
+/**
+ * RFC 0038: fingerprint of the layout-global inputs — viewport box, scroll
+ * offset, dpr. Any drift between renders invalidates every cached boundary
+ * (fixed pinning, sticky clamping, %-sizes all read these).
+ */
+function layoutInputKey(viewport: EngineViewport, scrollY: number): string {
+  return [
+    viewport.width,
+    viewport.height,
+    scrollY,
+    Number(viewport.devicePixelRatio ?? 1) || 1,
+  ].join(",");
 }
 
 function titleOf(dom: DomTree): string {
@@ -226,6 +406,14 @@ function commandVisibleInViewport(
       if (Math.min(x0, x1) >= maxX) return false;
       return true;
     }
+    case "tile": {
+      const x = Number(cmd.area.x);
+      const y = Number(cmd.area.y);
+      const w = Number(cmd.area.width);
+      const h = Number(cmd.area.height);
+      if (!(w > 0) || !(h > 0)) return false;
+      return !(y >= maxY || y + h <= 0 || x >= maxX || x + w <= 0);
+    }
     case "pop-clip":
     case "push-layer":
     case "pop-layer":
@@ -254,6 +442,26 @@ async function renderDom(
   focus: EditFocus | null = null,
   imageFetch?: (src: string) => Promise<Uint8Array | undefined>,
   scrollYInput = 0,
+  frameImages?: ReadonlyMap<NodeId, DecodedImage>,
+  csp?: import("@browser-engine/cli").CspContext | null,
+  /** RFC 0028: `@font-face` fetches are cors-mode+anonymous by spec — a
+   *  dedicated channel; falls back to the generic image fetch. */
+  fontFetch?: (src: string) => Promise<Uint8Array | undefined>,
+  /** RFC 0033: canvas plumbing — bitmaps merge into paint's image map and
+   *  the freshest `decodedImages` publish to `imageBox` each render so
+   *  drawImage(imgEl) sees the same images the paint pass used. */
+  canvases?: {
+    readonly bitmaps: () => ReadonlyMap<NodeId, DecodedImage>;
+    readonly imageBox: { current: ReadonlyMap<NodeId, DecodedImage> | undefined };
+  } | null,
+  /** RFC 0035: media engine — `prime()` fetches/probes in this resource
+   *  pass; `frames()` merges the current video frames into paint's map. */
+  media?: import("@browser-engine/cli").MediaEngine | null,
+  /** RFC 0038: live damage store for incremental layout — when present, the
+   *  layout pass replays undamaged formatting-context boundaries. */
+  incremental?: import("@browser-engine/cli").LayoutDamageStore,
+  /** RFC 0039: previous frame's retained raster — diffs into a damage rect. */
+  retained?: PageState["raster"],
 ): Promise<{
   fragmentTree: FragmentTree;
   displayList: DisplayList;
@@ -264,6 +472,12 @@ async function renderDom(
   scrollY: number;
   decodedImages: Map<NodeId, DecodedImage>;
   bgImages: Map<string, DecodedImage>;
+  /** RFC 0037: computed-style resolver — the AX tree reads display/visibility. */
+  styleOf: ReturnType<typeof createComputedStyleResolver>;
+  /** RFC 0039: retained raster state for the next partial repaint. */
+  raster: PageState["raster"];
+  /** RFC 0039: damage stats for THIS render — evidence surface. */
+  paintDamage: PaintDamageStats;
 }> {
   let t = performance.now();
   const viewportBox = { width: viewport.width, height: viewport.height };
@@ -272,22 +486,80 @@ async function renderDom(
   const dpr = Math.max(1, Math.min(3, Number(viewport.devicePixelRatio ?? 1) || 1));
   const scrollY = Math.max(0, scrollYInput);
   const maxVisibleImages = 220;
-  const sheets = documentStylesheets(dom, load, {
-    type: "screen",
-    widthPx: viewport.width,
-    heightPx: viewport.height,
-  });
+  // RFC 0027: `style-src-elem` gates `<style>`/`<link>` at collection.
+  const sheets = documentStylesheets(dom, load, mediaEnvironmentFor(viewport), csp ?? null);
   t = mark("sheets", t);
+  // `@font-face` phase (RFC 0006): fetch + register each sheet's webfonts under
+  // THIS page's scope before layout — the scoped shaper then resolves them.
+  // RFC 0027: font URLs are `font-src` fetches.
+  await registerFontFaces(sheets, pipelineFontRegistry, documentBaseUrl(dom, pageUrl), pageUrl, {
+    ...(load !== undefined ? { load } : {}),
+    ...(fontFetch !== undefined
+      ? { fetchBytes: fontFetch }
+      : imageFetch !== undefined
+        ? { fetchBytes: imageFetch }
+        : {}),
+    ...(csp !== undefined ? { csp } : {}),
+  });
+  t = mark("webfonts", t);
   const origins = sheets.map((_, i) => (i === 0 ? ("ua" as const) : ("author" as const)));
-  const styleOf = createComputedStyleResolver(dom, sheets, viewportBox, origins);
+  // RFC 0027: `style-src-attr`/`style-src` without 'unsafe-inline' suppresses
+  // `style=` declarations at cascade time (attribute kept, declarations win
+  // nothing).
+  const styleGate =
+    csp !== null && csp !== undefined
+      ? {
+          inlineStyleAllowed: (node: DomNode) =>
+            csp.checkInline(
+              "style",
+              { text: node.attrs?.get("style") ?? "" },
+              "attr",
+            ).allowed,
+        }
+      : undefined;
+  const styleOf = createComputedStyleResolver(
+    dom,
+    sheets,
+    viewportBox,
+    origins,
+    undefined,
+    styleGate,
+  );
   t = mark("styleResolver", t);
+  if (incremental !== undefined) {
+    // RFC 0038: declare whether any selector can restyle SIBLINGS — a
+    // `:first-child`, `+`/`~` combinator, or `:has()` rule makes childList
+    // and attribute edits fan out to all of the touched parent's children.
+    let structural = false;
+    const scan = (rules: readonly { selector?: readonly { text: string }[]; rules?: readonly unknown[] }[]): void => {
+      for (const rule of rules) {
+        for (const sel of rule.selector ?? []) {
+          if (/:?(first-child|last-child|only-child|nth-child|nth-of-type|nth-last-child|nth-last-of-type|empty|has|not)\b|[+~]/.test(sel.text)) {
+            structural = true;
+            return;
+          }
+        }
+        if (rule.rules !== undefined) scan(rule.rules as typeof rules);
+      }
+    };
+    scan(sheets);
+    incremental.siblingSelectors = structural;
+  }
   const fragmentTree = layout(dom, styleOf, {
-    shaper: pipelineShaper,
+    shaper: pipelineShaperFor(pageUrl),
     viewportWidth: px(viewport.width),
     viewportHeight: px(viewport.height),
     clipMaxY: viewport.height + 80,
+    // Real scroll offset: `fixed` boxes pin to the ICB and `sticky` boxes
+    // clamp against their thresholds inside the scrollport.
+    scrollY,
+    ...(incremental !== undefined ? { incremental } : {}),
   });
   t = mark("layout+cascade", t);
+  // RFC 0038: this render committed the accumulated damage — clear it so the
+  // NEXT mutations mark fresh dirt. Consuming here (not in finishPage) keeps
+  // the window tight against mutations landing between layout and paint.
+  incremental?.consume();
   const absPos = new Map<import("@browser-engine/ir").FragmentId, { x: number; y: number }>();
   const walkAbs = (id: import("@browser-engine/ir").FragmentId, ox: number, oy: number): void => {
     const frag = fragmentTree.fragments.get(id);
@@ -301,6 +573,12 @@ async function renderDom(
   };
   walkAbs(fragmentTree.root, 0, 0);
   const rankedImgs: { id: NodeId; y: number; x: number; w: number; h: number; area: number }[] = [];
+  const farImgs: { id: NodeId; y: number; x: number; w: number; h: number; area: number }[] = [];
+  const imgSlot = new Map<NodeId, number>();
+  const imgAttr = (id: NodeId, name: string): string => {
+    const node = dom.nodes.get(id);
+    return (node?.attrs?.get(name) ?? "").trim().toLowerCase();
+  };
   const seenImg = new Set<NodeId>();
   for (const [fragId, frag] of fragmentTree.fragments) {
     const node = dom.nodes.get(frag.node);
@@ -311,9 +589,19 @@ async function renderDom(
     const pos = absPos.get(fragId) ?? { x: Number(frag.box.borderBox.x), y: Number(frag.box.borderBox.y) };
     const x = pos.x;
     const y = pos.y;
+    imgSlot.set(frag.node, w);
+    seenImg.add(frag.node);
     if (y < scrollY + height + 520 && y + h > scrollY - 120 && x < widthLimit + 40 && x + w > -40) {
-      seenImg.add(frag.node);
       rankedImgs.push({
+        id: frag.node,
+        y,
+        x,
+        w,
+        h,
+        area: Math.max(0, w) * Math.max(0, h),
+      });
+    } else {
+      farImgs.push({
         id: frag.node,
         y,
         x,
@@ -323,6 +611,17 @@ async function renderDom(
       });
     }
   }
+  // `loading=lazy` defers fetches until the image nears the viewport — images
+  // outside the fetch window are dropped. Eager/absent images are still
+  // requested (bounded by the overall budget below), matching spec default.
+  // `fetchpriority` orders within each band: high first, low last.
+  const prioRank = (id: NodeId): number => {
+    const p = imgAttr(id, "fetchpriority");
+    return p === "high" ? 0 : p === "low" ? 2 : 1;
+  };
+  const eagerFar = farImgs
+    .filter((item) => imgAttr(item.id, "loading") !== "lazy")
+    .sort((a, b) => prioRank(a.id) - prioRank(b.id) || a.y - b.y);
   const visibleEnough = rankedImgs.filter((item) => {
     const x0 = Math.max(0, item.x);
     const y0 = Math.max(scrollY, item.y);
@@ -353,7 +652,9 @@ async function renderDom(
     }
     withoutExtraStrips.push(item);
   }
-  withoutExtraStrips.sort((a, b) => b.area - a.area || a.y - b.y || a.x - b.x);
+  withoutExtraStrips.sort(
+    (a, b) => prioRank(a.id) - prioRank(b.id) || b.area - a.area || a.y - b.y || a.x - b.x,
+  );
   const picked: typeof rankedImgs = [];
   const geoCount = new Map<string, number>();
   for (const item of withoutExtraStrips) {
@@ -364,15 +665,55 @@ async function renderDom(
     picked.push(item);
     if (picked.length >= maxVisibleImages) break;
   }
+  for (const item of eagerFar) {
+    if (picked.length >= maxVisibleImages) break;
+    picked.push(item);
+  }
   const visibleImgIds = new Set<NodeId>(picked.map((item) => item.id));
   if (PROFILE) console.error(`[profile] visibleImgs=${visibleImgIds.size} ranked=${rankedImgs.length} frags=${fragmentTree.fragments.size}`);
+  // RFC 0027: `img-src` — every image fetch (element, srcset, CSS url()) is a
+  // subresource fetch gated by URL; a refused URL yields no bytes so the
+  // element renders its broken/placeholder path like a network failure.
+  const gateImg =
+    csp !== null && csp !== undefined
+      ? (src: string): string | null => {
+          let abs = src;
+          try {
+            abs = new URL(src, documentBaseUrl(dom, pageUrl)).href;
+          } catch {
+            /* keep raw */
+          }
+          const gated = csp.gateSubresourceUrl(abs);
+          if (gated.blocked) return null;
+          return csp.check("img", gated.url).allowed ? gated.url : null;
+        }
+      : null;
+  const gatedImageFetch =
+    imageFetch === undefined
+      ? undefined
+      : gateImg === null
+        ? imageFetch
+        : async (src: string): Promise<Uint8Array | undefined> => {
+            const ok = gateImg(src);
+            if (ok === null) return undefined;
+            return imageFetch(ok);
+          };
+  // RFC 0035: media elements load in the same resource pass — probe +
+  // frame materialization runs parallel with image collection.
+  const mediaPrime = media?.prime() ?? null;
   const images = await collectImagesAsync(dom, load, {
     concurrency: 32,
     onlyNodes: visibleImgIds,
     maxImages: maxVisibleImages,
     timeoutMs: 4500,
-    ...(imageFetch !== undefined ? { fetchFn: imageFetch } : {}),
+    ...(gatedImageFetch !== undefined ? { fetchFn: gatedImageFetch } : {}),
+    sourceContext: (node) => ({
+      dpr,
+      viewportWidth: viewport.width,
+      ...(imgSlot.has(node.id) ? { slotWidth: imgSlot.get(node.id)! } : {}),
+    }),
   });
+  await mediaPrime;
   t = mark("images", t);
   if (PROFILE) console.error(`[profile] decodedImgs=${images.size}`);
   const bgDecoded = new Map<string, import("@browser-engine/ir").DecodedImage>();
@@ -386,12 +727,15 @@ async function renderDom(
     const st = styleOf(frag.node);
     const bg = st["backgroundImage"];
     if (typeof bg !== "string" || bg === "none" || !bg.includes("url(")) continue;
-    const m = /url\((['"]?)([^)'"]+)\1\)/i.exec(bg);
-    if (m === null) continue;
-    const raw = m[2]!.trim();
-    if (raw.startsWith("data:") || bgSeen.has(raw)) continue;
-    bgSeen.add(raw);
-    bgJobs.push(raw);
+    for (const m of bg.matchAll(/url\((['"]?)([^)'"]+)\1\)/gi)) {
+      const raw = m[2]!.trim();
+      if (raw.startsWith("data:") || bgSeen.has(raw)) continue;
+      // RFC 0027: CSS url() images are `img-src` fetches too.
+      if (gateImg !== null && gateImg(raw) === null) continue;
+      bgSeen.add(raw);
+      bgJobs.push(raw);
+      if (bgJobs.length >= 48) break;
+    }
     if (bgJobs.length >= 48) break;
   }
   if (bgJobs.length > 0 && (load !== undefined || imageFetch !== undefined)) {
@@ -415,7 +759,17 @@ async function renderDom(
       }),
     );
   }
-  const imageBySrc = (src: string) => bgDecoded.get(src);
+  const bgDataCache = new Map<string, import("@browser-engine/ir").DecodedImage | undefined>();
+  const imageBySrc = (src: string) => {
+    const hit = bgDecoded.get(src);
+    if (hit !== undefined) return hit;
+    if (!src.startsWith("data:")) return undefined;
+    if (bgDataCache.has(src)) return bgDataCache.get(src);
+    const bytes = decodeDataUrl(src);
+    const decoded = bytes === undefined ? undefined : tryDecode(bytes);
+    bgDataCache.set(src, decoded);
+    return decoded;
+  };
   const rootFrag = fragmentTree.fragments.get(fragmentTree.root);
   const contentHeight = Math.max(
     height,
@@ -423,10 +777,36 @@ async function renderDom(
   );
   const maxScroll = Math.max(0, contentHeight - height);
   const scrollYClamped = Math.min(scrollY, maxScroll);
+  // RFC 0013: iframe elements composite their child context's rendered frame
+  // bitmap through the same imageOf channel <img> uses.
+  if (frameImages !== undefined) {
+    for (const [node, img] of frameImages) {
+      if (img !== undefined) images.set(node, img);
+    }
+  }
+  // RFC 0033: `<canvas>` elements paint their Skia-rasterized bitmap through
+  // the same channel — rasterized lazily at this exact point each render.
+  if (canvases !== null && canvases !== undefined) {
+    for (const [node, img] of canvases.bitmaps()) {
+      if (img !== undefined) images.set(node, img);
+    }
+    // …and publish the decoded-image map for drawImage(imgEl) resolution.
+    canvases.imageBox.current = images;
+  }
+  // RFC 0035: a <video>'s current frame is just another DecodedImage —
+  // poster or the decoded frame at currentTime, through the same channel.
+  if (media !== null && media !== undefined) {
+    for (const [node, img] of media.frames()) {
+      images.set(node, img);
+    }
+  }
   const fullDisplayList = paint(fragmentTree, styleOf, (node) => images.get(node), {
     clipMaxY: height,
     scrollY: scrollYClamped,
     imageBySrc,
+    // Screen-space viewport rect — `background-attachment: fixed` positions
+    // against it (paint emits screen-space commands post scroll shift).
+    viewport: { x: px(0), y: px(0), width: px(widthLimit), height: px(height) },
   });
   t = mark("paint", t);
   if (PROFILE) console.error(`[profile] paintCmds=${fullDisplayList.commands.length} bg=${bgDecoded.size} dpr=${dpr}`);
@@ -434,11 +814,9 @@ async function renderDom(
   if (PROFILE) console.error(`[profile] clippedCmds=${displayList.commands.length}`);
   t = mark("clip", t);
   const width = widthLimit;
-  const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource, {
-    clipMaxY: height,
-    clipMaxX: widthLimit,
-    pixelRatio: dpr,
-  });
+  const newFocusRect = focus !== null ? focusOverlayBounds(fragmentTree, dom, focus) : null;
+  const rasterPass = renderWithDamage(displayList, width, height, dpr, retained ?? null, newFocusRect);
+  const surface = rasterPass;
   t = mark("gpu", t);
   if (focus !== null) {
     paintFocusOverlay(surface, fragmentTree, dom, focus);
@@ -455,6 +833,116 @@ async function renderDom(
     scrollY: scrollYClamped,
     decodedImages: images,
     bgImages: bgDecoded,
+    styleOf,
+    raster: {
+      commands: displayList.commands,
+      pixels: surface.pixels,
+      w: surface.width,
+      h: surface.height,
+      focusRect: newFocusRect,
+    },
+    paintDamage: rasterPass.stats,
+  };
+}
+
+/**
+ * RFC 0039: retained-surface render — diffs the previous clipped command list
+ * against the new one; the damage union (plus previous/next focus-overlay
+ * bounds) is repaired in place in `prev.pixels`. An identical diff short-
+ * circuits rasterization entirely.
+ */
+export interface PaintDamageStats {
+  /** Commands identical between frames (aligned prefix+suffix). */
+  readonly unchangedCommands: number;
+  /** Commands inside the changed spans. */
+  readonly changedCommands: number;
+  /** Damage-union area in CSS px² — 0 for an identical frame. */
+  readonly damageArea: number;
+  readonly viewportArea: number;
+  /** The diff produced no damage — the retained buffer was returned as-is. */
+  readonly identical: boolean;
+  /** A damage-scissored in-place repair actually ran. */
+  readonly repaired: boolean;
+}
+
+function renderWithDamage(
+  displayList: DisplayList,
+  width: number,
+  height: number,
+  dpr: number,
+  prev: PageState["raster"] | null,
+  focusRect: Rect | null,
+): { width: number; height: number; pixels: Uint8ClampedArray; stats: PaintDamageStats } {
+  const devW = Math.max(1, Math.round(width * dpr));
+  const devH = Math.max(1, Math.round(height * dpr));
+  const viewportCss: Rect = { x: px(0), y: px(0), width: px(width), height: px(height) };
+  let damage: Rect | null = null;
+  let diff: { readonly damage: Rect | null; unchanged: number; changed: number } = {
+    damage: null,
+    unchanged: 0,
+    changed: 0,
+  };
+  if (prev != null && prev.w === devW && prev.h === devH) {
+    diff = diffCommands(prev.commands, displayList.commands, viewportCss);
+    damage = unionRect(unionRect(diff.damage, prev.focusRect), focusRect);
+    if (damage === null) {
+      // Identical frame — the retained buffer already IS the output.
+      return {
+        width: devW,
+        height: devH,
+        pixels: prev.pixels,
+        stats: {
+          unchangedCommands: diff.unchanged,
+          changedCommands: diff.changed,
+          damageArea: 0,
+          viewportArea: width * height,
+          identical: true,
+          repaired: false,
+        },
+      };
+    }
+    const x0 = Math.max(0, Number(damage.x));
+    const y0 = Math.max(0, Number(damage.y));
+    const x1 = Math.min(width, Number(damage.x) + Number(damage.width));
+    const y1 = Math.min(height, Number(damage.y) + Number(damage.height));
+    damage = x1 <= x0 || y1 <= y0
+      ? null
+      : { x: px(x0), y: px(y0), width: px(x1 - x0), height: px(y1 - y0) };
+    if (damage === null) {
+      return {
+        width: devW,
+        height: devH,
+        pixels: prev.pixels,
+        stats: {
+          unchangedCommands: diff.unchanged,
+          changedCommands: diff.changed,
+          damageArea: 0,
+          viewportArea: width * height,
+          identical: true,
+          repaired: false,
+        },
+      };
+    }
+  }
+  const surface = renderDisplayListOnGpu(displayList, width, height, pipelineRasterSource, {
+    clipMaxY: height,
+    clipMaxX: width,
+    pixelRatio: dpr,
+    ...(damage !== null && prev != null ? { damage, into: prev.pixels } : {}),
+  });
+  return {
+    width: surface.width,
+    height: surface.height,
+    pixels: surface.pixels,
+    stats: {
+      unchangedCommands: diff.unchanged,
+      changedCommands: diff.changed,
+      damageArea:
+        damage === null ? width * height : Number(damage.width) * Number(damage.height),
+      viewportArea: width * height,
+      identical: false,
+      repaired: damage !== null && prev != null,
+    },
   };
 }
 
@@ -551,6 +1039,9 @@ function finishPage(
   focus: EditFocus | null,
   imageFetch?: PageImageFetch,
   imageBytes?: Map<string, Uint8Array>,
+  fontFetch?: PageImageFetch,
+  canvases?: PageState["canvases"],
+  media?: PageState["media"],
 ): PageState {
   const title = titleOf(dom);
   const state: PageState = {
@@ -577,32 +1068,51 @@ function finishPage(
       frameRev,
     ),
   };
-  let out = state;
+  // RFC 0037: build the AX tree off the same style+layout+focus inputs paint
+  // used — AT consumers see exactly what was rendered.
+  const axTree = buildAxTree(dom, rendered.styleOf, rendered.fragmentTree, { focus });
+  let out: PageState = { ...state, axTree };
   if (loader !== undefined) out = { ...out, loader };
   if (imageFetch !== undefined) out = { ...out, imageFetch };
+  if (fontFetch !== undefined) out = { ...out, fontFetch };
   if (imageBytes !== undefined) out = { ...out, imageBytes };
   if (rendered.decodedImages !== undefined) out = { ...out, decodedImages: rendered.decodedImages };
   if (rendered.bgImages !== undefined) out = { ...out, bgImages: rendered.bgImages };
+  if (canvases !== undefined) out = { ...out, canvases };
+  if (media !== undefined) out = { ...out, media };
+  if (rendered.raster !== undefined) out = { ...out, raster: rendered.raster };
+  out = { ...out, paintDamage: rendered.paintDamage };
   return out;
 }
 
 function collectDocumentImageSrcs(dom: DomTree, maxImages = 120): string[] {
-  const srcs: string[] = [];
+  // Prefetch order: `loading=lazy` images are SKIPPED here entirely (the whole
+  // point of lazy is not fetching until the image nears the viewport — layout
+  // gating happens later in renderDom). `fetchpriority` orders the warm queue:
+  // high first, low last, stable otherwise.
+  const entries: { src: string; prio: number; seq: number }[] = [];
   const visit = (id: NodeId): void => {
-    if (srcs.length >= maxImages) return;
     const node = dom.nodes.get(id);
     if (node === undefined) return;
     if (node.kind === "element" && node.tag === "img") {
-      for (const src of imageSourceCandidates(node, true)) {
-        if (src.startsWith("data:")) continue;
-        if (!srcs.includes(src)) srcs.push(src);
-        break;
+      const loading = (node.attrs?.get("loading") ?? "").trim().toLowerCase();
+      if (loading !== "lazy") {
+        const p = (node.attrs?.get("fetchpriority") ?? "").trim().toLowerCase();
+        const prio = p === "high" ? 0 : p === "low" ? 2 : 1;
+        for (const src of imageSourceCandidates(node, true)) {
+          if (src.startsWith("data:")) continue;
+          if (!entries.some((e) => e.src === src)) {
+            entries.push({ src, prio, seq: entries.length });
+          }
+          break;
+        }
       }
     }
     for (const child of node.children) visit(child);
   };
   visit(dom.root);
-  return srcs;
+  entries.sort((a, b) => a.prio - b.prio || a.seq - b.seq);
+  return entries.slice(0, maxImages).map((e) => e.src);
 }
 
 async function renderHtmlEngine(
@@ -617,13 +1127,90 @@ async function renderHtmlEngine(
     readonly resourceCache?: Map<string, Uint8Array> | ReadonlyMap<string, Uint8Array>;
     readonly network?: ReturnType<typeof createPageNetwork>;
     readonly keepAlive?: boolean;
+    /** RFC 0010: session navigation bridge → live location/history. */
+    readonly sessionHost?: NavigationHost;
+    /** RFC 0010: session-scoped storage pair. */
+    readonly storage?: SessionStorageBag;
+    /** RFC 0013: iframe nodeId → its child context's window proxy. */
+    readonly frameLookup?: (nodeId: NodeId) => unknown;
+    /** RFC 0027: the navigation response's headers — `content-security-policy*`
+     *  entries become the document's enforce/report policies. */
+    readonly responseHeaders?: Readonly<Record<string, string>>;
+    /** RFC 0027: ancestor browsing-context origins for `frame-ancestors`. */
+    readonly ancestorOrigins?: readonly string[];
+    /** RFC 0031: the opener's identity+policy for COOP sever decisions —
+     *  the opened doc's own COOP resolves against it before scripts run. */
+    readonly openerInfo?: {
+      readonly origin: string | null;
+      readonly coop: import("@browser-engine/guest").Coop;
+      readonly popup: boolean;
+    };
+    /** RFC 0040: streaming-document counters from the fetch loop. */
+    readonly documentStream?: PageState["documentStream"];
   } = {},
 ): Promise<PageState> {
   const started = performance.now();
+  // RFC 0010: the new document's URL is committed BEFORE its scripts run —
+  // `location.href`/`assign` resolve against THIS document's URL during boot
+  // (previously the host still pointed at the outgoing page, so resolves
+  // against a stale base silently dropped navigation intents).
+  options.sessionHost?.commit(url, null);
   const network = options.network ?? (options.fetchFn === undefined ? createPageNetwork(url) : undefined);
+  // The document's referrer policy is known only after parse — the getter is
+  // read lazily per request (RFC 0009). Initiator is the page URL so Referer /
+  // SameSite cookies / Sec-Fetch-Site all derive from the real origin.
+  let docReferrerPolicy: string | undefined;
+  // RFC 0028: `crossorigin` attributes pin cors-mode fetches per URL; the
+  // pre-boot parse supplies the map (the DOM is stable at parse time).
+  const earlyDomForCors = options.fetchFn === undefined && network !== undefined
+    ? parseHtml(new TextEncoder().encode(html))
+    : null;
+  const corsMap =
+    earlyDomForCors !== null ? collectCrossoriginSettings(earlyDomForCors, url) : null;
+  // RFC 0029: the destination map feeds Mixed Content Level 2 + correct
+  // Sec-Fetch-Dest — subresource loads carry their real destination
+  // (image/style) instead of falling into the GET-default "navigate" lane.
+  const destMap =
+    earlyDomForCors !== null ? collectSubresourceDestinations(earlyDomForCors, url) : null;
+  // RFC 0031: the document's COEP is only known once its own headers parse
+  // inside boot — the resource channel reads it lazily per request.
+  const coepRef: { current: import("@browser-engine/guest").Coep } = {
+    current: "unsafe-none",
+  };
   const fetchForResources =
     options.fetchFn ??
-    (network !== undefined ? networkStackToFetchFn(network) : undefined);
+    (network !== undefined
+      ? networkStackToFetchFn(network, {
+          initiator: url,
+          referrerPolicy: () => docReferrerPolicy,
+          // HTML §fetch a style/script-like subresource: unmarked loads are
+          // no-cors + credentials include (SameSite rules apply in the jar).
+          mode: "no-cors",
+          credentials: "include",
+          get initiatorCoep() {
+            return coepRef.current;
+          },
+          requestFor: (u) => {
+            const c = corsMap?.get(u);
+            const d = destMap?.get(u);
+            if (c === undefined && d === undefined) return undefined;
+            return { ...(d !== undefined ? { destination: d } : {}), ...(c ?? {}) };
+          },
+        })
+      : undefined);
+  // RFC 0028: `@font-face` sources are ALWAYS cors-anonymous fetches (CSS
+  // Fonts 4 §4.9) — a dedicated adapter, not the default channel.
+  const fetchForFonts =
+    options.fetchFn ??
+    (network !== undefined
+      ? networkStackToFetchFn(network, {
+          initiator: url,
+          referrerPolicy: () => docReferrerPolicy,
+          destination: "font",
+          mode: "cors",
+          credentials: "same-origin",
+        })
+      : undefined);
   const warmImageBytes = new Map<string, Uint8Array>();
   const warmImageInflight = new Map<string, Promise<Uint8Array | undefined>>();
   const bootOptions: {
@@ -633,15 +1220,43 @@ async function renderHtmlEngine(
     network?: ReturnType<typeof createPageNetwork>;
     onAfterClassic?: (session: { readonly dom: DomTree }) => void | Promise<void>;
     keepAlive?: boolean;
+    sessionHost?: NavigationHost;
+    storage?: SessionStorageBag;
+    frameLookup?: (nodeId: NodeId) => unknown;
+    responseHeaders?: Readonly<Record<string, string>>;
+    ancestorOrigins?: readonly string[];
+    mediaEnv?: MediaEnvironment;
+    openerInfo?: {
+      readonly origin: string | null;
+      readonly coop: import("@browser-engine/guest").Coop;
+      readonly popup: boolean;
+    };
   } = {};
   if (options.fetchFn !== undefined) bootOptions.fetchFn = options.fetchFn;
   if (options.runScripts !== undefined) bootOptions.runScripts = options.runScripts;
   if (options.loadExternalSheet !== undefined) bootOptions.loadExternalSheet = options.loadExternalSheet;
   if (network !== undefined) bootOptions.network = network;
   if (options.keepAlive) bootOptions.keepAlive = true;
+  if (options.sessionHost !== undefined) bootOptions.sessionHost = options.sessionHost;
+  if (options.storage !== undefined) bootOptions.storage = options.storage;
+  if (options.frameLookup !== undefined) bootOptions.frameLookup = options.frameLookup;
+  if (options.responseHeaders !== undefined) bootOptions.responseHeaders = options.responseHeaders;
+  if (options.ancestorOrigins !== undefined) bootOptions.ancestorOrigins = options.ancestorOrigins;
+  // RFC 0035: <source media="…"> evaluates against the REAL viewport, not
+  // the decoder's default environment.
+  bootOptions.mediaEnv = mediaEnvironmentFor(viewport);
+  if (options.openerInfo !== undefined) bootOptions.openerInfo = options.openerInfo;
+  // RFC 0027: the session's CSP exists only after boot parses `<meta>` —
+  // warm-path closures consult this cell once it is populated.
+  const cspRef: { current: import("@browser-engine/cli").CspContext | null } = { current: null };
   if (fetchForResources !== undefined) {
     bootOptions.onAfterClassic = (session) => {
+      cspRef.current = (session as { csp?: import("@browser-engine/cli").CspContext | null }).csp ?? null;
+      coepRef.current =
+        (session as { isolation?: { readonly coep?: import("@browser-engine/guest").Coep } })
+          .isolation?.coep ?? "unsafe-none";
       const base = documentBaseUrl(session.dom, url);
+      docReferrerPolicy = documentReferrerPolicy(session.dom);
       let srcs: string[] = [];
       try {
         srcs = collectDocumentImageSrcs(session.dom, 180);
@@ -655,6 +1270,13 @@ async function renderHtmlEngine(
           abs = new URL(src, base).href;
         } catch {
           // Invalid URL input: keep the raw/fallback value.
+        }
+        // RFC 0027: warm-image prefetch is an `img-src` subresource fetch.
+        const warmCsp = cspRef.current;
+        if (warmCsp !== null) {
+          const gated = warmCsp.gateSubresourceUrl(abs);
+          if (gated.blocked || !warmCsp.check("img", gated.url).allowed) continue;
+          abs = gated.url;
         }
         if (warmImageBytes.has(abs) || warmImageInflight.has(abs)) continue;
         const job = fetchForResources(abs)
@@ -674,15 +1296,31 @@ async function renderHtmlEngine(
     };
   }
   let tBoot = performance.now();
+  // Reuse the pre-boot parse for stylesheet prefetch AND the cors map when
+  // the network path owns fetching (the fetchFn-injected path re-parses).
+  const earlyDom =
+    earlyDomForCors ??
+    (fetchForResources !== undefined ? parseHtml(new TextEncoder().encode(html)) : null);
+  // RFC 0027: gate the early stylesheet prefetch with the policies derivable
+  // pre-boot — response headers + `<meta>` in the provisional DOM.
+  const earlyCsp =
+    earlyDom !== null ? documentCsp(earlyDom, url, options.responseHeaders) : null;
   const earlyCssWork =
-    fetchForResources !== undefined
-      ? loadResourcesWithTrace(parseHtml(new TextEncoder().encode(html)), url, fetchForResources, {
+    earlyDom !== null
+      ? loadResourcesWithTrace(earlyDom, url, fetchForResources, {
           stylesheetsOnly: true,
           ...(options.resourceCache !== undefined ? { existing: options.resourceCache } : {}),
+          ...(earlyCsp !== null && !earlyCsp.empty ? { csp: earlyCsp } : {}),
         })
       : null;
   const boot = await bootFineSession(html, url, bootOptions);
   tBoot = mark("boot", tBoot);
+  cspRef.current = boot.session.csp ?? null;
+  // Seed the COEP gate from the parsed session — `onAfterClassic` only fires
+  // on the runScripts path, so a scriptless load would otherwise leave the
+  // ref at "unsafe-none" and the warm-image CORP check would never engage.
+  coepRef.current = boot.session.isolation.coep;
+  docReferrerPolicy = documentReferrerPolicy(boot.session.dom);
   const baseForImages = documentBaseUrl(boot.session.dom, url);
   const startWarm = (src: string): void => {
     if (fetchForResources === undefined) return;
@@ -691,6 +1329,12 @@ async function renderHtmlEngine(
       abs = new URL(src, baseForImages).href;
     } catch {
       // Invalid URL input: keep the raw/fallback value.
+    }
+    // RFC 0027: warm-image fetches are `img-src` subresources.
+    if (cspRef.current !== null) {
+      const gated = cspRef.current.gateSubresourceUrl(abs);
+      if (gated.blocked || !cspRef.current.check("img", gated.url).allowed) return;
+      abs = gated.url;
     }
     if (warmImageBytes.has(abs) || warmImageInflight.has(abs)) return;
     const job = fetchForResources(abs)
@@ -731,6 +1375,7 @@ async function renderHtmlEngine(
     const postCssWork = loadResourcesWithTrace(boot.session.dom, url, fetchForResources, {
       stylesheetsOnly: true,
       existing: mergedCache,
+      ...(cspRef.current !== null ? { csp: cspRef.current } : {}),
     });
     let postDone: { cache: Map<string, Uint8Array> } | null = null;
     try {
@@ -818,9 +1463,16 @@ async function renderHtmlEngine(
     combinedLoad,
     null,
     imageFetch,
+    0,
+    undefined,
+    cspRef.current,
+    fetchForFonts,
+    boot.canvas,
+    boot.media,
+    boot.session.layoutDamage,
   );
   mark("renderDom", tBoot);
-  const page = finishPage(
+  const page0 = finishPage(
     url,
     boot.session.dom,
     rendered,
@@ -832,7 +1484,36 @@ async function renderHtmlEngine(
     null,
     imageFetch,
     warmImageBytes,
+    fetchForFonts,
+    boot.canvas,
+    boot.media,
   );
+  // RFC 0027: expose the document's policy context on the page — a PARENT
+  // context reads it for `frame-src` gating of child navigations; a refused
+  // `frame-ancestors` verdict propagates as `cspBlocked`.
+  let page: PageState = page0;
+  if (cspRef.current !== null) page = { ...page, csp: cspRef.current };
+  if (boot.cspBlocked === true) page = { ...page, cspBlocked: true };
+  // RFC 0038: carry the session's damage store + the input fingerprint so
+  // repaints feed the cache and detect global-input changes.
+  page = {
+    ...page,
+    layoutDamage: boot.session.layoutDamage,
+    layoutInputs: layoutInputKey(viewport, 0),
+  };
+  // RFC 0031: isolation state survives on the page — a parent context reads
+  // `coep` to gate this document's iframe subloads; chrome reads `coop`/
+  // `crossOriginIsolated` off NavState.
+  page = {
+    ...page,
+    coep: boot.session.isolation.coep,
+    coop: boot.session.isolation.coop,
+    originAgentCluster: boot.session.isolation.originAgentCluster,
+    crossOriginIsolated: boot.session.isolation.crossOriginIsolated,
+  };
+  if (options.documentStream !== undefined) {
+    page = { ...page, documentStream: options.documentStream };
+  }
   if (boot.runtime !== undefined && options.keepAlive) {
     return { ...page, runtime: boot.runtime };
   }
@@ -937,7 +1618,22 @@ export function findEditableNode(dom: DomTree, from: NodeId): NodeId | null {
     if (item === undefined) return null;
     if (item.kind === "element") {
       const tag = item.tag ?? "";
-      if (tag === "textarea" || tag === "input") return current;
+      if (tag === "textarea") return current;
+      if (tag === "input") {
+        // Only text-entry input kinds are editable — button/checkable inputs
+        // (submit/checkbox/radio/…) activate, they don't take a caret.
+        const type = (item.attrs?.get("type") ?? "").toLowerCase();
+        const textLike =
+          type === "" ||
+          type === "text" ||
+          type === "search" ||
+          type === "url" ||
+          type === "tel" ||
+          type === "password" ||
+          type === "email" ||
+          type === "number";
+        if (textLike) return current;
+      }
       if (item.attrs?.has("data-editable")) return current;
     }
     current = item.parent;
@@ -1001,34 +1697,57 @@ export function fastScrollPaint(
   );
   const maxScroll = Math.max(0, contentHeight - height);
   const scrollY = Math.max(0, Math.min(maxScroll, scrollYInput));
-  const sheets = documentStylesheets(page.dom, page.loader, {
-    type: "screen",
-    widthPx: width,
-    heightPx: height,
-  });
+  const sheets = documentStylesheets(page.dom, page.loader, mediaEnvironmentFor(viewport));
   const origins = sheets.map((_, i) => (i === 0 ? ("ua" as const) : ("author" as const)));
   const styleOf = createComputedStyleResolver(page.dom, sheets, { width, height }, origins);
-  const decoded = page.decodedImages ?? new Map<NodeId, DecodedImage>();
+  const decoded = new Map(page.decodedImages ?? []);
+  // RFC 0013: iframe frame bitmaps composite through the same image channel.
+  if (page.frameImages !== undefined) {
+    for (const [n, img] of page.frameImages) {
+      if (img !== undefined) decoded.set(n, img);
+    }
+  }
   const bgImages = page.bgImages ?? new Map<string, DecodedImage>();
   const imageBySrc = (src: string) => bgImages.get(src);
+  // `fixed`/`sticky` boxes move per scroll offset: re-layout when any exist
+  // (cheap enough at engine scale) — otherwise reuse the cached tree.
+  let fragmentTree = page.fragmentTree;
+  let hasViewportPinned = false;
+  for (const [id, node] of page.dom.nodes) {
+    if (node.kind !== "element") continue;
+    const pos = styleOf(id)["position"];
+    if (pos === "fixed" || pos === "sticky") {
+      hasViewportPinned = true;
+      break;
+    }
+  }
+  if (hasViewportPinned) {
+    fragmentTree = layout(page.dom, styleOf, {
+      shaper: pipelineShaperFor(page.url),
+      viewportWidth: px(width),
+      viewportHeight: px(height),
+      clipMaxY: height + 80,
+      scrollY,
+    });
+  }
   const fullDisplayList = paint(
-    page.fragmentTree,
+    fragmentTree,
     styleOf,
     (node) => decoded.get(node),
     {
       clipMaxY: height,
       scrollY,
       imageBySrc,
+      viewport: { x: px(0), y: px(0), width: px(width), height: px(height) },
     },
   );
   const displayList = clipDisplayListToViewport(fullDisplayList, height, width);
-  const surface = renderDisplayListOnGpu(displayList, width, height, pipelineGlyphSource, {
-    clipMaxY: height,
-    clipMaxX: width,
-    pixelRatio: dpr,
-  });
+  const newFocusRect =
+    page.focus !== null ? focusOverlayBounds(fragmentTree, page.dom, page.focus) : null;
+  const rasterPass = renderWithDamage(displayList, width, height, dpr, page.raster ?? null, newFocusRect);
+  const surface = rasterPass;
   if (page.focus !== null) {
-    paintFocusOverlay(surface, page.fragmentTree, page.dom, page.focus);
+    paintFocusOverlay(surface, fragmentTree, page.dom, page.focus);
   }
   const png = encodeSurfaceToPng(surface, { level: 1 });
   const frame = toFrame(
@@ -1052,6 +1771,15 @@ export function fastScrollPaint(
     viewport,
     decodedImages: decoded,
     bgImages,
+    raster: {
+      commands: displayList.commands,
+      pixels: surface.pixels,
+      w: surface.width,
+      h: surface.height,
+      focusRect: newFocusRect,
+    },
+    paintDamage: rasterPass.stats,
+    ...(page.frameImages !== undefined ? { frameImages: page.frameImages } : {}),
   });
 }
 
@@ -1060,12 +1788,36 @@ export async function repaintPage(
   viewport: EngineViewport,
   focus: EditFocus | null = page.focus,
   scrollY: number = page.scrollY ?? 0,
+  options: { readonly frameImages?: ReadonlyMap<NodeId, DecodedImage> } = {},
 ): Promise<PageState> {
   const started = performance.now();
   const imageBytes = page.imageBytes ?? new Map<string, Uint8Array>();
   const combinedLoad = makeCombinedImageLoader(page.loader, imageBytes, page.url);
   const imageFetch = makeCachingImageFetch(page.imageFetch, imageBytes, page.url);
-  const rendered = await renderDom(page.dom, page.url, viewport, combinedLoad, focus, imageFetch, scrollY);
+  const frameImages = options.frameImages ?? page.frameImages;
+  const damage = page.layoutDamage;
+  const nextLayoutInputs = layoutInputKey(viewport, scrollY);
+  if (damage !== undefined && page.layoutInputs !== nextLayoutInputs) {
+    // Viewport/scroll/dpr moved — every cached boundary's external inputs
+    // changed; bump the epoch so the entries can never hit.
+    damage.epoch += 1;
+  }
+  const rendered = await renderDom(
+    page.dom,
+    page.url,
+    viewport,
+    combinedLoad,
+    focus,
+    imageFetch,
+    scrollY,
+    frameImages,
+    page.csp ?? null,
+    page.fontFetch,
+    page.canvases ?? null,
+    page.media ?? null,
+    damage,
+    page.raster ?? null,
+  );
   const next = finishPage(
     page.url,
     page.dom,
@@ -1078,8 +1830,35 @@ export async function repaintPage(
     focus,
     page.imageFetch ?? imageFetch,
     imageBytes,
+    page.fontFetch,
+    page.canvases,
+    page.media,
   );
-  return page.runtime !== undefined ? { ...next, runtime: page.runtime } : next;
+  const carried =
+    frameImages !== undefined ? { ...next, frameImages } : next;
+  const withCsp =
+    page.csp !== undefined ? { ...carried, csp: page.csp } : carried;
+  const withIso = carryIsolation(page, withCsp);
+  const withDamage: PageState = {
+    ...withIso,
+    ...(damage !== undefined ? { layoutDamage: damage, layoutInputs: nextLayoutInputs } : {}),
+  };
+  return page.runtime !== undefined ? { ...withDamage, runtime: page.runtime } : withDamage;
+}
+
+/** Carry a page's RFC 0031 isolation state onto a rebuilt PageState. */
+function carryIsolation(from: PageState, to: PageState): PageState {
+  return {
+    ...to,
+    ...(from.coep !== undefined ? { coep: from.coep } : {}),
+    ...(from.coop !== undefined ? { coop: from.coop } : {}),
+    ...(from.originAgentCluster !== undefined
+      ? { originAgentCluster: from.originAgentCluster }
+      : {}),
+    ...(from.crossOriginIsolated !== undefined
+      ? { crossOriginIsolated: from.crossOriginIsolated }
+      : {}),
+  };
 }
 
 export async function applyTextEdit(
@@ -1106,8 +1885,21 @@ export async function applyTextEdit(
   const imageBytes = page.imageBytes ?? new Map<string, Uint8Array>();
   const combinedLoad = makeCombinedImageLoader(page.loader, imageBytes, page.url);
   const imageFetch = makeCachingImageFetch(page.imageFetch, imageBytes, page.url);
-  const rendered = await renderDom(dom, page.url, viewport, combinedLoad, focus, imageFetch, page.scrollY ?? 0);
-  return finishPage(
+  const rendered = await renderDom(
+    dom,
+    page.url,
+    viewport,
+    combinedLoad,
+    focus,
+    imageFetch,
+    page.scrollY ?? 0,
+    page.frameImages,
+    page.csp ?? null,
+    page.fontFetch,
+    page.canvases ?? null,
+    page.media ?? null,
+  );
+  const finished = finishPage(
     page.url,
     dom,
     rendered,
@@ -1119,7 +1911,17 @@ export async function applyTextEdit(
     focus,
     page.imageFetch ?? imageFetch,
     imageBytes,
+    page.fontFetch,
+    page.canvases,
+    page.media,
   );
+  const carried =
+    page.frameImages !== undefined ? { ...finished, frameImages: page.frameImages } : finished;
+  const withCsp =
+    page.csp !== undefined ? { ...carried, csp: page.csp } : carried;
+  const withIso = carryIsolation(page, withCsp);
+  // Editing must not kill the live runtime — guest listeners/activation stay.
+  return page.runtime !== undefined ? { ...withIso, runtime: page.runtime } : withIso;
 }
 
 export async function applyFocus(page: PageState, focus: EditFocus | null): Promise<PageState> {
@@ -1166,10 +1968,10 @@ export function editableHitFromPoint(page: PageState, x: number, y: number): Edi
 export async function loadPage(
   target: string,
   options: LoadPageOptions | FetchFn = {},
-): Promise<PageState> {
+): Promise<PageState | null> {
   const opts: LoadPageOptions =
     typeof options === "function" ? { fetchFn: options } : options;
-  const viewport = normalizeViewport(opts.viewport);
+  const viewport = normalizeViewport(opts.viewport, undefined, opts.viewportMinEdge ?? 200);
   const runScripts = opts.runScripts ?? true;
   const trimmed = target.trim();
   const networkBase =
@@ -1180,8 +1982,21 @@ export async function loadPage(
     trimmed === "/"
       ? HOME_URL
       : trimmed;
-  const network = opts.fetchFn === undefined ? createPageNetwork(networkBase) : null;
-  const fetchFn = opts.fetchFn ?? (network !== null ? networkStackToFetchFn(network) : defaultFetch);
+  // RFC 0010: prefer the SESSION's shared stack — its cookie jar and HTTP
+  // cache survive navigation. A caller-supplied fetchFn (tests) still wins.
+  const network = opts.network ?? (opts.fetchFn === undefined ? createPageNetwork(networkBase) : null);
+  // When the session stack exists, leave `fetchFn` UNDEFINED so
+  // renderHtmlEngine builds its own gated subresource channel (no-cors mode,
+  // destination map, lazy COEP ref). A bare adapter here would shadow that
+  // channel and silently drop CORP/mixed-content/destination semantics.
+  const fetchFn: FetchFn | undefined =
+    opts.fetchFn ?? (network !== null ? undefined : defaultFetch);
+  const fetchOpt = fetchFn !== undefined ? { fetchFn } : {};
+  const sessionOpts = {
+    ...(opts.sessionHost !== undefined ? { sessionHost: opts.sessionHost } : {}),
+    ...(opts.storage !== undefined ? { storage: opts.storage } : {}),
+    ...(opts.frameLookup !== undefined ? { frameLookup: opts.frameLookup } : {}),
+  };
 
   if (
     trimmed === "" ||
@@ -1190,31 +2005,31 @@ export async function loadPage(
     trimmed === "engine://home" ||
     trimmed === "/"
   ) {
-    return renderHtmlEngine(HOME_HTML, HOME_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(HOME_HTML, HOME_URL, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...sessionOpts });
   }
 
   if (trimmed === DEMO_URL || trimmed === "engine://demo") {
-    return renderHtmlEngine(DEMO_HTML, DEMO_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(DEMO_HTML, DEMO_URL, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...sessionOpts });
   }
 
   if (trimmed === LIVE_URL || trimmed === "engine://live") {
-    return renderHtmlEngine(LIVE_HTML, LIVE_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(LIVE_HTML, LIVE_URL, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...sessionOpts });
   }
 
   if (trimmed === FONTS_URL || trimmed === "engine://fonts") {
     const html = FONTS_HTML.replaceAll("{{FONT_STACK}}", pipelinePrimaryFontName());
-    return renderHtmlEngine(html, FONTS_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(html, FONTS_URL, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...sessionOpts });
   }
 
   if (trimmed === FORM_URL || trimmed === "engine://form") {
-    return renderHtmlEngine(FORM_HTML, FORM_URL, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}) });
+    return renderHtmlEngine(FORM_HTML, FORM_URL, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...sessionOpts });
   }
 
   if (trimmed.startsWith("file://")) {
     const filePath = fileURLToPath(trimmed);
     const html = readFileSync(filePath, "utf8");
     const url = pathToFileURL(filePath).href;
-    return renderHtmlEngine(html, url, viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
+    return renderHtmlEngine(html, url, viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}), ...sessionOpts });
   }
 
   if (!/^(https?:\/\/|engine:\/\/)/i.test(trimmed)) {
@@ -1223,19 +2038,131 @@ export async function loadPage(
       return loadPage(pathToFileURL(asPath).href, opts);
     }
     if (trimmed.includes("<") && trimmed.includes(">")) {
-      return renderHtmlEngine(trimmed, "engine://inline", viewport, { fetchFn, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}) });
+      return renderHtmlEngine(trimmed, "engine://inline", viewport, { ...fetchOpt, runScripts, ...(network !== null ? { network } : {}), ...(opts.keepAlive ? { keepAlive: true } : {}), ...sessionOpts });
     }
     return loadPage(`https://${trimmed}`, opts);
   }
 
   let rootBytes: Uint8Array | undefined;
   let documentUrl = trimmed;
+  // RFC 0027: the navigation response's headers feed the document's CSP
+  // (content-security-policy + -report-only entries).
+  let navHeaders: Readonly<Record<string, string>> | undefined;
+  // RFC 0040: populated when the document streamed in — wire-byte counters
+  // and how many partial-DOM snapshots the incremental parser produced.
+  let documentStream: PageState["documentStream"];
   try {
-    rootBytes = await fetchFn(trimmed);
+    if (network !== null) {
+      // RFC 0010: the document fetch IS a navigation — destination=document,
+      // mode=navigate, initiator=the referring document. The session stack's
+      // owned redirect loop means `res.url` is where we actually landed.
+      const navReq = {
+        url: trimmed,
+        // RFC 0029: child-context navigations declare destination "iframe"
+        // (Fetch Metadata §4.3 — the true Sec-Fetch-Dest for frames) so
+        // baseline mixed-content can BLOCK them while top-level navigations
+        // stay exempt. `ancestorOrigins` is only set for frame loads.
+        destination: opts.ancestorOrigins !== undefined ? ("iframe" as const) : ("document" as const),
+        mode: "navigate" as const,
+        ...(opts.method !== undefined ? { method: opts.method } : {}),
+        ...(opts.body !== undefined ? { body: new TextEncoder().encode(opts.body) } : {}),
+        ...(opts.contentType !== undefined
+          ? { headers: { "content-type": opts.contentType } }
+          : {}),
+        ...(opts.initiator !== undefined ? { initiator: opts.initiator } : {}),
+        ...(opts.initiatorCoep !== undefined
+          ? { initiatorCoep: opts.initiatorCoep }
+          : {}),
+        ...(opts.referrerPolicy !== undefined
+          ? { referrerPolicy: opts.referrerPolicy }
+          : {}),
+      };
+      const stackStreaming =
+        (network as { requestStream?: unknown }).requestStream !== undefined
+          ? (network as {
+              requestStream(r: typeof navReq): Promise<import("@browser-engine/guest").StreamingNetworkResponse>;
+            })
+          : null;
+      if (stackStreaming !== null) {
+        // RFC 0040: the body streams off the wire — each chunk feeds the
+        // incremental parser; a snapshot per chunk polls the partial DOM.
+        const streaming = await stackStreaming.requestStream(navReq);
+        const head = {
+          url: streaming.url,
+          status: streaming.status,
+          ok: streaming.ok,
+          headers: streaming.headers,
+          body: new Uint8Array(),
+        };
+        // A response can veto the commit — Content-Disposition: attachment
+        // routes to the download path and the navigation evaporates. The veto
+        // consumes `res.body` for the saved file, so drain the wire first.
+        if (opts.onNavResponse !== undefined) {
+          const payload = await streaming.collect();
+          const full = { ...head, body: payload };
+          const verdict = await opts.onNavResponse(full);
+          if (verdict === "download") return null;
+          // "page": the drained bytes are the document — feed them through
+          // the incremental parser as one chunk (nothing left on the wire).
+          if (full.ok) {
+            const parser = new IncrementalHtmlParser();
+            parser.write(payload);
+            const final = parser.finish();
+            rootBytes = payload;
+            documentUrl = full.url !== "" ? full.url : trimmed;
+            navHeaders = full.headers;
+            documentStream = {
+              received: parser.receivedBytes,
+              total: streaming.totalBytes,
+              snapshots: parser.snapshots,
+              nodes: final.tree.nodes.size,
+            };
+          }
+        } else if (head.ok) {
+          const parser = new IncrementalHtmlParser();
+          const parts: Uint8Array[] = [];
+          let received = 0;
+          for await (const chunk of streaming.bodyStream) {
+            parser.write(chunk);
+            parser.snapshot(); // partial-DOM poll — memoized per byte count
+            parts.push(chunk);
+            received += chunk.byteLength;
+          }
+          const final = parser.finish();
+          const collected = new Uint8Array(received);
+          let off = 0;
+          for (const p of parts) {
+            collected.set(p, off);
+            off += p.byteLength;
+          }
+          rootBytes = collected;
+          documentUrl = head.url !== "" ? head.url : trimmed;
+          navHeaders = head.headers;
+          documentStream = {
+            received: parser.receivedBytes,
+            total: streaming.totalBytes,
+            snapshots: parser.snapshots,
+            nodes: final.tree.nodes.size,
+          };
+        }
+      } else {
+        const res = await network.request(navReq);
+        if (opts.onNavResponse !== undefined && (await opts.onNavResponse(res)) === "download") {
+          return null;
+        }
+        if (res.ok) {
+          rootBytes = res.body;
+          documentUrl = res.url !== "" ? res.url : trimmed;
+          navHeaders = res.headers;
+        }
+      }
+    } else {
+      rootBytes = await (fetchFn ?? defaultFetch)(trimmed);
+    }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return renderHtmlEngine(errorPageHtml(trimmed, message), trimmed, viewport, {
-      fetchFn,
+      ...fetchOpt,
       runScripts: false,
     });
   }
@@ -1244,14 +2171,16 @@ export async function loadPage(
       errorPageHtml(trimmed, "failed to fetch (network, timeout, or non-OK HTTP status)"),
       trimmed,
       viewport,
-      { fetchFn, runScripts: false, ...(network !== null ? { network } : {}) },
+      { ...fetchOpt, runScripts: false, ...(network !== null ? { network } : {}) },
     );
   }
   let html = new TextDecoder().decode(rootBytes);
   if (isBilibiliRiskCaptcha(html) && isBilibiliHomeUrl(trimmed)) {
     const fallback = bilibiliHomeShellUrl(trimmed);
     try {
-      const alt = await fetchFn(fallback);
+      const alt = await (network !== null
+        ? networkStackToFetchFn(network)
+        : (fetchFn ?? defaultFetch))(fallback);
       if (alt !== undefined) {
         const altHtml = new TextDecoder().decode(alt);
         if (!isBilibiliRiskCaptcha(altHtml) && alt.byteLength > rootBytes.byteLength) {
@@ -1266,7 +2195,19 @@ export async function loadPage(
   }
   const provisionalDom = parseHtml(rootBytes);
   const baseUrl = documentBaseUrl(provisionalDom, documentUrl);
-  const resourceLoad = await loadResourcesWithTrace(provisionalDom, documentUrl, fetchFn, {
+  // Stylesheet preload counts as a subresource fetch from this document —
+  // carry it as initiator so Referer/SameSite/Fetch-Site derive correctly.
+  // RFC 0031: the document's COEP is ALREADY known from its response headers
+  // (boot hasn't run) — the preload channel is gated by it too.
+  const navCoep = parseCoep(navHeaders?.["cross-origin-embedder-policy"]);
+  const subresourceFetch =
+    opts.fetchFn === undefined && network !== null
+      ? networkStackToFetchFn(network, {
+          initiator: documentUrl,
+          ...(navCoep !== "unsafe-none" ? { initiatorCoep: navCoep } : {}),
+        })
+      : fetchFn;
+  const resourceLoad = await loadResourcesWithTrace(provisionalDom, documentUrl, subresourceFetch, {
     stylesheetsOnly: true,
   });
   const load = cacheLoader(resourceLoad.cache, baseUrl);
@@ -1279,13 +2220,18 @@ export async function loadPage(
     }
   };
   return renderHtmlEngine(html, documentUrl, viewport, {
-    fetchFn,
+    ...fetchOpt,
     runScripts,
     loadExternalSheet,
     resourceLoader: load,
     resourceCache: resourceLoad.cache,
     ...(network !== null ? { network } : {}),
     ...(opts.keepAlive ? { keepAlive: true } : {}),
+    ...(navHeaders !== undefined ? { responseHeaders: navHeaders } : {}),
+    ...(opts.ancestorOrigins !== undefined ? { ancestorOrigins: opts.ancestorOrigins } : {}),
+    ...(opts.openerInfo !== undefined ? { openerInfo: opts.openerInfo } : {}),
+    ...(documentStream !== undefined ? { documentStream } : {}),
+    ...sessionOpts,
   });
 }
 
@@ -1325,8 +2271,42 @@ export async function loadHtmlDocument(
   html: string,
   url = "engine://upload",
   viewportInput?: EngineViewport,
-  runScripts = true,
+  options: {
+    readonly runScripts?: boolean;
+    readonly keepAlive?: boolean;
+    readonly sessionHost?: NavigationHost;
+    readonly storage?: SessionStorageBag;
+    readonly frameLookup?: (nodeId: NodeId) => unknown;
+    /** Embedded contexts legitimately render at iframe sizes (<200px). */
+    readonly viewportMinEdge?: number;
+    /** RFC 0027: response headers of a synthetic/in-memory navigation —
+     *  `content-security-policy*` entries apply like a network response. */
+    readonly responseHeaders?: Readonly<Record<string, string>>;
+    /** RFC 0027: ancestor origins for `frame-ancestors` (embedded docs). */
+    readonly ancestorOrigins?: readonly string[];
+    /** RFC 0031: opener identity for synthetic loads — the document's own
+     *  COOP (from `responseHeaders`) can sever `window.opener` pre-script. */
+    readonly openerInfo?: {
+      readonly origin: string | null;
+      readonly coop: import("@browser-engine/guest").Coop;
+      readonly popup: boolean;
+    };
+  } | boolean = true,
 ): Promise<PageState> {
-  const viewport = normalizeViewport(viewportInput);
-  return renderHtmlEngine(html, url, viewport, { runScripts });
+  const viewport = normalizeViewport(
+    viewportInput,
+    undefined,
+    typeof options === "boolean" ? 200 : (options.viewportMinEdge ?? 200),
+  );
+  const opts = typeof options === "boolean" ? { runScripts: options } : options;
+  return renderHtmlEngine(html, url, viewport, {
+    ...(opts.runScripts !== undefined ? { runScripts: opts.runScripts } : {}),
+    ...(opts.keepAlive === true ? { keepAlive: true } : {}),
+    ...(opts.sessionHost !== undefined ? { sessionHost: opts.sessionHost } : {}),
+    ...(opts.storage !== undefined ? { storage: opts.storage } : {}),
+    ...(opts.frameLookup !== undefined ? { frameLookup: opts.frameLookup } : {}),
+    ...(opts.responseHeaders !== undefined ? { responseHeaders: opts.responseHeaders } : {}),
+    ...(opts.ancestorOrigins !== undefined ? { ancestorOrigins: opts.ancestorOrigins } : {}),
+    ...(opts.openerInfo !== undefined ? { openerInfo: opts.openerInfo } : {}),
+  });
 }

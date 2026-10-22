@@ -33,6 +33,21 @@ void test("extractScripts pulls inline and src scripts in document order", () =>
   assert.match(scripts[1]!.content, /test\(\)/);
 });
 
+void test("sync test() runs before the next script statement", async () => {
+  const html = `<!DOCTYPE html><div id="x"></div><script>
+    const el = document.getElementById("x");
+    el.textContent = "0";
+    test(function () {
+      assert_equals(el.textContent, "0");
+      el.textContent = "1";
+    }, "sees the value from before the call");
+    el.textContent = "2";
+    test(function () { assert_equals(el.textContent, "2"); }, "sees the statement between tests");
+  </script>`;
+  const report = await runWptHtml(html);
+  assert.equal(report.passed, 2, JSON.stringify(report.subtests));
+});
+
 void test("runWptHtml runs a real testharness .html test and scores subtests", async () => {
   const html = `<!DOCTYPE html><title>t</title>
     <script src="/resources/testharness.js"></script>

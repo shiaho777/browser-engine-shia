@@ -36,6 +36,18 @@ export { displayListToCommandBuffer } from "./display-list.js";
 export { renderProgram } from "./executor.js";
 export type { DisplayProgram, DisplayCommand, PushLayerCommand, PopLayerCommand, Matrix6 } from "./executor.js";
 export { createWebGpuDevice, isWebGpuAvailable } from "./webgpu-device.js";
+export { compileGlsl } from "./gl/glsl.js";
+export type { GLSLProgram, GLSLCompileResult } from "./gl/glsl.js";
+export { GlslRunner, DiscardSignal } from "./gl/interp.js";
+export type { GLValue, ShaderEnv } from "./gl/interp.js";
+export { WebGLCore, GL } from "./gl/context.js";
+export type {
+  GLContextAttributes,
+  GLBuffer,
+  GLShader,
+  GLProgram,
+  GLTexture,
+} from "./gl/context.js";
 
 import type { GpuDevice } from "./device.js";
 import { softwareDevice } from "./software-device.js";

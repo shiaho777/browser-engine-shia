@@ -22,9 +22,15 @@ export interface BorderSide {
   readonly color: Color;
 }
 
-/** A positioned, shaped glyph (produced by the text shaper, e.g. HarfBuzz). */
+/**
+ * A positioned, shaped glyph (produced by the text shaper, e.g. HarfBuzz —
+ * RFC 0002). `glyphId` is a REAL font-local glyph index; `faceIndex` names the
+ * face inside the pipeline font table the backend was constructed with. No
+ * code-point semantics survive past the shaping stage.
+ */
 export interface Glyph {
   readonly glyphId: number;
+  readonly faceIndex: number;
   readonly advance: Px;
   readonly offset: Point;
 }
@@ -33,8 +39,10 @@ export interface Glyph {
 export interface DecodedImage {
   readonly width: number;
   readonly height: number;
-  /** RGBA8888, length === width * height * 4 */
+  /** RGBA8888 straight-alpha, length === width * height * 4 */
   readonly pixels: Uint8ClampedArray;
+  /** Sniffed container format ("png" | "jpeg" | "webp" | …) for diagnostics. */
+  readonly format?: string;
 }
 
 /** A 2D affine transform `[a, b, c, d, e, f]`. */
@@ -64,9 +72,55 @@ export type PaintCmd =
        */
       readonly fontSize: Px;
       readonly fontWeight?: number;
+      /** `italic` or `oblique` asks the backend for a synthetic shear. `normal` stays upright. */
+      readonly fontStyle?: "normal" | "italic" | "oblique";
+      /**
+       * `font-synthesis` gate for fake bolding (RFC 0006): `false` when the
+       * run's computed `font-synthesis` lacks `weight` — the backend must not
+       * embolden. Absent ⇒ synthesis allowed (spec initial value).
+       */
+      readonly synthesizeBold?: boolean;
+      /** `false` when `font-synthesis` lacks `style`. Absent ⇒ a shear is allowed. */
+      readonly synthesizeStyle?: boolean;
     }
   | { readonly op: "line"; readonly from: Point; readonly to: Point; readonly fill: Color; readonly width: Px }
+  | {
+      readonly op: "linear-gradient";
+      readonly rect: Rect;
+      /** CSS angle in degrees. `0` is up, `90` is to the right, `180` is down. */
+      readonly angle: number;
+      readonly stops: readonly { readonly color: Color; readonly offset: number }[];
+    }
+  | {
+      readonly op: "radial-gradient";
+      readonly rect: Rect;
+      /** First stop at the center, last stop at the farthest corner. */
+      readonly stops: readonly { readonly color: Color; readonly offset: number }[];
+    }
   | { readonly op: "image"; readonly rect: Rect; readonly src: DecodedImage; readonly radius?: Px }
+  | {
+      readonly op: "tile";
+      /**
+       * Painting area — the tiled image is clipped to this rect
+       * (`background-clip`'s box; the position origin lives separately).
+       */
+      readonly area: Rect;
+      /** Source image, drawn scaled to `tile` size. */
+      readonly src: DecodedImage;
+      /** Concrete tile dimensions (post `background-size`). */
+      readonly tile: { readonly width: Px; readonly height: Px };
+      /** Document-space position of the first tile (`background-position`). */
+      readonly origin: Point;
+      /**
+       * Advance between tiles per axis — equal to `tile` for `repeat`/`round`,
+       * tile-plus-gap for `space`. Ignored on a `no-repeat` axis.
+       */
+      readonly step: { readonly x: Px; readonly y: Px };
+      /** `false` ⇒ a single tile is drawn on that axis (no repetition). */
+      readonly repeatX: boolean;
+      readonly repeatY: boolean;
+      readonly radius?: Px;
+    }
   | { readonly op: "push-clip"; readonly rect: Rect; readonly radius?: Px }
   | { readonly op: "pop-clip" }
   | {

@@ -47,10 +47,27 @@ export interface StyleRule {
   readonly layer?: readonly string[] | undefined;
 }
 
+/**
+ * One `@font-face` rule (RFC 0006): the descriptor block in declaration form
+ * — `font-family`, `src` (`local()`/`url()` sources), `font-weight`,
+ * `font-style`, `font-stretch`, … The font stage interprets the descriptors;
+ * the parser only preserves them.
+ */
+export interface FontFaceRule {
+  readonly declarations: readonly Declaration[];
+  /** source order, for same-descriptor-set tie-breaks (later wins). */
+  readonly order: number;
+}
+
 /** The parsed stylesheet. Nominally branded. */
 export type StyleSheet = Branded<
   {
     readonly rules: readonly StyleRule[];
+    /**
+     * The sheet's `@font-face` rules in source order (RFC 0006). `undefined`
+     * when the sheet declares none.
+     */
+    readonly fontFaces?: readonly FontFaceRule[] | undefined;
     /**
      * The cascade layer declaration order for this sheet — an array of layer
      * paths. Layers declared earlier have LOWER cascade precedence (CSS

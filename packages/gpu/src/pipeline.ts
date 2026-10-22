@@ -225,11 +225,18 @@ export function applyCommand(
   switch (command.op) {
     case "clear": {
       const a = clamp01(command.color.a);
-      for (let i = 0; i < w * (bandY1 - bandY0); i += 1) {
-        buf[i * 4] = command.color.r;
-        buf[i * 4 + 1] = command.color.g;
-        buf[i * 4 + 2] = command.color.b;
-        buf[i * 4 + 3] = a * 255;
+      const cx0 = Math.max(clip.x0, 0);
+      const cy0 = Math.max(clip.y0, bandY0);
+      const cx1 = Math.min(clip.x1, w);
+      const cy1 = Math.min(clip.y1, bandY1);
+      for (let y = cy0; y < cy1; y += 1) {
+        for (let x = cx0; x < cx1; x += 1) {
+          const i = (y - bandY0) * w + x;
+          buf[i * 4] = command.color.r;
+          buf[i * 4 + 1] = command.color.g;
+          buf[i * 4 + 2] = command.color.b;
+          buf[i * 4 + 3] = a * 255;
+        }
       }
       return;
     }

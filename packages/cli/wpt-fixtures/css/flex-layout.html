@@ -45,21 +45,21 @@ test(function () {
 }, "flex-grow distributes space proportionally");
 
 test(function () {
-  // justify-content: center → two 50px items centered in 300px → start at 100px
+  // justify-content: center → two 50px items centered in 300px.
+  // Viewport x is the container content edge (16) plus the 100px centering offset.
   var r1 = document.getElementById("j1").getBoundingClientRect();
   var r2 = document.getElementById("j2").getBoundingClientRect();
-  assert_equals(r1.x, 100, "first centered item starts at 100px");
-  assert_equals(r2.x, 150, "second centered item starts at 150px");
+  assert_equals(r1.x, 116, "first centered item starts 100px into the container");
+  assert_equals(r2.x, 166, "second centered item starts 50px later");
 }, "justify-content: center centers items");
 
 test(function () {
-  // align-items: center → items vertically centered in 60px container
+  // align-items: center → items vertically centered in the 60px container.
+  // Viewport y is the container's content edge plus that centering offset.
   var r1 = document.getElementById("a1").getBoundingClientRect();
   var r2 = document.getElementById("a2").getBoundingClientRect();
-  // a1 is 20px tall in 60px → centered at y=20
-  assert_equals(r1.y, 20, "20px item centered in 60px starts at y=20");
-  // a2 is 40px tall in 60px → centered at y=10
-  assert_equals(r2.y, 10, "40px item centered in 60px starts at y=10");
+  assert_equals(r1.y, 128, "20px item is centered 20px below the container edge");
+  assert_equals(r2.y, 118, "40px item is centered 10px below the container edge");
 }, "align-items: center centers items on cross axis");
 </script>
 </body>

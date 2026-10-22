@@ -127,6 +127,30 @@ export function renderEvidenceDashboardHtml(snapshot: BenchmarkSnapshot): string
           ],
         ),
         section(
+          "Incremental Layout (RFC 0038)",
+          [
+            ["Scenario", evidence.subtreeReuse.scenario],
+            ["Document nodes", evidence.subtreeReuse.documentNodes],
+            ["Boundary replays (hits)", evidence.subtreeReuse.boundaryHits],
+            ["Boundary re-layouts (misses)", evidence.subtreeReuse.boundaryMisses],
+            ["OOF-leak bypasses", evidence.subtreeReuse.bypassed],
+            ["Replay == full layout", yesNo(evidence.subtreeReuse.replayCorrect)],
+            ["Layout warm / cold ms", `${evidence.subtreeReuse.warmLayoutMs.toFixed(2)} / ${evidence.subtreeReuse.coldLayoutMs.toFixed(2)}`],
+          ],
+        ),
+        section(
+          "Paint Invalidation (RFC 0039)",
+          [
+            ["Scenario", evidence.paintDamage.scenario],
+            ["Commands unchanged / changed", `${evidence.paintDamage.unchangedCommands} / ${evidence.paintDamage.changedCommands}`],
+            ["Damage area", `${evidence.paintDamage.damageAreaPx2} of ${evidence.paintDamage.viewportAreaPx2} px²`],
+            ["Retained repair ran", yesNo(evidence.paintDamage.repaired)],
+            ["No-change repaint is a no-op", yesNo(evidence.paintDamage.identicalNoop)],
+            ["Partial == full render (bytes)", yesNo(evidence.paintDamage.partialCorrect)],
+            ["Repaint warm / cold ms", `${evidence.paintDamage.warmRepaintMs.toFixed(2)} / ${evidence.paintDamage.coldRepaintMs.toFixed(2)}`],
+          ],
+        ),
+        section(
           "Resource-Loaded Page",
           [
             ["URL", evidence.resourceLoadedPage.url],

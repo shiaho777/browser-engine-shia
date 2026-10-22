@@ -25,10 +25,12 @@
  * the sheets; the stage-boundary rule polices stage→stage imports, not wiring.
  */
 import type { DomNode, DomTree, NodeId, StyleSheet } from "@browser-engine/ir";
-import { parseCss } from "@browser-engine/css-parser";
+import { mediaQueryListMatches, parseCss } from "@browser-engine/css-parser";
 import type { MediaEnvironment } from "@browser-engine/css-parser";
 
 import { isActiveStylesheetLink } from "./link-rel.js";
+import { documentBaseUrl, resolveUrl } from "./loader.js";
+import type { CspContext } from "./csp.js";
 
 const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -46,6 +48,9 @@ const UA_CSS =
   "table, thead, tbody, tfoot, tr, td, th, fieldset, legend { display: block }" +
   " head, style, script, title, meta, link, base, noscript, template { display: none }" +
   " body { margin: 8px }" +
+  // CSS Position 4: while an element is not in the top layer, `overlay`
+  // computes to none. The UA rule outranks author and inline `overlay: auto`.
+  " * { overlay: none !important }" +
   " h1 { font-size: 2em; margin: 0.67em 0 }" +
   " h2 { font-size: 1.5em; margin: 0.75em 0 }" +
   " h3 { font-size: 1.17em; margin: 0.83em 0 }" +
@@ -57,8 +62,37 @@ const UA_CSS =
   " a { color: #0000ee }" +
   " strong, b { font-weight: 700 }" +
   " em, i { font-style: italic }" +
+  // RFC 0021: form controls are atomic inline boxes (replaced elements in
+  // layout); hidden inputs and the suggestion-source datalist never render.
+  " input, textarea, select, button, meter, progress, output { display: inline-block }" +
+  " input[type=hidden] { display: none }" +
+  " datalist { display: none }" +
+  " button { text-align: center }" +
+  // RFC 0023: bidi (UAX #9). `dir` isolates an element's content per HTML
+  // §3.5.3's UA mapping (`[dir]` ⇒ isolate; the value sets `direction`);
+  // `dir=auto` resolves first-strong inside the engine. `<bdi>`/`<output>`
+  // isolate by default; `<bdo>` is the directional-override element.
+  " [dir] { unicode-bidi: isolate }" +
+  " [dir=ltr] { direction: ltr }" +
+  " [dir=rtl] { direction: rtl }" +
+  " bdi, output { unicode-bidi: isolate }" +
+  " bdo, bdo[dir] { unicode-bidi: bidi-override }" +
+  // RFC 0026: ruby internal display roles (CSS Ruby §2.2). `<rt>` runs at
+  // half the parent's font size; `<rp>` parens are hidden (they exist for
+  // pre-ruby fallback rendering, which this engine does not produce).
+  " ruby { display: ruby }" +
+  " rb { display: ruby-base } rbc { display: ruby-base-container }" +
+  " rt { display: ruby-text; font-size: 50% }" +
+  " rtc { display: ruby-text-container }" +
+  " rp { display: none }" +
   " .lqip { opacity: 0 !important; pointer-events: none !important }" +
-  " img { object-fit: cover }";
+  " img { object-fit: cover }" +
+  // RFC 0035: media elements — <video> paints its frame letterboxed
+  // (object-fit: contain per HTML §14.3); <source>/<track> never render;
+  // controls-less <audio> is display:none (no widget to show).
+  " video { object-fit: contain }" +
+  " source, track { display: none }" +
+  " audio:not([controls]) { display: none }";
 
 let uaSheetCache: StyleSheet | undefined;
 
@@ -78,8 +112,9 @@ export function documentStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  csp?: CspContext | null,
 ): StyleSheet[] {
-  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media)];
+  return [uaStylesheet(), ...collectStylesheets(dom, loadExternal, media, csp)];
 }
 
 /** Optional hook to load an external stylesheet by URL (M2 networking). */
@@ -94,12 +129,17 @@ export function collectStylesheets(
   dom: DomTree,
   loadExternal?: SheetLoader,
   media?: MediaEnvironment,
+  csp?: CspContext | null,
 ): StyleSheet[] {
   const sheets: StyleSheet[] = [];
   const root = dom.nodes.get(dom.root);
   if (root === undefined) {
     return sheets;
   }
+  // CSP (RFC 0027): `style-src-elem` gates `<style>` bodies and `<link>` hrefs.
+  const base = csp !== null && csp !== undefined && !csp.empty
+    ? documentBaseUrl(dom, csp.documentUrl)
+    : "";
 
   const visit = (id: NodeId): void => {
     const node = dom.nodes.get(id);
@@ -107,11 +147,24 @@ export function collectStylesheets(
       return;
     }
     if (node.kind === "element" && node.tag === "style") {
-      sheets.push(media !== undefined ? parseCss(encode(styleText(dom, node)), media) : parseCss(encode(styleText(dom, node))));
-    } else if (isActiveStylesheetLink(node)) {
-      const bytes = loadLinkedSheet(node, loadExternal);
-      if (bytes !== undefined) {
-        sheets.push(media !== undefined ? parseCss(bytes, media) : parseCss(bytes));
+      const text = styleText(dom, node);
+      if (csp !== null && csp !== undefined &&
+        !csp.checkInline("style", { nonce: node.attrs?.get("nonce"), text }, "elem").allowed) {
+        // Blocked inline sheet: skip (the violation is already recorded).
+      } else if (elementMediaApplies(node, media)) {
+        sheets.push(media !== undefined ? parseCss(encode(text), media) : parseCss(encode(text)));
+      }
+    } else if (isActiveStylesheetLink(node) && elementMediaApplies(node, media)) {
+      const href = node.attrs?.get("href");
+      const blocked =
+        csp !== null && csp !== undefined &&
+        href !== undefined &&
+        !csp.check("style", resolveUrl(href, base) ?? href).allowed;
+      if (!blocked) {
+        const bytes = loadLinkedSheet(node, loadExternal);
+        if (bytes !== undefined) {
+          sheets.push(media !== undefined ? parseCss(bytes, media) : parseCss(bytes));
+        }
       }
     }
     for (const child of node.children) {
@@ -121,6 +174,14 @@ export function collectStylesheets(
 
   visit(dom.root);
   return sheets;
+}
+
+/** `<style media>` / `<link media>` is a query the sheet is wrapped in. */
+function elementMediaApplies(node: DomNode, env: MediaEnvironment | undefined): boolean {
+  const query = node.attrs?.get("media");
+  if (query === undefined || query.trim() === "") return true;
+  if (env === undefined) return true;
+  return mediaQueryListMatches(query, env);
 }
 
 /** The concatenated text content of a `<style>` element's child text nodes. */

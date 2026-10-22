@@ -15,18 +15,21 @@
  * reference (the differential oracle) within tolerance. This is the path real
  * screenshots take: the whole DisplayList rasterized by the GPU compositor.
  */
-import type { Color, DisplayList, PaintCmd } from "@browser-engine/ir";
+import type { Color, DisplayList, PaintCmd, Rect } from "@browser-engine/ir";
+import { paintCmdBounds } from "@browser-engine/ir";
 import {
   renderProgram,
   type DisplayCommand,
   type GpuColor,
   type GpuSurface,
 } from "@browser-engine/gpu";
-import type { GlyphCoverageSource } from "@browser-engine/font";
+import type { GlyphRasterSource } from "@browser-engine/font";
 
-import { builtinFont, coverageSource } from "@browser-engine/font";
+import { builtinFont, faceTableRasterSource } from "@browser-engine/font";
+import { needsSyntheticBold, needsSyntheticItalic, syntheticItalicShift } from "./embolden.js";
+import { gradientColor, gradientT, radialT } from "./gradient.js";
 
-const DEFAULT_SOURCE: GlyphCoverageSource = coverageSource(builtinFont());
+const DEFAULT_SOURCE: GlyphRasterSource = faceTableRasterSource([builtinFont()]);
 const WHITE: GpuColor = { r: 255, g: 255, b: 255, a: 1 };
 
 function toGpu(c: Color): GpuColor {
@@ -38,20 +41,69 @@ export function renderDisplayListOnGpu(
   list: DisplayList,
   width: number,
   height: number,
-  glyphSource: GlyphCoverageSource = DEFAULT_SOURCE,
-  options?: { readonly clipMaxY?: number; readonly clipMaxX?: number; readonly pixelRatio?: number },
+  rasterSource: GlyphRasterSource = DEFAULT_SOURCE,
+  options?: {
+    readonly clipMaxY?: number;
+    readonly clipMaxX?: number;
+    readonly pixelRatio?: number;
+    /**
+     * RFC 0039 partial repaint: a CSS-px damage rect produced by
+     * `diffCommands`. Commands whose bounds don't intersect it are skipped at
+     * translate time; remaining draws are scissored to it in the executor.
+     * Only honoured together with `into` — and dropped to a full render when
+     * the list contains a transformed/filtered layer (those resample or write
+     * outside their own content bounds).
+     */
+    readonly damage?: Rect;
+    /** Previous frame's pixel buffer to repair in place (device px). */
+    readonly into?: Uint8ClampedArray;
+  },
 ): GpuSurface {
   const prRaw = options?.pixelRatio ?? 1;
   const pr = Number.isFinite(prRaw) ? Math.max(1, Math.min(3, prRaw)) : 1;
   const outW = Math.max(1, Math.round(width * pr));
   const outH = Math.max(1, Math.round(height * pr));
+  const into = options?.into;
+  let damage = options?.damage;
+  if (damage !== undefined && (into === undefined || into.length !== outW * outH * 4)) {
+    damage = undefined;
+  }
   const commands: DisplayCommand[] = [];
   const clipMaxY = (options?.clipMaxY ?? height) * pr;
   const clipMaxX = (options?.clipMaxX ?? width) * pr;
   for (const cmd of list.commands) {
-    translate(cmd, commands, glyphSource, clipMaxX, clipMaxY, pr);
+    if (damage !== undefined && cmd.op !== "push-clip" && cmd.op !== "pop-clip" && cmd.op !== "push-layer" && cmd.op !== "pop-layer") {
+      const bounds = paintCmdBounds(cmd);
+      // Envelope commands are never skipped — a clip's bound is not the bound
+      // of the content it gates. Draw ops whose bounds miss the damage rect
+      // cannot produce changed pixels inside it.
+      if (
+        bounds !== null &&
+        (Number(bounds.x) + Number(bounds.width) <= Number(damage.x) ||
+          Number(bounds.y) + Number(bounds.height) <= Number(damage.y) ||
+          Number(bounds.x) >= Number(damage.x) + Number(damage.width) ||
+          Number(bounds.y) >= Number(damage.y) + Number(damage.height))
+      ) {
+        continue;
+      }
+    }
+    translate(cmd, commands, rasterSource, clipMaxX, clipMaxY, pr);
   }
-  return renderProgram({ width: outW, height: outH, background: WHITE, commands });
+  const deviceDamage =
+    damage === undefined
+      ? undefined
+      : {
+          x0: Math.max(0, Math.floor(Number(damage.x) * pr)),
+          y0: Math.max(0, Math.floor(Number(damage.y) * pr)),
+          x1: Math.min(outW, Math.ceil((Number(damage.x) + Number(damage.width)) * pr)),
+          y1: Math.min(outH, Math.ceil((Number(damage.y) + Number(damage.height)) * pr)),
+        };
+  return renderProgram(
+    { width: outW, height: outH, background: WHITE, commands },
+    deviceDamage === undefined || into === undefined
+      ? undefined
+      : { damage: deviceDamage, into },
+  );
 }
 
 function inClip(x: number, y: number, w: number, h: number, maxX: number, maxY: number): boolean {
@@ -64,7 +116,7 @@ function inClip(x: number, y: number, w: number, h: number, maxX: number, maxY: 
 function translate(
   cmd: PaintCmd,
   out: DisplayCommand[],
-  glyphSource: GlyphCoverageSource,
+  rasterSource: GlyphRasterSource,
   clipMaxX: number,
   clipMaxY: number,
   pr = 1,
@@ -89,7 +141,7 @@ function translate(
       translateBorder(cmd, out, clipMaxX, clipMaxY, pr);
       return;
     case "text":
-      translateText(cmd, out, glyphSource, clipMaxX, clipMaxY, pr);
+      translateText(cmd, out, rasterSource, clipMaxX, clipMaxY, pr);
       return;
     case "image": {
       const x = Number(cmd.rect.x) * pr;
@@ -105,6 +157,49 @@ function translate(
         rgba: cmd.src.pixels,
       };
       out.push(radius > 0 ? { op: "quad", x, y, w, h, fragment, radius } : { op: "quad", x, y, w, h, fragment });
+      return;
+    }
+    case "tile": {
+      // Per-tile quads under an area clip — same semantics as the CPU oracle's
+      // blitTiled (radius rounds the AREA via a clip, never each tile).
+      const ax = Number(cmd.area.x) * pr;
+      const ay = Number(cmd.area.y) * pr;
+      const aw = Number(cmd.area.width) * pr;
+      const ah = Number(cmd.area.height) * pr;
+      if (!inClip(ax, ay, aw, ah, clipMaxX, clipMaxY)) return;
+      const tw = Number(cmd.tile.width) * pr;
+      const th = Number(cmd.tile.height) * pr;
+      const stepX = Math.max(1, Number(cmd.step.x) * pr);
+      const stepY = Math.max(1, Number(cmd.step.y) * pr);
+      if (tw <= 0 || th <= 0) return;
+      const ox = Number(cmd.origin.x) * pr;
+      const oy = Number(cmd.origin.y) * pr;
+      const x0 = Math.max(0, ax);
+      const y0 = Math.max(0, ay);
+      const x1 = Math.min(clipMaxX, ax + aw);
+      const y1 = Math.min(clipMaxY, ay + ah);
+      const ix0 = cmd.repeatX ? Math.floor((x0 - ox) / stepX) : 0;
+      const ix1 = cmd.repeatX ? Math.floor((x1 - 1 - ox) / stepX) : 0;
+      const iy0 = cmd.repeatY ? Math.floor((y0 - oy) / stepY) : 0;
+      const iy1 = cmd.repeatY ? Math.floor((y1 - 1 - oy) / stepY) : 0;
+      const radius = cmd.radius !== undefined ? Number(cmd.radius) * pr : 0;
+      const fragment = {
+        kind: "image" as const,
+        width: cmd.src.width,
+        height: cmd.src.height,
+        rgba: cmd.src.pixels,
+      };
+      out.push(
+        radius > 0
+          ? { op: "push-clip", x: ax, y: ay, w: aw, h: ah, radius }
+          : { op: "push-clip", x: ax, y: ay, w: aw, h: ah },
+      );
+      for (let iy = iy0; iy <= iy1; iy += 1) {
+        for (let ix = ix0; ix <= ix1; ix += 1) {
+          out.push({ op: "quad", x: ox + ix * stepX, y: oy + iy * stepY, w: tw, h: th, fragment });
+        }
+      }
+      out.push({ op: "pop-clip" });
       return;
     }
     case "push-clip": {
@@ -149,6 +244,44 @@ function translate(
     case "pop-layer":
       out.push({ op: "pop-layer" });
       return;
+    case "linear-gradient": {
+      const x0 = Number(cmd.rect.x) * pr;
+      const y0 = Number(cmd.rect.y) * pr;
+      const w = Number(cmd.rect.width) * pr;
+      const h = Number(cmd.rect.height) * pr;
+      if (!inClip(x0, y0, w, h, clipMaxX, clipMaxY) || cmd.stops.length === 0) return;
+      const rad = (cmd.angle * Math.PI) / 180;
+      const horizontal = Math.abs(Math.sin(rad)) >= Math.abs(Math.cos(rad));
+      const count = Math.max(1, Math.ceil(horizontal ? w : h));
+      for (let i = 0; i < count; i += 1) {
+        const strip = horizontal
+          ? { x: x0 + i, y: y0, w: 1, h }
+          : { x: x0, y: y0 + i, w, h: 1 };
+        const t = gradientT(strip.x + strip.w / 2, strip.y + strip.h / 2, x0, y0, w, h, cmd.angle);
+        const color = gradientColor(cmd.stops, t);
+        if (color.a <= 0) continue;
+        out.push({ op: "quad", x: strip.x, y: strip.y, w: strip.w, h: strip.h, fragment: { kind: "solid", color: toGpu(color) } });
+      }
+      return;
+    }
+    case "radial-gradient": {
+      const x0 = Number(cmd.rect.x) * pr;
+      const y0 = Number(cmd.rect.y) * pr;
+      const w = Number(cmd.rect.width) * pr;
+      const h = Number(cmd.rect.height) * pr;
+      if (!inClip(x0, y0, w, h, clipMaxX, clipMaxY) || cmd.stops.length === 0) return;
+      const cols = Math.max(1, Math.ceil(w));
+      const rows = Math.max(1, Math.ceil(h));
+      for (let row = 0; row < rows; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+          const t = radialT(x0 + col + 0.5, y0 + row + 0.5, x0, y0, w, h);
+          const color = gradientColor(cmd.stops, t);
+          if (color.a <= 0) continue;
+          out.push({ op: "quad", x: x0 + col, y: y0 + row, w: 1, h: 1, fragment: { kind: "solid", color: toGpu(color) } });
+        }
+      }
+      return;
+    }
   }
 }
 function translateBorder(
@@ -182,7 +315,7 @@ function translateBorder(
 function translateText(
   cmd: Extract<PaintCmd, { op: "text" }>,
   out: DisplayCommand[],
-  source: GlyphCoverageSource,
+  source: GlyphRasterSource,
   clipMaxX: number,
   clipMaxY: number,
   pr = 1,
@@ -195,11 +328,11 @@ function translateText(
   const ascentPx = source.ascentEm * fontSize;
   const weight = cmd.fontWeight !== undefined ? Number(cmd.fontWeight) : 400;
   for (const glyph of cmd.glyphs) {
-    const gid = source.glyphId(glyph.glyphId);
-    if (gid === 0) continue;
-    let r = source.raster(gid, fontSize);
+    // Real shaped (faceIndex, glyphId) — gid 0 is the face's own .notdef box.
+    let r = source.raster(glyph.faceIndex, glyph.glyphId, fontSize);
     if (r.width === 0 || r.height === 0) continue;
-    if (weight >= 500) {
+    // Synthetic bold (RFC 0006): only when allowed AND the face lacks the weight.
+    if (needsSyntheticBold(weight, source.faceWeight?.(glyph.faceIndex), cmd.synthesizeBold !== false)) {
       const w = r.width + 1;
       const h = r.height;
       const mask = new Float64Array(w * h);
@@ -213,6 +346,27 @@ function translateText(
         }
       }
       r = { width: w, height: h, coverage: mask, left: r.left, top: r.top };
+    }
+    if (needsSyntheticItalic(cmd.fontStyle, cmd.synthesizeStyle !== false, source.faceItalic?.(glyph.faceIndex) === true) && r.height > 1) {
+      let min = 0;
+      let max = 0;
+      for (let y = 0; y < r.height; y += 1) {
+        const s = syntheticItalicShift(y);
+        if (s < min) min = s;
+        if (s > max) max = s;
+      }
+      const pad = max - min;
+      if (pad !== 0) {
+        const width = r.width + pad;
+        const coverage = new Float64Array(width * r.height);
+        for (let y = 0; y < r.height; y += 1) {
+          const dx = syntheticItalicShift(y) - min;
+          for (let x = 0; x < r.width; x += 1) {
+            coverage[y * width + x + dx] = r.coverage[y * r.width + x] ?? 0;
+          }
+        }
+        r = { width, height: r.height, coverage, left: r.left + min, top: r.top };
+      }
     }
     const x = Math.round(Number(cmd.at.x) * pr + Number(glyph.offset.x) * pr + r.left);
     const y = Math.round(baseY + Number(glyph.offset.y) * pr + ascentPx - r.top);

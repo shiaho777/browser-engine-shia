@@ -5,6 +5,30 @@ export interface StoredCookie {
   readonly path: string;
   readonly secure: boolean;
   readonly expires: number | null;
+  /**
+   * RFC 6265 §5.3: a Set-Cookie WITHOUT a `Domain` attribute is host-only —
+   * it must NOT match subdomains. A `Domain=` attribute opts into suffix
+   * matching (the leading dot is ignored by spec since 2011).
+   */
+  readonly hostOnly: boolean;
+  /**
+   * SameSite enforcement tier. "lax" is the modern default (Chrome 80+);
+   * "none" requires `Secure` per spec — a non-Secure `None` is treated as
+   * `lax`. Unknown values fall back to `lax`.
+   */
+  readonly sameSite: "lax" | "strict" | "none";
+}
+
+/**
+ * The initiator context for a cookie send decision. `initiator` is the URL of
+ * the page/frame that caused the request; `topLevelNavigate` marks the
+ * document navigation case (SameSite=Lax allows top-level cross-site GETs).
+ */
+export interface CookieSendContext {
+  /** URL of the initiating page/frame. Absent ⇒ same-site assumed (legacy). */
+  readonly initiator?: string | undefined;
+  /** True when this request is a top-level navigation (mode "navigate"). */
+  readonly topLevelNavigate?: boolean;
 }
 
 function defaultPath(pathname: string): string {
@@ -14,11 +38,12 @@ function defaultPath(pathname: string): string {
   return pathname.slice(0, idx + 1);
 }
 
-function domainMatches(cookieDomain: string, host: string): boolean {
-  const cd = cookieDomain.replace(/^\./, "").toLowerCase();
+function domainMatches(cookie: StoredCookie, host: string): boolean {
+  const cd = cookie.domain.toLowerCase();
   const h = host.toLowerCase();
   if (h === cd) return true;
-  return h.endsWith("." + cd);
+  // Host-only cookies never suffix-match; Domain cookies do.
+  return !cookie.hostOnly && h.endsWith("." + cd);
 }
 
 function pathMatches(cookiePath: string, pathname: string): boolean {
@@ -27,6 +52,20 @@ function pathMatches(cookiePath: string, pathname: string): boolean {
   if (!pathname.startsWith(cookiePath)) return false;
   if (cookiePath.endsWith("/")) return true;
   return pathname.charAt(cookiePath.length) === "/";
+}
+
+/**
+ * Same-site test per the cookies spec's registrable-domain notion, minus a
+ * public-suffix list: same origin is same-site; otherwise compare the last two
+ * labels of each hostname (the same approximation Sec-Fetch-Site already uses
+ * in this codebase).
+ */
+function sameSiteAs(requestHost: string, initiatorHost: string): boolean {
+  const siteOf = (host: string): string => {
+    const parts = host.toLowerCase().split(".");
+    return parts.length >= 2 ? parts.slice(-2).join(".") : host.toLowerCase();
+  };
+  return siteOf(requestHost) === siteOf(initiatorHost);
 }
 
 export class CookieJar {
@@ -54,20 +93,37 @@ export class CookieJar {
     }
   }
 
-  cookieHeader(requestUrl: string): string {
+  cookieHeader(requestUrl: string, context: CookieSendContext = {}): string {
     let req: URL;
     try {
       req = new URL(requestUrl);
     } catch {
       return "";
     }
+    let initiator: URL | null = null;
+    if (context.initiator !== undefined) {
+      try {
+        initiator = new URL(context.initiator);
+      } catch {
+        initiator = null;
+      }
+    }
+    const crossSite =
+      initiator !== null && !sameSiteAs(req.hostname, initiator.hostname);
     const now = Date.now();
     const parts: string[] = [];
     for (const c of this.#cookies) {
       if (c.expires !== null && c.expires <= now) continue;
       if (c.secure && req.protocol !== "https:") continue;
-      if (!domainMatches(c.domain, req.hostname)) continue;
+      if (!domainMatches(c, req.hostname)) continue;
       if (!pathMatches(c.path, req.pathname || "/")) continue;
+      // SameSite enforcement (Cookies spec §5.5 / modern defaults):
+      //   cross-site ⇒ None+Secure only, plus Lax on top-level navigations.
+      if (crossSite) {
+        if (c.sameSite === "strict") continue;
+        if (c.sameSite === "lax" && context.topLevelNavigate !== true) continue;
+        if (c.sameSite === "none" && !c.secure) continue;
+      }
       parts.push(`${c.name}=${c.value}`);
     }
     return parts.join("; ");
@@ -101,8 +157,10 @@ function parseSetCookie(line: string, page: URL): StoredCookie | null {
   if (name === "") return null;
 
   let domain = page.hostname;
+  let hostOnly = true;
   let path = defaultPath(page.pathname || "/");
   let secure = false;
+  let sameSite: StoredCookie["sameSite"] = "lax";
   let expires: number | null = null;
 
   for (let i = 1; i < segments.length; i += 1) {
@@ -111,11 +169,21 @@ function parseSetCookie(line: string, page: URL): StoredCookie | null {
     const key = (e >= 0 ? seg.slice(0, e) : seg).trim().toLowerCase();
     const val = e >= 0 ? seg.slice(e + 1).trim() : "";
     if (key === "domain" && val !== "") {
-      domain = val.replace(/^\./, "").toLowerCase();
+      const d = val.replace(/^\./, "").toLowerCase();
+      // A Domain attribute that does NOT suffix-match the host is rejected
+      // (a site may not set cookies for other hosts).
+      const h = page.hostname.toLowerCase();
+      if (h === d || h.endsWith("." + d)) {
+        domain = d;
+        hostOnly = false;
+      }
     } else if (key === "path" && val !== "") {
       path = val.startsWith("/") ? val : `/${val}`;
     } else if (key === "secure") {
       secure = true;
+    } else if (key === "samesite") {
+      const v = val.toLowerCase();
+      sameSite = v === "strict" ? "strict" : v === "none" ? "none" : "lax";
     } else if (key === "max-age") {
       const n = Number(val);
       if (Number.isFinite(n)) expires = Date.now() + n * 1000;
@@ -125,5 +193,10 @@ function parseSetCookie(line: string, page: URL): StoredCookie | null {
     }
   }
 
-  return { name, value, domain, path, secure, expires };
+  // `SameSite=None` requires Secure — a non-Secure None cookie acts as Lax
+  // (the "reject insecure" half of the spec is a deprecation path; treating it
+  // as Lax is the interoperable behavior).
+  if (sameSite === "none" && !secure) sameSite = "lax";
+
+  return { name, value, domain, path, secure, expires, hostOnly, sameSite };
 }

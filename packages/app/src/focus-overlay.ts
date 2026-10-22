@@ -1,4 +1,5 @@
-import type { DomTree, FragmentTree, NodeId } from "@browser-engine/ir";
+import type { DomTree, FragmentTree, NodeId, Rect } from "@browser-engine/ir";
+import { px } from "@browser-engine/ir";
 import { advanceEmForCodePoint, type FontFace } from "@browser-engine/font";
 import { pipelineFaces } from "@browser-engine/cli";
 
@@ -187,6 +188,21 @@ function selectionWidth(
     w += fontSize * advanceEmForCodePoint(faces, cp);
   }
   return w;
+}
+
+/**
+ * RFC 0039: the rect the overlay may touch (ring outside the border box +
+ * selection/caret inside). The retained-raster path unions the previous and
+ * next overlay bounds into the damage rect so stale ring pixels repair.
+ */
+export function focusOverlayBounds(
+  tree: FragmentTree,
+  dom: DomTree,
+  focus: EditFocus,
+): Rect | null {
+  const box = borderBoxOf(tree, dom, focus.nodeId);
+  if (box === null) return null;
+  return { x: px(box.x - 3), y: px(box.y - 3), width: px(box.width + 6), height: px(box.height + 6) };
 }
 
 export function paintFocusOverlay(

@@ -58,6 +58,15 @@ const DISPLAY_KEYWORDS: readonly string[] = [
   "-ms-flexbox",
   "-ms-inline-flexbox",
   "-webkit-inline-flex",
+  // CSS Ruby internal values: `ruby` is a real layout branch; the internal
+  // roles (`ruby-base`/`ruby-text`/…-container) PARSE so the ruby partition
+  // can read them off the computed `display`, and normalize to `inline`
+  // for layout outside a ruby container (CSS Ruby §2.2 inlinification).
+  "ruby",
+  "ruby-base",
+  "ruby-text",
+  "ruby-base-container",
+  "ruby-text-container",
 ];
 
 // ---- the rows --------------------------------------------------------------
@@ -91,7 +100,7 @@ const DISPLAY: CssPropertyDef<string, string> = defineProperty<string, string>({
   tsType: "string",
 });
 
-/** `width` — not inherited; a `<length>` or `auto` (initial: auto). */
+/** `width` — not inherited; a `<length>`, `auto`, or `stretch` (initial: auto). */
 const WIDTH: CssPropertyDef<LengthOrAuto, LengthOrAuto> = defineProperty<
   LengthOrAuto,
   LengthOrAuto
@@ -99,13 +108,13 @@ const WIDTH: CssPropertyDef<LengthOrAuto, LengthOrAuto> = defineProperty<
   name: "width",
   inherited: false,
   initial: "auto",
-  syntax: lengthOr("auto"),
+  syntax: lengthOr("auto", "stretch"),
   computeValue: (specified) => specified,
   animationType: "by-computed-value",
   tsType: "LengthOrAuto",
 });
 
-/** `height` — not inherited; a `<length>` or `auto` (initial: auto). */
+/** `height` — not inherited; a `<length>`, `auto`, or `stretch` (initial: auto). */
 const HEIGHT: CssPropertyDef<LengthOrAuto, LengthOrAuto> = defineProperty<
   LengthOrAuto,
   LengthOrAuto
@@ -113,7 +122,7 @@ const HEIGHT: CssPropertyDef<LengthOrAuto, LengthOrAuto> = defineProperty<
   name: "height",
   inherited: false,
   initial: "auto",
-  syntax: lengthOr("auto"),
+  syntax: lengthOr("auto", "stretch"),
   computeValue: (specified) => specified,
   animationType: "by-computed-value",
   tsType: "LengthOrAuto",
@@ -124,7 +133,7 @@ const MARGIN: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edges<Px>, E
   name: "margin",
   inherited: false,
   initial: ZERO_EDGES,
-  syntax: edges(),
+  syntax: edges(["auto"]),
   computeValue: (specified) => specified,
   animationType: "by-computed-value",
   tsType: "Edges<Px>",
@@ -182,6 +191,17 @@ const FLOAT: CssPropertyDef<FloatValue, FloatValue> = defineProperty<FloatValue,
   computeValue: (specified) => specified,
   animationType: "discrete",
   tsType: "FloatValue",
+});
+
+/** `overlay` — not inherited; top-layer participation (initial: none). */
+const OVERLAY: CssPropertyDef<string, string> = defineProperty<string, string>({
+  name: "overlay",
+  inherited: false,
+  initial: "none",
+  syntax: keyword("none", "auto"),
+  computeValue: (specified) => specified,
+  animationType: "discrete",
+  tsType: "string",
 });
 
 /** `top` — not inherited; a `<length>` or `auto` inset (initial: auto). */
@@ -292,17 +312,20 @@ const TRANSFORM: CssPropertyDef<TransformValue, TransformValue> = defineProperty
 });
 
 /**
- * `z-index` — not inherited; an `<integer>` stacking level (initial: 0, which
- * the paint engine reads as `auto`). Reuses the integer shape.
+ * `z-index` — not inherited; `auto | <integer>` (initial: auto). Paint and
+ * layout treat a non-integer as the `auto` stacking level.
  */
-const Z_INDEX: CssPropertyDef<number, number> = defineProperty<number, number>({
+const Z_INDEX: CssPropertyDef<number | "auto", number | "auto"> = defineProperty<
+  number | "auto",
+  number | "auto"
+>({
   name: "z-index",
   inherited: false,
-  initial: 0,
-  syntax: integer(),
+  initial: "auto",
+  syntax: integer({ keywords: ["auto"] }),
   computeValue: (specified) => specified,
   animationType: "discrete",
-  tsType: "number",
+  tsType: "number | \"auto\"",
   // field defaults to "zIndex" via toCamelCase.
 });
 
@@ -340,10 +363,23 @@ function edgeLength(name: string): CssPropertyDef<Px, Px> {
   });
 }
 
-const MARGIN_TOP = edgeLength("margin-top");
-const MARGIN_RIGHT = edgeLength("margin-right");
-const MARGIN_BOTTOM = edgeLength("margin-bottom");
-const MARGIN_LEFT = edgeLength("margin-left");
+/** Margin longhands accept `auto` so the shorthand can expand and one side can override it. */
+function marginEdge(name: string): CssPropertyDef<number | "auto", number | "auto"> {
+  return defineProperty<number | "auto", number | "auto">({
+    name,
+    inherited: false,
+    initial: px(0),
+    syntax: lengthOr("auto"),
+    computeValue: (s) => s,
+    animationType: "by-computed-value",
+    tsType: "number | \"auto\"",
+  });
+}
+
+const MARGIN_TOP = marginEdge("margin-top");
+const MARGIN_RIGHT = marginEdge("margin-right");
+const MARGIN_BOTTOM = marginEdge("margin-bottom");
+const MARGIN_LEFT = marginEdge("margin-left");
 const PADDING_TOP = edgeLength("padding-top");
 const PADDING_RIGHT = edgeLength("padding-right");
 const PADDING_BOTTOM = edgeLength("padding-bottom");
@@ -606,7 +642,7 @@ const FLEX_WRAP: CssPropertyDef<string, string> = defineProperty<string, string>
   name: "flex-wrap",
   inherited: false,
   initial: "nowrap",
-  syntax: keyword("nowrap", "wrap", "wrap-reverse"),
+  syntax: keyword("nowrap", "wrap", "wrap-reverse", "balance"),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -650,7 +686,7 @@ const ALIGN_SELF: CssPropertyDef<string, string> = defineProperty<string, string
   name: "align-self",
   inherited: false,
   initial: "auto",
-  syntax: keyword("auto", "stretch", "flex-start", "flex-end", "center", "baseline"),
+  syntax: keyword("auto", "normal", "stretch", "flex-start", "flex-end", "center", "baseline", "start", "end"),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -678,12 +714,12 @@ const FLEX_SHRINK: CssPropertyDef<number, number> = defineProperty<number, numbe
   tsType: "number",
 });
 
-/** `flex-basis` — not inherited; a `<length>` or `auto` (initial: auto). */
+/** `flex-basis` — not inherited; a `<length-percentage>`, `auto`, or a content keyword. */
 const FLEX_BASIS: CssPropertyDef<LengthOrAuto, LengthOrAuto> = defineProperty<LengthOrAuto, LengthOrAuto>({
   name: "flex-basis",
   inherited: false,
   initial: "auto",
-  syntax: lengthOr("auto"),
+  syntax: lengthOr("auto", "content", "min-content", "max-content", "fit-content"),
   computeValue: (s) => s,
   animationType: "by-computed-value",
   tsType: "LengthOrAuto",
@@ -937,12 +973,15 @@ const TEXT_DECORATION_COLOR: CssPropertyDef<Color, Color> = defineProperty<Color
   tsType: "Color",
 });
 
-/** `font-variant` — inherited; a keyword (initial: normal). */
+/** `font-variant` — the five-longhand SHORTHAND (RFC 0006): the cascade's
+ * shorthand table routes its tokens to `font-variant-{caps,ligatures,numeric,
+ * east-asian,position,alternates}`; this row's free-form syntax exists so the
+ * full shorthand grammar survives parse-time validation. */
 const FONT_VARIANT: CssPropertyDef<string, string> = defineProperty<string, string>({
   name: "font-variant",
   inherited: true,
   initial: "normal",
-  syntax: keyword("normal", "small-caps"),
+  syntax: stringValue(),
   computeValue: (s) => s,
   animationType: "discrete",
   tsType: "string",
@@ -1334,6 +1373,10 @@ const GRID_AUTO_ROWS = stringProp("grid-auto-rows", "auto");
 const GRID_AREA = stringProp("grid-area", "auto");
 const GRID_COLUMN = stringProp("grid-column", "auto");
 const GRID_ROW = stringProp("grid-row", "auto");
+const GRID_ROW_START = stringProp("grid-row-start", "auto");
+const GRID_ROW_END = stringProp("grid-row-end", "auto");
+const GRID_COLUMN_START = stringProp("grid-column-start", "auto");
+const GRID_COLUMN_END = stringProp("grid-column-end", "auto");
 
 /** `justify-items` — not inherited; a keyword (initial: legacy/normal). */
 const JUSTIFY_ITEMS = stringProp("justify-items", "normal");
@@ -1416,6 +1459,11 @@ const FONT_STRETCH = stringProp("font-stretch", "normal", true);
 const FONT_KERNING = stringProp("font-kerning", "auto", true);
 const FONT_FEATURE_SETTINGS = stringProp("font-feature-settings", "normal", true);
 const FONT_VARIANT_NUMERIC = stringProp("font-variant-numeric", "normal", true);
+const FONT_VARIANT_LIGATURES = stringProp("font-variant-ligatures", "normal", true);
+const FONT_VARIANT_CAPS = stringProp("font-variant-caps", "normal", true);
+const FONT_VARIANT_POSITION = stringProp("font-variant-position", "normal", true);
+const FONT_VARIANT_EAST_ASIAN = stringProp("font-variant-east-asian", "normal", true);
+const FONT_VARIANT_ALTERNATES = stringProp("font-variant-alternates", "normal", true);
 const TEXT_DECORATION_THICKNESS: CssPropertyDef<Px, Px> = defineProperty<Px, Px>({
   name: "text-decoration-thickness",
   inherited: false,
@@ -1502,11 +1550,11 @@ const PADDING_INLINE: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edge
   computeValue: (s) => s, animationType: "by-computed-value", tsType: "Edges<Px>",
 });
 const INSET_BLOCK: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edges<Px>, Edges<Px>>({
-  name: "inset-block", inherited: false, initial: ZERO_EDGES, syntax: edges(),
+  name: "inset-block", inherited: false, initial: ZERO_EDGES, syntax: edges(["auto"]),
   computeValue: (s) => s, animationType: "by-computed-value", tsType: "Edges<Px>",
 });
 const INSET_INLINE: CssPropertyDef<Edges<Px>, Edges<Px>> = defineProperty<Edges<Px>, Edges<Px>>({
-  name: "inset-inline", inherited: false, initial: ZERO_EDGES, syntax: edges(),
+  name: "inset-inline", inherited: false, initial: ZERO_EDGES, syntax: edges(["auto"]),
   computeValue: (s) => s, animationType: "by-computed-value", tsType: "Edges<Px>",
 });
 
@@ -1632,7 +1680,7 @@ const HANGING_PUNCTUATION = stringProp("hanging-punctuation", "none", true);
 const TEXT_EMPHASIS_COLOR = colorProp("text-emphasis-color", BLACK, true);
 const TEXT_EMPHASIS_STYLE = stringProp("text-emphasis-style", "none", true);
 const TEXT_EMPHASIS_POSITION = stringProp("text-emphasis-position", "over right", true);
-const FONT_SYNTHESIS = stringProp("font-synthesis", "weight style", true);
+const FONT_SYNTHESIS = stringProp("font-synthesis", "weight style small-caps", true);
 const UNICODE_BIDI = stringProp("unicode-bidi", "normal");
 const RUBY_ALIGN = stringProp("ruby-align", "space-around", true);
 const RUBY_POSITION = stringProp("ruby-position", "over", true);
@@ -1701,6 +1749,7 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   // Layout properties (platform-as-data-layout spec).
   POSITION,
   FLOAT,
+  OVERLAY,
   TOP,
   RIGHT,
   BOTTOM,
@@ -1865,6 +1914,10 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   GRID_AREA,
   GRID_COLUMN,
   GRID_ROW,
+  GRID_ROW_START,
+  GRID_ROW_END,
+  GRID_COLUMN_START,
+  GRID_COLUMN_END,
   JUSTIFY_ITEMS,
   JUSTIFY_SELF,
   // Breadth expansion — batch 3: scroll / overflow extras.
@@ -1892,6 +1945,11 @@ export const CSS_PROPERTIES: readonly CssPropertyDef[] = [
   FONT_KERNING,
   FONT_FEATURE_SETTINGS,
   FONT_VARIANT_NUMERIC,
+  FONT_VARIANT_LIGATURES,
+  FONT_VARIANT_CAPS,
+  FONT_VARIANT_POSITION,
+  FONT_VARIANT_EAST_ASIAN,
+  FONT_VARIANT_ALTERNATES,
   TEXT_DECORATION_THICKNESS,
   TEXT_UNDERLINE_OFFSET,
   // Breadth expansion — batch 4: logical box model.

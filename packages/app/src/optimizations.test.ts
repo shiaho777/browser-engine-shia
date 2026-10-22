@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { startAppServer } from "./server.js";
-import { TabHost, TabSession } from "./tab-session.js";
+import { TabHost } from "./tab-host.js";
+import { TabSession } from "./tab-session.js";
 import { applyTextEdit, findEditableNode } from "./page.js";
 
 void test("binary navigate omits base64 and /api/frame serves PNG", async () => {
@@ -37,15 +38,16 @@ void test("binary navigate omits base64 and /api/frame serves PNG", async () => 
   }
 });
 
-void test("TabHost can create and switch tabs", async () => {
+void test("TabHost can create and switch tabs", async (t) => {
   const host = new TabHost();
+  t.after(async () => host.dispose());
   assert.equal(host.list().length, 1);
   await host.active.navigate("engine://home", { viewport: { width: 700, height: 500 } });
   host.create();
   assert.equal(host.list().length, 2);
   await host.active.navigate("engine://demo", { viewport: { width: 700, height: 500 } });
   assert.match(host.active.url, /demo/);
-  const firstId = host.list().find((t) => !t.active)?.id;
+  const firstId = host.list().find((tab) => !tab.active)?.id;
   assert.ok(firstId !== undefined);
   host.select(firstId);
   assert.match(host.active.url, /home|browser-engine|engine:\/\//);

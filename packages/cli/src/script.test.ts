@@ -13,6 +13,7 @@ import type { PaintCmd } from "@browser-engine/ir";
 
 import { FineSession } from "./fine.js";
 import { runScript } from "./script.js";
+import { pipelineFaceTable } from "./fonts.js";
 
 const styled =
   "<html><head><style>.box { width: 10px; height: 10px; background-color: red }" +
@@ -25,10 +26,30 @@ function rectFills(list: { commands: readonly PaintCmd[] }): { r: number; g: num
     .map((c) => ({ r: c.fill.r, g: c.fill.g, b: c.fill.b }));
 }
 
+/**
+ * Decode rendered glyphs back to code points: `glyphId` is a REAL font-local
+ * id since RFC 0002, so invert the owning face's cmap (printable ASCII is
+ * enough for these tests' strings) — a glyph no cp maps to decodes as -1.
+ */
 function textGlyphIds(list: { commands: readonly PaintCmd[] }): number[] {
-  return list.commands
-    .filter((c): c is Extract<PaintCmd, { op: "text" }> => c.op === "text")
-    .flatMap((c) => c.glyphs.map((g) => g.glyphId));
+  const out: number[] = [];
+  for (const c of list.commands) {
+    if (c.op !== "text") continue;
+    for (const g of c.glyphs) {
+      const face = pipelineFaceTable[g.faceIndex];
+      let cp = -1;
+      if (face !== undefined) {
+        for (let candidate = 0x20; candidate <= 0x7e; candidate += 1) {
+          if (face.glyphIdForCodePoint(candidate) === g.glyphId) {
+            cp = candidate;
+            break;
+          }
+        }
+      }
+      out.push(cp);
+    }
+  }
+  return out;
 }
 
 void test("real JS setAttribute mutates the DOM and the engine re-renders the new style", () => {
@@ -1066,6 +1087,39 @@ void test("guest console output is captured with levels and cross-realm errors",
   assert.ok(log.some((e) => e.level === "warn" && e.message === "careful"));
   assert.ok(log.some((e) => e.level === "error" && e.message.includes("TypeError: boom")),
     "cross-realm errors must format as name: message, not {}");
+});
+
+void test("matchMedia uses the real media-query evaluator", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    const known = matchMedia("(prefers-color-scheme), not all and (prefers-color-scheme)");
+    const unknown = matchMedia("(prefers-color-scheme: 0), not all and (prefers-color-scheme: 0)");
+    const broken = matchMedia("color)");
+    globalThis.known = known.matches === true && known.media === "(prefers-color-scheme), not all and (prefers-color-scheme)";
+    globalThis.unknown = unknown.matches === false;
+    globalThis.broken = broken.media === "not all" && broken.matches === false;
+    globalThis.wide = matchMedia("(min-width: 1000px)").matches === true;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(Boolean(run.sandbox?.["known"]), true);
+  assert.equal(Boolean(run.sandbox?.["unknown"]), true);
+  assert.equal(Boolean(run.sandbox?.["broken"]), true);
+  assert.equal(Boolean(run.sandbox?.["wide"]), true, "page viewport is 1280px wide");
+});
+
+void test("@media insertRule exposes a serialized mediaText", async () => {
+  const { runScriptsOnSessionReal } = await import("./event-loop.js");
+  const session = new FineSession("<html><head><style id='s'></style></head><body></body></html>", "https://example.test/");
+  const run = await runScriptsOnSessionReal(session, [`
+    const sheet = document.getElementById("s").sheet;
+    sheet.insertRule("@media (display-mode: browser) {}", 0);
+    const rule = sheet.cssRules[0];
+    globalThis.mediaText = rule.media.mediaText;
+    globalThis.plain = sheet.cssRules.length;
+  `], undefined, {});
+  assert.equal(run.error, null);
+  assert.equal(run.sandbox?.["mediaText"], "(display-mode: browser)");
 });
 
 void test("document.styleSheets + element.sheet + insertRule rewrite style text", async () => {

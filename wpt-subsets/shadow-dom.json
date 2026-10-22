@@ -1,0 +1,9 @@
+{
+  "name": "shadow-dom",
+  "owner": "guest",
+  "root": "packages/cli/wpt-fixtures",
+  "files": [
+    "shadow-dom/slots-outside-shadow-dom.html"
+  ],
+  "baselinePassCount": 1
+}

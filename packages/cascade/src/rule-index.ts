@@ -51,15 +51,31 @@
  * Attribute selectors are also parsed and matched here (`[a]`, `[a=v]`,
  * `[a~=v]`, `[a|=v]`, `[a^=v]`, `[a$=v]`, `[a*=v]`, and the `i` flag), along
  * with the later-maintained sibling combinators and DOM-decidable pseudos below.
- * Selector features outside the supported subset (pseudo-elements and
- * unsupported pseudo-classes) safely fail to match rather than match the wrong
- * nodes.
+ * Selector features outside the supported subset (unsupported pseudo-elements
+ * such as `::before` / `::after`, and unsupported pseudo-classes) safely fail
+ * to match rather than match the wrong nodes. `::first-letter` and
+ * `::first-line` (one or two colons) parse and are indexed, but they never
+ * match the element itself — {@link matchPseudoRules} is the only path that
+ * returns them, so their declarations cannot restyle the whole element.
  *
  * This module lives inside the *cascade* stage package and imports ONLY the
  * frozen IR (`@browser-engine/ir`), so it never crosses a stage boundary
  * (`local/no-cross-stage-import`).
  */
 import type { DomNode, DomTree, NodeId, StyleRule, StyleSheet } from "@browser-engine/ir";
+import {
+  controlDisabled,
+  isFormControl,
+  matchesChecked,
+  matchesDefault,
+  matchesIndeterminate,
+  matchesInvalid,
+  matchesPlaceholderShown,
+  matchesRange,
+  matchesReadWrite,
+  matchesUserValidity,
+  matchesValid,
+} from "./form-state.js";
 
 /** The structural / state pseudo-classes decidable purely from the `DomTree`. */
 export type SupportedPseudoClass =
@@ -79,7 +95,22 @@ export type SupportedPseudoClass =
   | "read-only"
   | "read-write"
   | "link"
-  | "any-link";
+  | "any-link"
+  | "defined"
+  | "focus"
+  | "focus-within"
+  | "focus-visible"
+  | "active"
+  | "hover"
+  | "valid"
+  | "invalid"
+  | "in-range"
+  | "out-of-range"
+  | "default"
+  | "indeterminate"
+  | "placeholder-shown"
+  | "user-valid"
+  | "user-invalid";
 
 /** The argument-less pseudo-class subset (Requirement 15.2). */
 const SUPPORTED_PSEUDO_CLASSES: ReadonlySet<string> = new Set<SupportedPseudoClass>([
@@ -100,6 +131,21 @@ const SUPPORTED_PSEUDO_CLASSES: ReadonlySet<string> = new Set<SupportedPseudoCla
   "read-write",
   "link",
   "any-link",
+  "defined",
+  "focus",
+  "focus-within",
+  "focus-visible",
+  "active",
+  "hover",
+  "valid",
+  "invalid",
+  "in-range",
+  "out-of-range",
+  "default",
+  "indeterminate",
+  "placeholder-shown",
+  "user-valid",
+  "user-invalid",
 ]);
 
 /** An attribute-selector operator (`[a]`, `[a=v]`, `[a~=v]`, …). */
@@ -142,7 +188,7 @@ export interface IndexedRule {
  * UA < User < Author. IMPORTANT declarations have a different, partially
  * reversed order (see {@link cascadeRank} in index.ts).
  */
-export type CascadeOrigin = "ua" | "user" | "author";
+export type CascadeOrigin = "ua" | "shadow-host" | "user" | "author";
 
 /**
  * The selector-matching index (design.md §8.3). Rules are bucketed by the key
@@ -326,6 +372,32 @@ export function matchRulesForIndexed(index: RuleIndex, dom: DomTree, node: NodeI
   return matched;
 }
 
+/** A pseudo-element the index can name without applying it to the element. */
+export type IndexedPseudoElement = "first-letter" | "first-line";
+
+/**
+ * Rules whose subject is `::first-letter` / `::first-line` (or the legacy
+ * single-colon form) and whose element compound matches `node`. Element
+ * matching ({@link matchRulesFor}) never returns these — a `p::first-letter`
+ * declaration must not become the paragraph's own style.
+ */
+export function matchPseudoRules(
+  index: RuleIndex,
+  dom: DomTree,
+  node: NodeId,
+  pseudo: IndexedPseudoElement,
+): readonly IndexedRule[] {
+  const candidates = collectCandidates(index, dom, node);
+  const matched: IndexedRule[] = [];
+  for (const candidate of candidates) {
+    if (ruleMatchesPseudo(candidate.rule, dom, node, pseudo)) {
+      matched.push(candidate);
+    }
+  }
+  matched.sort((a, b) => a.order - b.order);
+  return matched;
+}
+
 /**
  * Reference matcher: an exhaustive scan of EVERY rule in document order (no
  * index). Used only by the equivalence property (task 5.4 / Req 4.3) and tests
@@ -402,6 +474,23 @@ export function ruleMatches(rule: StyleRule, dom: DomTree, node: NodeId): boolea
   return false;
 }
 
+/** Does any selector apply `pseudo` to `node` (the element compound matches, the pseudo does not restyle it)? */
+function ruleMatchesPseudo(
+  rule: StyleRule,
+  dom: DomTree,
+  node: NodeId,
+  pseudo: IndexedPseudoElement,
+): boolean {
+  for (const selector of rule.selector) {
+    const complex = parseComplexSelector(selector.text);
+    if (complex === null) continue;
+    const subject = complex.compounds[complex.compounds.length - 1];
+    if (subject?.pseudoElement !== pseudo) continue;
+    if (matchFrom(complex, complex.compounds.length - 1, dom, node, pseudo)) return true;
+  }
+  return false;
+}
+
 /** A compound selector: optional type plus id / class / pseudo / attribute constraints. */
 interface CompoundSelector {
   readonly tag: string | null;
@@ -414,6 +503,15 @@ interface CompoundSelector {
   readonly not: readonly CompoundSelector[];
   /** `:has(...)` relative selectors — each an inner complex that MUST match a descendant. */
   readonly has: readonly ComplexSelector[];
+  /** `:host` markers (CSS Scoping §4): each entry is `null` for bare `:host` or
+   * the compound inside `:host(<compound>)`. Matches only shadow hosts. */
+  readonly host: readonly (CompoundSelector | null)[];
+  /**
+   * A trailing `::first-letter` / `::first-line` (or the legacy one-colon form).
+   * Present ⇒ this compound does not match an element; {@link matchPseudoRules}
+   * is what accepts it.
+   */
+  readonly pseudoElement?: IndexedPseudoElement;
 }
 
 /** A parsed complex selector: compounds left→right, with the linking combinators. */
@@ -445,13 +543,16 @@ function matchFrom(
   index: number,
   dom: DomTree,
   node: NodeId,
+  acceptPseudo?: IndexedPseudoElement,
 ): boolean {
   const domNode = dom.nodes.get(node);
   const compound = complex.compounds[index];
+  const accepting =
+    acceptPseudo !== undefined && index === complex.compounds.length - 1 ? acceptPseudo : undefined;
   if (
     domNode === undefined ||
     compound === undefined ||
-    !matchesCompound(compound, domNode, dom)
+    !matchesCompound(compound, domNode, dom, accepting)
   ) {
     return false;
   }
@@ -574,8 +675,18 @@ function matchesHasDescendant(relative: ComplexSelector, host: DomNode, dom: Dom
 }
 
 /** Does a single compound selector match this DOM node? */
-function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomTree): boolean {
+function matchesCompound(
+  compound: CompoundSelector,
+  domNode: DomNode,
+  dom: DomTree,
+  acceptPseudo?: IndexedPseudoElement,
+): boolean {
   if (domNode.kind !== "element") {
+    return false;
+  }
+  if (acceptPseudo === undefined) {
+    if (compound.pseudoElement !== undefined) return false;
+  } else if (compound.pseudoElement !== acceptPseudo) {
     return false;
   }
   if (compound.tag !== null && domNode.tag !== compound.tag) {
@@ -617,6 +728,12 @@ function matchesCompound(compound: CompoundSelector, domNode: DomNode, dom: DomT
     if (!matchesHas(hasSelector, domNode, dom)) {
       return false;
     }
+  }
+  for (const hostCond of compound.host) {
+    // `:host` only ever matches an element that HAS a shadow root; the
+    // functional form additionally requires the inner compound to match.
+    if (domNode.shadow === undefined) return false;
+    if (hostCond !== null && !matchesCompound(hostCond, domNode, dom)) return false;
   }
   return true;
 }
@@ -677,23 +794,79 @@ function matchesPseudoClass(
     case "empty":
       return isEmptyElement(domNode, dom);
     case "checked":
-      return hasAttr(domNode, "checked") || hasAttr(domNode, "selected");
+      return matchesChecked(dom, domNode);
     case "disabled":
-      return hasAttr(domNode, "disabled");
+      return isFormControl(domNode) && controlDisabled(domNode, dom);
     case "enabled":
-      return isFormControl(domNode) && !hasAttr(domNode, "disabled");
+      return isFormControl(domNode) && !controlDisabled(domNode, dom);
     case "required":
-      return hasAttr(domNode, "required");
+      return isFormControl(domNode) && hasAttr(domNode, "required");
     case "optional":
       return isFormControl(domNode) && !hasAttr(domNode, "required");
     case "read-only":
-      return hasAttr(domNode, "readonly") || !isFormControl(domNode);
+      return !matchesReadWrite(dom, domNode);
     case "read-write":
-      return isFormControl(domNode) && !hasAttr(domNode, "readonly");
+      return matchesReadWrite(dom, domNode);
+    case "valid":
+      return matchesValid(dom, domNode);
+    case "invalid":
+      return matchesInvalid(dom, domNode);
+    case "in-range":
+      return matchesRange(dom, domNode, true);
+    case "out-of-range":
+      return matchesRange(dom, domNode, false);
+    case "default":
+      return matchesDefault(dom, domNode);
+    case "indeterminate":
+      return matchesIndeterminate(dom, domNode);
+    case "placeholder-shown":
+      return matchesPlaceholderShown(dom, domNode);
+    case "user-valid":
+      return matchesUserValidity(dom, domNode, true);
+    case "user-invalid":
+      return matchesUserValidity(dom, domNode, false);
     case "link":
     case "any-link":
       return isLinkElement(domNode);
+    case "defined":
+      return isDefinedElement(domNode, dom);
+    case "focus":
+      return dom.uiState?.focus === domNode.id;
+    case "focus-within":
+      return dom.uiState?.focus !== undefined && isSelfOrAncestorOf(dom, domNode.id, dom.uiState.focus);
+    case "focus-visible":
+      return dom.uiState?.focus === domNode.id && dom.uiState.focusVisible === true;
+    case "active":
+      return dom.uiState?.active === domNode.id;
+    case "hover":
+      return dom.uiState?.hover !== undefined && isSelfOrAncestorOf(dom, domNode.id, dom.uiState.hover);
   }
+}
+
+/** Whether `maybeAncestor` contains `id` (inclusive) via the DOM parent chain. */
+function isSelfOrAncestorOf(dom: DomTree, maybeAncestor: NodeId, id: NodeId): boolean {
+  let cur: NodeId | null | undefined = id;
+  const seen = new Set<NodeId>();
+  while (cur !== null && cur !== undefined) {
+    if (cur === maybeAncestor) return true;
+    if (!seen.add(cur)) return false;
+    cur = dom.nodes.get(cur)?.parent;
+  }
+  return false;
+}
+
+/**
+ * `:defined` (HTML §4.13.5): every built-in element is defined; a hyphenated
+ * (custom) element is defined iff its local name is in the document's
+ * defined-name set; a customized built-in is defined iff its `is` value is.
+ */
+function isDefinedElement(domNode: DomNode, dom: DomTree): boolean {
+  const tag = domNode.tag;
+  if (tag === undefined) return false;
+  const names = dom.defined;
+  const is = getAttr(domNode, "is");
+  if (is !== null && (names?.has(is) ?? false)) return true;
+  return !tag.includes("-") || (names?.has(tag) ?? false);
 }
 
 /** Whether the element is a link (`a`/`area`/`link` carrying `href`). */
@@ -701,18 +874,6 @@ function isLinkElement(domNode: DomNode): boolean {
   return (
     (domNode.tag === "a" || domNode.tag === "area" || domNode.tag === "link") &&
     getAttr(domNode, "href") !== null
-  );
-}
-
-/** The HTML form controls `:enabled`/`:disabled`/`:read-write` apply to. */
-function isFormControl(domNode: DomNode): boolean {
-  return (
-    domNode.tag === "input" ||
-    domNode.tag === "button" ||
-    domNode.tag === "select" ||
-    domNode.tag === "textarea" ||
-    domNode.tag === "option" ||
-    domNode.tag === "fieldset"
   );
 }
 
@@ -960,6 +1121,8 @@ function parseCompound(token: string): CompoundSelector | null {
   const nth: NthConstraint[] = [];
   const not: CompoundSelector[] = [];
   const has: ComplexSelector[] = [];
+  const host: (CompoundSelector | null)[] = [];
+  let pseudoElement: IndexedPseudoElement | null = null;
 
   let i = 0;
   const len = token.length;
@@ -995,15 +1158,26 @@ function parseCompound(token: string): CompoundSelector | null {
     }
     if (ch === ":") {
       if (token[i + 1] === ":") {
-        // Pseudo-element (::before, ::after, etc.) — the engine does not yet
-        // support generated content, so a selector with a pseudo-element does
-        // not match any element. Return null so the rule is a safe no-match
-        // (the selector is still parsed for specificity by the CSS parser).
-        return null;
+        // Generated content (`::before`, `::after`, …) is still unsupported, so
+        // those selectors stay a safe no-match. `::first-letter` / `::first-line`
+        // are recognized only as a suffix — they never match the element.
+        const name = readIdent(token, i + 2).toLowerCase();
+        const next = i + 2 + name.length;
+        if (!isIndexedPseudo(name) || next !== len || pseudoElement !== null) return null;
+        pseudoElement = name;
+        i = next;
+        continue;
       }
       const name = readIdent(token, i + 1);
       if (name.length === 0) return null;
       let after = i + 1 + name.length;
+      const pseudoName = name.toLowerCase();
+      if (token[after] !== "(" && isIndexedPseudo(pseudoName)) {
+        if (after !== len || pseudoElement !== null) return null;
+        pseudoElement = pseudoName;
+        i = after;
+        continue;
+      }
       if (token[after] === "(") {
         // Find the matching close paren (handle nested parens).
         let depth = 1;
@@ -1018,8 +1192,12 @@ function parseCompound(token: string): CompoundSelector | null {
         const arg = token.slice(after + 1, close - 1);
         if (name === "not") {
           const inner = parseCompound(arg.trim());
-          if (inner === null) return null;
+          if (inner === null || inner.pseudoElement !== undefined) return null;
           not.push(inner);
+        } else if (name === "host") {
+          const inner = parseCompound(arg.trim());
+          if (inner === null || inner.pseudoElement !== undefined) return null;
+          host.push(inner);
         } else if (name === "has") {
           // :has(<relative-selector>) — parse the argument as a complex selector
           // (may start with a combinator like > or +).
@@ -1035,10 +1213,13 @@ function parseCompound(token: string): CompoundSelector | null {
         }
         after = close;
       } else {
-        if (!SUPPORTED_PSEUDO_CLASSES.has(name)) {
+        if (name === "host") {
+          host.push(null); // bare `:host`
+        } else if (!SUPPORTED_PSEUDO_CLASSES.has(name)) {
           return null;
+        } else {
+          pseudoClasses.push(name as SupportedPseudoClass);
         }
-        pseudoClasses.push(name as SupportedPseudoClass);
       }
       i = after;
       continue;
@@ -1053,7 +1234,23 @@ function parseCompound(token: string): CompoundSelector | null {
     return null; // unsupported character.
   }
 
-  return { tag, id, classes, pseudoClasses, attributes, nth, not, has };
+  const parsed = { tag, id, classes, pseudoClasses, attributes, nth, not, has, host };
+  return pseudoElement === null ? parsed : { ...parsed, pseudoElement };
+}
+
+function isIndexedPseudo(name: string): name is IndexedPseudoElement {
+  return name === "first-letter" || name === "first-line";
+}
+
+/**
+ * Whether `selectorText`'s subject (rightmost compound) carries a `:host`
+ * marker — used to extract the shadow-sheet rules allowed to style the host
+ * element (CSS Scoping §4.1). NOT exported for general matching.
+ */
+export function selectorTargetsHost(selectorText: string): boolean {
+  const complex = parseComplexSelector(selectorText);
+  const subject = complex?.compounds[complex.compounds.length - 1];
+  return subject !== undefined && subject.host.length > 0;
 }
 
 /**

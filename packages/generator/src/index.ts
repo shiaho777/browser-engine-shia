@@ -89,7 +89,10 @@ export {
 export type { CalcNode, ParseResult, SpecifiedCalc, SpecifiedLength } from "./value-runtime.js";
 
 // ---- CSS shorthand expansion (ROADMAP Phase 2) ----------------------------
-export { expandShorthand, expandDeclarations } from "./shorthand-expansion.js";
+export { expandShorthand, expandDeclarations, shorthandLonghands, serializeFlexFlow } from "./shorthand-expansion.js";
+export { canonicalGridAreas, canonicalGridLine, isGridLineProperty, serializeGrid, serializeGridArea, serializeGridPlacement, serializeGridTemplate } from "./grid-shorthand.js";
+export { canonicalTrackList, resolveTrackList, trackListValid } from "./grid-tracks.js";
+export type { TrackResolve } from "./grid-tracks.js";
 export type { ExpandedDeclaration, ShorthandExpander } from "./shorthand-expansion.js";
 
 // ---- the emitters (the "code generation" half) ----------------------------

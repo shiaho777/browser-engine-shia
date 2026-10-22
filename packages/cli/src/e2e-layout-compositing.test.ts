@@ -84,7 +84,7 @@ function fragmentForNode(tree: FragmentTree, node: NodeId): Fragment {
 void test("Req 5.1: a real flex document lays children along the main axis (equal split)", () => {
   const { dom, tree } = layoutDoc(
     '<div class="f"><span class="i"></span><span class="i"></span></div>',
-    ".f { display: flex; width: 300px; height: 50px } .i { height: 50px }",
+    ".f { display: flex; width: 300px; height: 50px } .i { height: 50px; flex-grow: 1 }",
   );
   const items = elementsByTag(dom, "span");
   const a = fragmentForNode(tree, items[0]!.id);
@@ -390,14 +390,15 @@ void test("text paints at the padded content origin, inside the box's padding", 
   // origin (offset by the padding), not the border-box origin.
   const dom = parseHtml(enc('<div class="p">hi</div>'));
   const sheets = [
+    uaStylesheet(), // div → display:block; otherwise an inline box's padding-top extends the box AROUND the line (§10.8.1), not its content.
     parseCss(enc(".p { width: 200px; padding-top: 12px; padding-right: 0px; padding-bottom: 0px; padding-left: 18px }")),
   ];
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   const list = paint(layout(dom, styleOf), styleOf);
   const text = list.commands.find((c) => c.op === "text");
   assert.ok(text !== undefined && text.op === "text");
-  assert.equal(Number(text.at.x), 18, "text x = parent left padding");
-  assert.equal(Number(text.at.y), 12, "text y = parent top padding");
+  assert.equal(Number(text.at.x), 26, "text x = body margin (8) + parent left padding (18)");
+  assert.equal(Number(text.at.y), 20, "text y = body margin (8) + parent top padding (12)");
 });
 
 // ===========================================================================
@@ -493,11 +494,14 @@ void test("the clip rectangle is the padding box, and the box's own background i
   const firstRect = ops.indexOf("rect");
   const pushClip = ops.indexOf("push-clip");
   assert.ok(firstRect >= 0 && pushClip > firstRect, "the box's own background paints before its clip");
-  // The clip rect equals the parent's padding box.
+  // The clip rect equals the parent's padding box — compared in paint-space
+  // (absolute) coordinates against the parent's own background rect, which
+  // paints exactly the border box (= padding box, no border here).
   const clipCmd = list.commands.find((c) => c.op === "push-clip");
+  const bgCmd = list.commands[firstRect];
   assert.ok(clipCmd !== undefined && clipCmd.op === "push-clip");
-  const parent = fragmentForNode(layout(dom, styleOf), elementsByTag(dom, "div")[0]!.id);
-  assert.deepEqual(clipCmd.rect, parent.box.paddingBox);
+  assert.ok(bgCmd !== undefined && bgCmd.op === "rect");
+  assert.deepEqual(clipCmd.rect, bgCmd.rect);
 });
 
 void test("overflow-x:hidden alone also triggers the clip (axis longhand)", () => {
@@ -642,7 +646,7 @@ void test("text-align:left (and the initial start) leaves the run at the content
 
 void test("text paints at the aligned position end-to-end (text-align flows to the text command)", () => {
   const dom = parseHtml(enc('<div class="t">hi</div>'));
-  const sheets = [parseCss(enc(".t { width: 800px; font-size: 16px; text-align: right }"))];
+  const sheets = [uaStylesheet(), parseCss(enc(".t { width: 800px; font-size: 16px; text-align: right }"))];
   const styleOf = (node: NodeId) => cascade(dom, sheets, node);
   const list = paint(layout(dom, styleOf), styleOf);
   const text = list.commands.find((c) => c.op === "text");
@@ -872,7 +876,14 @@ void test("inline-block participates as an atomic unit on the same line", () => 
   const textNode = [...dom.nodes.values()].find((n) => n.kind === "text")!;
   const text = fragmentForNode(tree, textNode.id);
   assert.ok(Number(text.box.borderBox.x) < Number(spanFrag.box.borderBox.x), "text left of inline-block");
-  assert.equal(Number(text.box.borderBox.y), Number(spanFrag.box.borderBox.y), "same line (same y)");
+  // vertical-align:baseline (the initial): an EMPTY inline-block's baseline is
+  // its bottom margin edge (CSS 2.1 §10.8.1) → the box sits with its bottom on
+  // the text baseline = lineTop + ascent ≈ 12.8px for the 16px metrics font,
+  // so a 10px box tops out 2.8px below the line top.
+  assert.ok(
+    Math.abs(Number(spanFrag.box.borderBox.y) - 2.8) < 0.01,
+    "same line, bottom edge resting on the baseline (12.8 − 10)",
+  );
 });
 
 void test("a block-level sibling breaks the inline run", () => {

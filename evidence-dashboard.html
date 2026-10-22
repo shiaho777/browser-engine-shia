@@ -136,20 +136,20 @@ footer {
 </header>
 <main>
   <div class="grid">
-    <article class="card"><div class="label">Hand-written lines</div><div class="value">49,209</div><div class="hint">product surface</div></article>
-    <article class="card"><div class="label">Platform features</div><div class="value">892</div><div class="hint">CSS + DOM data</div></article>
-    <article class="card"><div class="label">Compat / LOC</div><div class="value">0.0009</div><div class="hint">passes per line</div></article>
-    <article class="card"><div class="label">Mechanism density</div><div class="value">18.13</div><div class="hint">features / kloc</div></article>
+    <article class="card"><div class="label">Hand-written lines</div><div class="value">90,613</div><div class="hint">product surface</div></article>
+    <article class="card"><div class="label">Platform features</div><div class="value">902</div><div class="hint">CSS + DOM data</div></article>
+    <article class="card"><div class="label">Compat / LOC</div><div class="value">0.0005</div><div class="hint">passes per line</div></article>
+    <article class="card"><div class="label">Mechanism density</div><div class="value">9.95</div><div class="hint">features / kloc</div></article>
   </div>
   <section>
     <h2>Benchmark Dimensions</h2>
     <table>
       <tbody>
-<tr><th>Hand-written surface (smaller = more readable)</th><td>49,209 lines</td><td>WIN</td></tr>
-<tr><th>compat-per-LOC (North Star)</th><td>0.0009 passes/line</td><td>WIN</td></tr>
-<tr><th>mechanism-density (features per 1k hand-written lines)</th><td>18.13 features/kloc</td><td>WIN</td></tr>
-<tr><th>CSS-property coverage (raw count)</th><td>340 properties</td><td>GAP</td></tr>
-<tr><th>Raw WPT / Interop pass rate</th><td>100% of maintained WPT subsets (462/462 curated subtests)</td><td>GAP</td></tr>
+<tr><th>Hand-written surface (smaller = more readable)</th><td>90,613 lines</td><td>WIN</td></tr>
+<tr><th>compat-per-LOC (North Star)</th><td>0.0005 passes/line</td><td>WIN</td></tr>
+<tr><th>mechanism-density (features per 1k hand-written lines)</th><td>9.95 features/kloc</td><td>WIN</td></tr>
+<tr><th>CSS-property coverage (raw count)</th><td>350 properties</td><td>GAP</td></tr>
+<tr><th>Raw WPT / Interop pass rate</th><td>100% of maintained WPT subsets (2519/2519 curated subtests)</td><td>GAP</td></tr>
 <tr><th>Runtime performance (Speedometer-class)</th><td>not measured</td><td>NOT-COMPARABLE</td></tr>
       </tbody>
     </table>
@@ -157,13 +157,13 @@ footer {
 <section>
     <h2>Maintained WPT Trace</h2>
     <div class="facts">
-<div class="fact"><b>Subsets</b><span>6</span></div>
-<div class="fact"><b>Files / subtests</b><span>110 / 462</span></div>
-<div class="fact"><b>Outcomes</b><span>462 passed, 0 failed, 0 errored</span></div>
-<div class="fact"><b>Query calls</b><span>11290</span></div>
-<div class="fact"><b>Recomputes</b><span>3793</span></div>
-<div class="fact"><b>Cache hits</b><span>7497</span></div>
-<div class="fact"><b>Dependency reads</b><span>181295</span></div>
+<div class="fact"><b>Subsets</b><span>8</span></div>
+<div class="fact"><b>Files / subtests</b><span>114 / 2519</span></div>
+<div class="fact"><b>Outcomes</b><span>2519 passed, 0 failed, 0 errored</span></div>
+<div class="fact"><b>Query calls</b><span>17288</span></div>
+<div class="fact"><b>Recomputes</b><span>3881</span></div>
+<div class="fact"><b>Cache hits</b><span>13407</span></div>
+<div class="fact"><b>Dependency reads</b><span>1944545</span></div>
     </div>
   </section>
 <section>
@@ -184,6 +184,30 @@ footer {
 <div class="fact"><b>Script mutations</b><span>6</span></div>
 <div class="fact"><b>appendChild increased nodes</b><span>yes</span></div>
 <div class="fact"><b>Appended node painted</b><span>yes</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Incremental Layout (RFC 0038)</h2>
+    <div class="facts">
+<div class="fact"><b>Scenario</b><span>120 overflow:hidden panels; text edit inside one panel</span></div>
+<div class="fact"><b>Document nodes</b><span>2766</span></div>
+<div class="fact"><b>Boundary replays (hits)</b><span>120</span></div>
+<div class="fact"><b>Boundary re-layouts (misses)</b><span>601</span></div>
+<div class="fact"><b>OOF-leak bypasses</b><span>0</span></div>
+<div class="fact"><b>Replay == full layout</b><span>yes</span></div>
+<div class="fact"><b>Layout warm / cold ms</b><span>3.07 / 2.89</span></div>
+    </div>
+  </section>
+<section>
+    <h2>Paint Invalidation (RFC 0039)</h2>
+    <div class="facts">
+<div class="fact"><b>Scenario</b><span>120 static panels; text edit inside one div</span></div>
+<div class="fact"><b>Commands unchanged / changed</b><span>56 / 2</span></div>
+<div class="fact"><b>Damage area</b><span>3614.25 of 172800 px²</span></div>
+<div class="fact"><b>Retained repair ran</b><span>yes</span></div>
+<div class="fact"><b>No-change repaint is a no-op</b><span>yes</span></div>
+<div class="fact"><b>Partial == full render (bytes)</b><span>yes</span></div>
+<div class="fact"><b>Repaint warm / cold ms</b><span>36.27 / 39.88</span></div>
     </div>
   </section>
 <section>

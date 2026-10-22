@@ -121,11 +121,17 @@ export function paint(
   options?: {
     readonly clipMaxY?: number;
     readonly scrollY?: number;
+    /**
+     * Document-space viewport rect — the positioning area for
+     * `background-attachment: fixed` layers. Absent ⇒ `fixed` acts as `scroll`.
+     */
+    readonly viewport?: Rect;
     /** Resolve a `background-image: url(...)` source to a decoded bitmap. */
     readonly imageBySrc?: (src: string) => DecodedImage | undefined;
   },
 ): DisplayList {
   const commands: PaintCmd[] = [];
+  const collapsedDrops = collapsedBorderDrops(fragments, styleOf);
   const clipRadiusStack: number[] = [0];
   const clipMaxY = options?.clipMaxY;
   const scrollY = options?.scrollY ?? 0;
@@ -181,11 +187,14 @@ export function paint(
     }
     const style = styleOf(fragment.node);
 
-    const layer = readLayer(style);
+    const layer = readLayer(style, fragment.box.borderBox);
     if (layer !== null) {
       const transform = layer.transform === IDENTITY_MATRIX
         ? layer.transform
-        : originRelativeMatrix(layer.transform, fragment.box.borderBox);
+        : originRelativeMatrix(
+            layer.transform,
+            readTransformOrigin(style["transformOrigin"], fragment.box.borderBox),
+          );
       commands.push(
         layer.filter === undefined
           ? { op: "push-layer", opacity: layer.opacity, transform }
@@ -197,8 +206,8 @@ export function paint(
 
     if (selfVisible) {
       emitBoxShadow(fragment, style, commands);
-      emitBackground(fragment, style, commands, imageBySrc);
-      emitBorder(fragment, style, commands);
+      emitBackground(fragment, style, commands, imageBySrc, options?.viewport);
+      emitBorder(fragment, style, commands, collapsedDrops.get(fragment.node));
       emitOutline(fragment, style, commands);
     }
 
@@ -223,7 +232,7 @@ export function paint(
       if (image !== undefined) {
         emitImage(fragment, style, image, commands, clipRadiusStack[clipRadiusStack.length - 1] ?? 0);
       } else if (fragment.children.length === 0) {
-        emitText(fragment, style, commands);
+        emitText(fragment, style, commands, imageBySrc);
         emitTextDecoration(fragment, style, commands);
       }
     }
@@ -309,6 +318,7 @@ function emitBackground(
   style: ComputedStyle,
   out: PaintCmd[],
   imageBySrc?: (src: string) => DecodedImage | undefined,
+  viewport?: Rect,
 ): void {
   const radius = readBorderRadius(
     style,
@@ -322,37 +332,439 @@ function emitBackground(
     if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
     out.push(cmd);
   }
-  // 2. background-image: url(...). A `background-image` value may list several
-  //    comma-separated layers; we resolve the first decodable one and paint it
-  //    into the padding box (the default `background-origin`), honoring
-  //    `background-size: cover|contain` for simple crop/fit. `background-repeat`
-  //    is not yet honoured (the image is painted once, stretched to the box).
-  if (imageBySrc === undefined) {
-    return;
-  }
-  const bgImage = stringField(style["backgroundImage"], "none");
-  const src = firstUrl(bgImage);
-  if (src === null) {
-    return;
-  }
-  const decoded = imageBySrc(src);
-  if (decoded === undefined) {
-    return;
-  }
-  const destBox = style["backgroundClip"] === "content-box" ? fragment.box.contentBox : fragment.box.paddingBox;
-  const dest = copyRect(destBox);
-  const size = stringField(style["backgroundSize"], "auto");
-  const srcImg = backgroundImageWithSize(decoded, Number(dest.width), Number(dest.height), size);
-  const cmd: PaintCmd = { op: "image", rect: dest, src: srcImg };
-  if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
-  out.push(cmd);
+  // 2. background-image layers. `url()` needs a resolver. `linear-gradient`
+  // and `radial-gradient` paint without one. Other non-url layers are not painted.
+  emitBackgroundLayers(fragment, style, radius, out, imageBySrc, viewport);
 }
+
+// ---------------------------------------------------------------------------
+// Background layer engine (RFC 0008). Each comma-separated `background-image`
+// layer resolves size/position/repeat/origin/clip/attachment independently and
+// emits `image` (single placement) or `tile` (repeating) commands. Layers paint
+// back-to-front — the FIRST listed layer is topmost, so it is emitted LAST.
+// ---------------------------------------------------------------------------
+
+/** `<position>` per-axis term: `frac` of (area − tile) plus an absolute `px` offset. */
+interface PosTerm { readonly frac: number; readonly px: number }
+
+/** One parsed `<repeat-style>` axis. */
+type RepeatMode = "repeat" | "space" | "round" | "none";
+
+/** Split a comma-separated value honoring parens (url()/rgb()/functions). */
+function splitLayers(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (ch === "," && depth === 0) {
+      out.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(value.slice(start).trim());
+  return out.filter((s) => s.length > 0);
+}
+
+/** CSS list-matching: a list shorter than `background-image` repeats from the top. */
+function listAt<T>(list: readonly T[], i: number): T {
+  return list[i % list.length]!;
+}
+
+type BoxName = "border" | "padding" | "content";
+
+function boxRect(fragment: Fragment, name: BoxName): Rect {
+  if (name === "border") return copyRect(fragment.box.borderBox);
+  if (name === "content") return copyRect(fragment.box.contentBox);
+  return copyRect(fragment.box.paddingBox);
+}
+
+function boxName(value: string | undefined, fallback: BoxName): BoxName {
+  const v = (value ?? "").trim();
+  if (v === "border-box") return "border";
+  if (v === "content-box") return "content";
+  if (v === "padding-box") return "padding";
+  return fallback;
+}
+
+/**
+ * Parse `background-position` — 1–4 value syntax. Resolves to per-axis
+ * `{frac, px}`: `pos = frac·(area − tile) + px`. Edge keywords contribute the
+ * edge fraction (left/top = 0, right/bottom = 1, center = 0.5); `<percentage>`
+ * is a fraction of (area − tile); `<length>` an absolute px offset. In
+ * edge+offset form (`right 10px bottom`) the offset pulls BACK from the edge.
+ */
+function parseBgPosition(value: string): { x: PosTerm; y: PosTerm } | null {
+  const tokens = value.trim().toLowerCase().split(/\s+/).filter((t) => t !== "");
+  if (tokens.length === 0 || tokens.length > 4) return null;
+  const isH = (t: string): boolean => t === "left" || t === "right";
+  const isV = (t: string): boolean => t === "top" || t === "bottom";
+  const isKw = (t: string): boolean => isH(t) || isV(t) || t === "center";
+  /** `<length>`/`<percentage>`/`center` → term. */
+  const lenPct = (t: string): PosTerm | null => {
+    if (t === "center") return { frac: 0.5, px: 0 };
+    if (t.endsWith("%")) {
+      const n = Number.parseFloat(t.slice(0, -1));
+      return Number.isFinite(n) ? { frac: n / 100, px: 0 } : null;
+    }
+    const m = /^(-?[\d.]+)(px)?$/.exec(t); // bare numbers allowed (0)
+    return m !== null ? { frac: 0, px: Number.parseFloat(m[1]!) } : null;
+  };
+  /** Edge keyword + optional offset → term (offset pulls back on right/bottom). */
+  const edgeTerm = (edge: string, off: string | undefined): PosTerm | null => {
+    const base = edge === "right" || edge === "bottom" ? 1 : edge === "center" ? 0.5 : 0;
+    if (off === undefined) return { frac: base, px: 0 };
+    const t = lenPct(off);
+    if (t === null) return null;
+    const sign = base === 1 ? -1 : 1;
+    return { frac: base + sign * t.frac, px: sign * t.px };
+  };
+  /** One axis' term from a bare token (keyword or lenpct). */
+  const axisTerm = (t: string): PosTerm | null =>
+    isKw(t) ? edgeTerm(t, undefined) : lenPct(t);
+
+  if (tokens.length === 1) {
+    const t = tokens[0]!;
+    // A vertical keyword alone centres the x axis; everything else fills x.
+    if (isV(t)) return { x: { frac: 0.5, px: 0 }, y: edgeTerm(t, undefined)! };
+    const x = axisTerm(t);
+    return x === null ? null : { x, y: { frac: 0.5, px: 0 } };
+  }
+  if (tokens.length === 2) {
+    // Swapped keyword order ("top left") is legal: vertical token first.
+    const [xt, yt] = isV(tokens[0]!) && (isH(tokens[1]!) || tokens[1] === "center")
+      ? [tokens[1]!, tokens[0]!]
+      : [tokens[0]!, tokens[1]!];
+    const x = axisTerm(xt);
+    const y = axisTerm(yt);
+    return x === null || y === null ? null : { x, y };
+  }
+  // 3–4 tokens: `edge [offset]` pairs, either axis first.
+  const pair = (i: number): { axis: "x" | "y"; term: PosTerm; next: number } | null => {
+    const edge = tokens[i];
+    if (edge === undefined || !isKw(edge)) return null;
+    const axis: "x" | "y" = isV(edge) ? "y" : "x";
+    const off = tokens[i + 1] !== undefined && !isKw(tokens[i + 1]!) ? tokens[i + 1] : undefined;
+    const term = edgeTerm(edge, off);
+    return term === null ? null : { axis, term, next: i + (off === undefined ? 1 : 2) };
+  };
+  const first = pair(0);
+  if (first === null) return null;
+  const second = pair(first.next);
+  if (second === null || second.axis === first.axis || second.next !== tokens.length) return null;
+  return first.axis === "x"
+    ? { x: first.term, y: second.term }
+    : { x: second.term, y: first.term };
+}
+
+/** `background-repeat` per layer → [xMode, yMode]. */
+function parseBgRepeat(value: string): [RepeatMode, RepeatMode] {
+  const tokens = value.trim().toLowerCase().split(/\s+/).filter((t) => t !== "");
+  const one = (t: string): RepeatMode =>
+    t === "space" ? "space" : t === "round" ? "round" : t === "no-repeat" ? "none" : "repeat";
+  if (tokens.length === 0) return ["repeat", "repeat"];
+  if (tokens[0] === "repeat-x") return ["repeat", "none"];
+  if (tokens[0] === "repeat-y") return ["none", "repeat"];
+  if (tokens.length === 1) return [one(tokens[0]!), one(tokens[0]!)];
+  return [one(tokens[0]!), one(tokens[1]!)];
+}
+
+/**
+ * `background-size` per layer → concrete tile dims. `cover`/`contain` SCALE
+ * (never crop); `auto` on an axis preserves the intrinsic ratio against the
+ * resolved axis (both auto ⇒ intrinsic dims). Percentages resolve against the
+ * positioning area.
+ */
+function bgTileSize(
+  size: string,
+  areaW: number,
+  areaH: number,
+  iw: number,
+  ih: number,
+): { w: number; h: number } {
+  const ratio = iw > 0 && ih > 0 ? iw / ih : 1;
+  const tokens = size.trim().toLowerCase().split(/\s+/);
+  const head = tokens[0] ?? "auto";
+  if (head === "cover" || head === "contain") {
+    if (!(iw > 0) || !(ih > 0) || !(areaW > 0) || !(areaH > 0)) {
+      return { w: Math.max(1, iw), h: Math.max(1, ih) };
+    }
+    const s =
+      head === "cover"
+        ? Math.max(areaW / iw, areaH / ih)
+        : Math.min(areaW / iw, areaH / ih);
+    return { w: Math.max(1, iw * s), h: Math.max(1, ih * s) };
+  }
+  const axis = (t: string | undefined, area: number): number | null => {
+    if (t === undefined || t === "auto") return null;
+    if (t.endsWith("%")) {
+      const n = Number.parseFloat(t);
+      return Number.isFinite(n) ? (n / 100) * area : null;
+    }
+    const m = /^([\d.]+)px$/.exec(t);
+    return m !== null ? Number.parseFloat(m[1]!) : null;
+  };
+  const x = axis(tokens[0], areaW);
+  const y = axis(tokens[1], areaH);
+  if (x === null && y === null) return { w: iw, h: ih };
+  if (x !== null && y !== null) return { w: Math.max(1, x), h: Math.max(1, y) };
+  if (x !== null) return { w: Math.max(1, x), h: Math.max(1, x / ratio) };
+  return { w: Math.max(1, y! * ratio), h: Math.max(1, y!) };
+}
+
+/**
+ * Emit every `background-image` layer. Layer i reads `list[i % len]` for the
+ * parallel background-* lists (the CSS repetition rule).
+ */
+function emitBackgroundLayers(
+  fragment: Fragment,
+  style: ComputedStyle,
+  radius: number,
+  out: PaintCmd[],
+  imageBySrc?: (src: string) => DecodedImage | undefined,
+  viewport?: Rect,
+): void {
+  const imageLayers = splitLayers(stringField(style["backgroundImage"], "none"));
+  const sizes = splitLayers(stringField(style["backgroundSize"], "auto"));
+  const positions = splitLayers(stringField(style["backgroundPosition"], "0% 0%"));
+  const repeats = splitLayers(stringField(style["backgroundRepeat"], "repeat"));
+  const origins = splitLayers(stringField(style["backgroundOrigin"], "padding-box"));
+  const clips = splitLayers(stringField(style["backgroundClip"], "border-box"));
+  const attachments = splitLayers(stringField(style["backgroundAttachment"], "scroll"));
+
+  // Emit REVERSED so the first-listed (topmost) layer lands last.
+  for (let i = imageLayers.length - 1; i >= 0; i -= 1) {
+    const gradient = parseLinearGradient(imageLayers[i]!.trim());
+    if (gradient !== null) {
+      out.push({
+        op: "linear-gradient",
+        rect: boxRect(fragment, boxName(listAt(clips, i), "border")),
+        angle: gradient.angle,
+        stops: gradient.stops,
+      });
+      continue;
+    }
+    const radial = parseRadialGradient(imageLayers[i]!.trim());
+    if (radial !== null) {
+      out.push({
+        op: "radial-gradient",
+        rect: boxRect(fragment, boxName(listAt(clips, i), "border")),
+        stops: radial.stops,
+      });
+      continue;
+    }
+    const src = firstUrl(imageLayers[i]!);
+    if (src === null || imageBySrc === undefined) continue;
+    const decoded = imageBySrc(src);
+    if (decoded === undefined) continue;
+
+    // `fixed` re-bases the positioning area on the viewport; painting still
+    // clips to the element's `background-clip` box.
+    const attachment = listAt(attachments, i).trim().toLowerCase();
+    const originBox = attachment === "fixed" && viewport !== undefined
+      ? viewport
+      : boxRect(fragment, boxName(listAt(origins, i), "padding"));
+    const clipBox = boxRect(fragment, boxName(listAt(clips, i), "border"));
+
+    const areaW = Number(originBox.width);
+    const areaH = Number(originBox.height);
+    const { w: tileW0, h: tileH0 } = bgTileSize(
+      listAt(sizes, i), areaW, areaH, decoded.width, decoded.height,
+    );
+
+    const pos = parseBgPosition(listAt(positions, i)) ?? { x: { frac: 0, px: 0 }, y: { frac: 0, px: 0 } };
+    const [rx, ry] = parseBgRepeat(listAt(repeats, i));
+
+    // `space`: N whole tiles with equal inter-tile gaps, first/last touching
+    // the edges — position ignored when ≥2 fit (CSS Backgrounds §3.10).
+    // `round`: the tile rescales so a whole count of tiles fills the axis.
+    let tileW = tileW0;
+    let tileH = tileH0;
+    let stepX = tileW0;
+    let stepY = tileH0;
+    let ox = Number(originBox.x) + pos.x.frac * (areaW - tileW0) + pos.x.px;
+    let oy = Number(originBox.y) + pos.y.frac * (areaH - tileH0) + pos.y.px;
+    let repeatX = rx !== "none";
+    let repeatY = ry !== "none";
+    if (rx === "space") {
+      const n = Math.floor(areaW / tileW);
+      if (n >= 2) {
+        stepX = tileW + (areaW - n * tileW) / (n - 1);
+        ox = Number(originBox.x);
+      } else {
+        repeatX = false;
+      }
+    } else if (rx === "round") {
+      const n = Math.max(1, Math.round(areaW / tileW));
+      tileW = areaW / n;
+      stepX = tileW;
+    }
+    if (ry === "space") {
+      const n = Math.floor(areaH / tileH);
+      if (n >= 2) {
+        stepY = tileH + (areaH - n * tileH) / (n - 1);
+        oy = Number(originBox.y);
+      } else {
+        repeatY = false;
+      }
+    } else if (ry === "round") {
+      const n = Math.max(1, Math.round(areaH / tileH));
+      tileH = areaH / n;
+      stepY = tileH;
+    }
+
+    if (!repeatX && !repeatY) {
+      const cmd: PaintCmd = {
+        op: "image",
+        rect: {
+          x: ox as Px,
+          y: oy as Px,
+          width: tileW as Px,
+          height: tileH as Px,
+        },
+        src: decoded,
+      };
+      if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+      out.push(cmd);
+      continue;
+    }
+    const cmd: PaintCmd = {
+      op: "tile",
+      area: clipBox,
+      src: decoded,
+      tile: { width: tileW as Px, height: tileH as Px },
+      origin: { x: ox as Px, y: oy as Px },
+      step: { x: stepX as Px, y: stepY as Px },
+      repeatX,
+      repeatY,
+    };
+    if (radius > 0) (cmd as { radius?: Px }).radius = radius as Px;
+    out.push(cmd);
+  }
+}
+
 
 /**
  * Extract the first `url("…" | '…' | …)` source from a `background-image`
  * value. Returns the unquoted URL text, or `null` when there is no url() (e.g.
  * `none`, a gradient, or empty).
  */
+const GRADIENT_COLORS: Readonly<Record<string, Color>> = {
+  black: { r: 0, g: 0, b: 0, a: 1 },
+  white: { r: 255, g: 255, b: 255, a: 1 },
+  red: { r: 255, g: 0, b: 0, a: 1 },
+  green: { r: 0, g: 128, b: 0, a: 1 },
+  blue: { r: 0, g: 0, b: 255, a: 1 },
+  transparent: { r: 0, g: 0, b: 0, a: 0 },
+};
+
+/** `linear-gradient` with an optional `to <side>` or `<deg>` and two or more stops. */
+function parseLinearGradient(value: string): { angle: number; stops: { color: Color; offset: number }[] } | null {
+  const wrapped = /^linear-gradient\((.*)\)$/i.exec(value.trim());
+  if (wrapped === null) return null;
+  const args = splitLayers(wrapped[1] ?? "");
+  if (args.length < 2) return null;
+  let start = 0;
+  let angle = 180;
+  const head = args[0]!.trim().toLowerCase();
+  if (head.endsWith("deg") || head.startsWith("to ")) {
+    const parsed = gradientAngle(head);
+    if (parsed === null) return null;
+    angle = parsed;
+    start = 1;
+  }
+  const raw: { color: Color; offset?: number }[] = [];
+  for (let i = start; i < args.length; i += 1) {
+    const stop = parseGradientStop(args[i]!);
+    if (stop === null) return null;
+    raw.push(stop);
+  }
+  if (raw.length < 2) return null;
+  return { angle, stops: placeGradientStops(raw) };
+}
+
+/** `radial-gradient` at the box center, optionally prefixed by `circle` or `ellipse`. */
+function parseRadialGradient(value: string): { stops: { color: Color; offset: number }[] } | null {
+  const wrapped = /^radial-gradient\((.*)\)$/i.exec(value.trim());
+  if (wrapped === null) return null;
+  const args = splitLayers(wrapped[1] ?? "");
+  if (args.length < 2) return null;
+  let start = 0;
+  const head = args[0]!.trim().toLowerCase();
+  if (head === "circle" || head === "ellipse") start = 1;
+  const raw: { color: Color; offset?: number }[] = [];
+  for (let i = start; i < args.length; i += 1) {
+    const stop = parseGradientStop(args[i]!);
+    if (stop === null) return null;
+    raw.push(stop);
+  }
+  if (raw.length < 2) return null;
+  return { stops: placeGradientStops(raw) };
+}
+
+function gradientAngle(token: string): number | null {
+  if (token.endsWith("deg")) {
+    const n = Number(token.slice(0, -3));
+    return Number.isFinite(n) ? n : null;
+  }
+  const sides = token.slice(3).split(/\s+/).filter((s) => s.length > 0);
+  if (sides.length !== 1) return null;
+  if (sides[0] === "top") return 0;
+  if (sides[0] === "right") return 90;
+  if (sides[0] === "bottom") return 180;
+  if (sides[0] === "left") return 270;
+  return null;
+}
+
+function parseGradientStop(text: string): { color: Color; offset?: number } | null {
+  const tokens = text.trim().split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length === 0 || tokens.length > 2) return null;
+  const color = parseGradientColor(tokens[0]!);
+  if (color === null) return null;
+  const pos = tokens[1];
+  if (pos === undefined) return { color };
+  if (!pos.endsWith("%")) return null;
+  const n = Number(pos.slice(0, -1));
+  if (!Number.isFinite(n)) return null;
+  return { color, offset: n / 100 };
+}
+
+function parseGradientColor(token: string): Color | null {
+  const named = GRADIENT_COLORS[token.toLowerCase()];
+  if (named !== undefined) return named;
+  if (token.startsWith("#")) return parseHex(token);
+  if (/^rgba?\(/i.test(token)) return parseRgbFunc(token);
+  return null;
+}
+
+function placeGradientStops(
+  stops: readonly { color: Color; offset?: number }[],
+): { color: Color; offset: number }[] {
+  const out = stops.map((stop) => ({ color: stop.color, offset: stop.offset }));
+  const last = out.length - 1;
+  if (out[0]!.offset === undefined) out[0]!.offset = 0;
+  if (out[last]!.offset === undefined) out[last]!.offset = 1;
+  let i = 1;
+  while (i < last) {
+    if (out[i]!.offset !== undefined) {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < last && out[j]!.offset === undefined) j += 1;
+    const left = out[i - 1]!.offset ?? 0;
+    const right = out[j]!.offset ?? 1;
+    const span = j - (i - 1);
+    for (let k = i; k < j; k += 1) {
+      out[k]!.offset = left + ((right - left) * (k - (i - 1))) / span;
+    }
+    i = j;
+  }
+  return out.map((stop) => ({ color: stop.color, offset: stop.offset ?? 0 }));
+}
+
 function firstUrl(value: string): string | null {
   const idx = value.indexOf("url(");
   if (idx === -1) {
@@ -370,47 +782,6 @@ function firstUrl(value: string): string | null {
   const end = rest.indexOf(")");
   if (end === -1) return null;
   return rest.slice(0, end).trim();
-}
-
-/**
- * Crop/fit a decoded background image for `background-size`: `cover` fills the
- * box (cropping overflow), `contain` fits inside (letterboxing is implicit via
- * the dest rect), and everything else is stretched to the box by the backend.
- */
-function backgroundImageWithSize(src: DecodedImage, destW: number, destH: number, size: string): DecodedImage {
-  if (size !== "cover" && size !== "contain") {
-    return src;
-  }
-  if (!(destW > 0) || !(destH > 0) || !(src.width > 0) || !(src.height > 0)) {
-    return src;
-  }
-  const srcAspect = src.width / src.height;
-  const destAspect = destW / destH;
-  let cropW: number;
-  let cropH: number;
-  let cropX: number;
-  let cropY: number;
-  if ((size === "cover") === srcAspect > destAspect) {
-    // cover & src wider ⇒ crop width; contain & src taller ⇒ crop width.
-    cropH = src.height;
-    cropW = Math.max(1, Math.round(src.height * destAspect));
-    cropX = Math.max(0, Math.floor((src.width - cropW) / 2));
-    cropY = 0;
-  } else {
-    cropW = src.width;
-    cropH = Math.max(1, Math.round(src.width / destAspect));
-    cropX = 0;
-    cropY = Math.max(0, Math.floor((src.height - cropH) / 2));
-  }
-  if (cropX + cropW > src.width) cropW = src.width - cropX;
-  if (cropY + cropH > src.height) cropH = src.height - cropY;
-  if (!(cropW > 0) || !(cropH > 0)) return src;
-  const pixels = new Uint8ClampedArray(cropW * cropH * 4);
-  for (let y = 0; y < cropH; y += 1) {
-    const srcRow = ((cropY + y) * src.width + cropX) * 4;
-    pixels.set(src.pixels.subarray(srcRow, srcRow + cropW * 4), y * cropW * 4);
-  }
-  return { width: cropW, height: cropH, pixels };
 }
 
 function emitImage(
@@ -505,7 +876,70 @@ function imageWithObjectFit(src: DecodedImage, destW: number, destH: number, fit
  * empty element leaf, or a hand-built test fragment) emits an empty glyph run at
  * the content origin, exactly as before (the documented Phase-1 no-op).
  */
-function emitText(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): void {
+function emitRunImage(
+  fragment: Fragment,
+  origin: Point,
+  picture: {
+    x: Px;
+    y: Px;
+    width: Px;
+    height: Px;
+    originX: Px;
+    originY: Px;
+    originWidth: Px;
+    originHeight: Px;
+    image: string;
+    repeat: string;
+    size: string;
+    position: string;
+  },
+  imageBySrc: ((src: string) => DecodedImage | undefined) | undefined,
+  out: PaintCmd[],
+): void {
+  const clip = {
+    x: px(Number(origin.x) + Number(picture.x)),
+    y: px(Number(origin.y) + Number(picture.y)),
+    width: picture.width,
+    height: picture.height,
+  };
+  const area = {
+    x: px(Number(origin.x) + Number(picture.originX)),
+    y: px(Number(origin.y) + Number(picture.originY)),
+    width: picture.originWidth,
+    height: picture.originHeight,
+  };
+  const host: Fragment = {
+    node: fragment.node,
+    children: [],
+    box: {
+      x: clip.x,
+      y: clip.y,
+      width: clip.width,
+      height: clip.height,
+      contentBox: area,
+      paddingBox: area,
+      borderBox: clip,
+      marginBox: clip,
+    },
+  };
+  const imageStyle = {
+    backgroundImage: picture.image,
+    backgroundRepeat: picture.repeat,
+    backgroundSize: picture.size,
+    backgroundPosition: picture.position,
+    backgroundOrigin: "padding-box",
+    backgroundClip: "border-box",
+    backgroundAttachment: "scroll",
+  } as unknown as ComputedStyle;
+  emitBackgroundLayers(host, imageStyle, 0, out, imageBySrc);
+}
+
+function emitText(
+  fragment: Fragment,
+  style: ComputedStyle,
+  out: PaintCmd[],
+  imageBySrc?: (src: string) => DecodedImage | undefined,
+): void {
   const origin = fragment.box.contentBox;
   const at: Point = { x: origin.x, y: origin.y };
   const run = fragment.text;
@@ -518,14 +952,112 @@ function emitText(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): vo
     return;
   }
   if (run.glyphs.length === 0) return;
-  const glyphs: Glyph[] = run.glyphs.map((g) => ({
-    glyphId: g.glyphId,
-    advance: g.advance,
-    offset: { x: g.x, y: g.y },
-  }));
-  const cmd: PaintCmd = { op: "text", glyphs, at, fill: copyColor(style.color), fontSize: run.fontSize };
-  if (weight >= 500) (cmd as { fontWeight?: number }).fontWeight = weight;
-  out.push(cmd);
+  const lineFill = run.lineBackground;
+  if (lineFill !== undefined && lineFill.color.a > 0) {
+    out.push({
+      op: "rect",
+      rect: {
+        x: px(Number(origin.x) + Number(lineFill.x)),
+        y: px(Number(origin.y) + Number(lineFill.y)),
+        width: lineFill.width,
+        height: lineFill.height,
+      },
+      fill: copyColor(lineFill.color),
+    });
+  }
+  if (run.lineImage !== undefined) {
+    emitRunImage(fragment, origin, run.lineImage, imageBySrc, out);
+  }
+  const fill = run.letterBackground;
+  if (fill !== undefined && fill.color.a > 0) {
+    out.push({
+      op: "rect",
+      rect: {
+        x: px(Number(origin.x) + Number(fill.x)),
+        y: px(Number(origin.y) + Number(fill.y)),
+        width: fill.width,
+        height: fill.height,
+      },
+      fill: copyColor(fill.color),
+    });
+  }
+  if (run.letterImage !== undefined) {
+    emitRunImage(fragment, origin, run.letterImage, imageBySrc, out);
+  }
+  const frame = run.letterBorder;
+  if (frame !== undefined) {
+    out.push({
+      op: "border",
+      rect: {
+        x: px(Number(origin.x) + Number(frame.x)),
+        y: px(Number(origin.y) + Number(frame.y)),
+        width: frame.width,
+        height: frame.height,
+      },
+      edges: {
+        top: { width: frame.top.width, style: frame.top.style, color: copyColor(frame.top.color) },
+        right: { width: frame.right.width, style: frame.right.style, color: copyColor(frame.right.color) },
+        bottom: { width: frame.bottom.width, style: frame.bottom.style, color: copyColor(frame.bottom.color) },
+        left: { width: frame.left.width, style: frame.left.style, color: copyColor(frame.left.color) },
+      },
+    });
+  }
+  // A glyph with its own font-size, weight, style, or fill cannot share a command:
+  // one command has one `fontSize`, one `fontWeight`, one `fontStyle`, and one `fill`.
+  let batch: Glyph[] = [];
+  let batchSize = run.fontSize;
+  let batchFill = copyColor(style.color);
+  let batchWeight = weight;
+  let batchStyle = "";
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    const cmd: PaintCmd = { op: "text", glyphs: batch, at, fill: batchFill, fontSize: batchSize };
+    if (batchWeight >= 500) (cmd as { fontWeight?: number }).fontWeight = batchWeight;
+    if (batchStyle === "normal" || batchStyle === "italic" || batchStyle === "oblique") {
+      (cmd as { fontStyle?: "normal" | "italic" | "oblique" }).fontStyle = batchStyle;
+    }
+    if (run.synthesizeBold === false) (cmd as { synthesizeBold?: boolean }).synthesizeBold = false;
+    if (run.synthesizeStyle === false) (cmd as { synthesizeStyle?: boolean }).synthesizeStyle = false;
+    out.push(cmd);
+    batch = [];
+  };
+  for (const g of run.glyphs) {
+    const size = g.fontSize ?? run.fontSize;
+    const fill = g.color ?? style.color;
+    const glyphWeight = g.fontWeight ?? weight;
+    const glyphStyle = g.fontStyle ?? "";
+    if (batch.length > 0 && (size !== batchSize || glyphWeight !== batchWeight || glyphStyle !== batchStyle || !sameColor(fill, batchFill))) {
+      flush();
+    }
+    batchSize = size;
+    batchFill = copyColor(fill);
+    batchWeight = glyphWeight;
+    batchStyle = glyphStyle;
+    batch.push({
+      glyphId: g.glyphId,
+      faceIndex: g.faceIndex,
+      advance: g.advance,
+      offset: { x: g.x, y: g.y },
+    });
+  }
+  flush();
+  for (const mark of run.decorations ?? []) {
+    const fontSize = Number(run.fontSize);
+    const width = Math.max(1, fontSize / 16);
+    const y = Number(origin.y) + Number(mark.y);
+    const x = Number(origin.x) + Number(mark.x);
+    out.push({
+      op: "line",
+      from: { x: px(x), y: px(y) },
+      to: { x: px(x + Number(mark.width)), y: px(y) },
+      fill: copyColor(mark.color),
+      width: px(width),
+    });
+  }
+}
+
+function sameColor(a: Color, b: Color): boolean {
+  return a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a;
 }
 
 /**
@@ -545,10 +1077,135 @@ function emitText(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): vo
  * Every value is copied, so the command holds no reference into the
  * ComputedStyle (Req 3.5).
  */
-function emitBorder(fragment: Fragment, style: ComputedStyle, out: PaintCmd[]): void {
-  const edges = readLonghandBorder(style) ?? readEdges(style["border"]);
+interface CollapsedDrop {
+  left: boolean;
+  right: boolean;
+  top: boolean;
+  bottom: boolean;
+}
+
+/** CSS 2.1 §17.6.2: wider border wins; equal width prefers double > solid > dashed > dotted. Tie goes to the earlier edge. */
+function collapsedBorderRank(side: BorderSide): number {
+  if (side.style === "none" || side.width <= 0) return -1;
+  const styleRank: Record<string, number> = { dotted: 1, dashed: 2, solid: 3, double: 4 };
+  return side.width * 10 + (styleRank[side.style] ?? 0);
+}
+
+function collapsedSharedWinner(first: BorderSide, second: BorderSide): "first" | "second" | "none" {
+  const a = collapsedBorderRank(first);
+  const b = collapsedBorderRank(second);
+  if (a < 0 && b < 0) return "none";
+  if (b > a) return "second";
+  return "first";
+}
+
+function collapsedBorderDrops(
+  tree: FragmentTree,
+  styleOf: (node: NodeId) => ComputedStyle,
+): Map<NodeId, CollapsedDrop> {
+  const drops = new Map<NodeId, CollapsedDrop>();
+  const dropOf = (node: NodeId): CollapsedDrop => {
+    let drop = drops.get(node);
+    if (drop === undefined) {
+      drop = { left: false, right: false, top: false, bottom: false };
+      drops.set(node, drop);
+    }
+    return drop;
+  };
+  const displayOf = (node: NodeId): string => {
+    const value = styleOf(node)["display"];
+    return typeof value === "string" ? value : "";
+  };
+  const edgesOf = (node: NodeId): Edges<BorderSide> | null => {
+    const style = styleOf(node);
+    return readLonghandBorder(style) ?? readEdges(style["border"]);
+  };
+  const none: BorderSide = { width: px(0), style: "none", color: { r: 0, g: 0, b: 0, a: 0 } };
+  const sideOf = (node: NodeId, edge: "top" | "right" | "bottom" | "left"): BorderSide =>
+    edgesOf(node)?.[edge] ?? none;
+  const rowsUnder = (frag: Fragment): Fragment[] => {
+    const rows: Fragment[] = [];
+    const walk = (current: Fragment): void => {
+      for (const childId of current.children) {
+        const child = tree.fragments.get(childId);
+        if (child === undefined) continue;
+        const display = displayOf(child.node);
+        if (display === "table-row") rows.push(child);
+        else if (
+          display === "table-row-group" ||
+          display === "table-header-group" ||
+          display === "table-footer-group"
+        ) {
+          walk(child);
+        }
+      }
+    };
+    walk(frag);
+    return rows;
+  };
+  const cellsOf = (row: Fragment): Fragment[] => {
+    const cells: Fragment[] = [];
+    for (const childId of row.children) {
+      const child = tree.fragments.get(childId);
+      if (child !== undefined && displayOf(child.node) === "table-cell") cells.push(child);
+    }
+    return cells.sort((a, b) => Number(a.box.borderBox.x) - Number(b.box.borderBox.x));
+  };
+  const resolveTable = (table: Fragment): void => {
+    const grid = rowsUnder(table).map(cellsOf);
+    for (let r = 0; r < grid.length; r += 1) {
+      const row = grid[r]!;
+      for (let c = 0; c < row.length; c += 1) {
+        const cell = row[c]!;
+        const next = row[c + 1];
+        if (next !== undefined) {
+          const winner = collapsedSharedWinner(sideOf(cell.node, "right"), sideOf(next.node, "left"));
+          if (winner !== "first") dropOf(cell.node).right = true;
+          if (winner !== "second") dropOf(next.node).left = true;
+        }
+        const below = grid[r + 1]?.[c];
+        if (below !== undefined) {
+          const winner = collapsedSharedWinner(sideOf(cell.node, "bottom"), sideOf(below.node, "top"));
+          if (winner !== "first") dropOf(cell.node).bottom = true;
+          if (winner !== "second") dropOf(below.node).top = true;
+        }
+      }
+    }
+  };
+  const visit = (id: FragmentId): void => {
+    const frag = tree.fragments.get(id);
+    if (frag === undefined) return;
+    const style = styleOf(frag.node);
+    const display = displayOf(frag.node);
+    if (display === "table" && style["borderCollapse"] === "collapse") resolveTable(frag);
+    for (const childId of frag.children) visit(childId);
+  };
+  visit(tree.root);
+  return drops;
+}
+
+function emitBorder(
+  fragment: Fragment,
+  style: ComputedStyle,
+  out: PaintCmd[],
+  drop?: CollapsedDrop,
+): void {
+  let edges = readLonghandBorder(style) ?? readEdges(style["border"]);
   if (edges === null) {
     return; // no (or all-`none`) border paints nothing.
+  }
+  if (drop !== undefined) {
+    const none: BorderSide = { width: px(0), style: "none", color: { r: 0, g: 0, b: 0, a: 0 } };
+    edges = {
+      top: drop.top ? none : edges.top,
+      right: drop.right ? none : edges.right,
+      bottom: drop.bottom ? none : edges.bottom,
+      left: drop.left ? none : edges.left,
+    };
+    const drawn = (side: BorderSide): boolean => side.style !== "none" && side.width > 0;
+    if (!drawn(edges.top) && !drawn(edges.right) && !drawn(edges.bottom) && !drawn(edges.left)) {
+      return;
+    }
   }
   const radius = readBorderRadius(
     style,
@@ -1011,16 +1668,160 @@ function readClips(style: ComputedStyle): boolean {
 const IDENTITY_MATRIX: Matrix = [1, 0, 0, 1, 0, 0];
 
 /**
- * Bake the transform-origin into an affine matrix: returns `T(c)·M·T(−c)` where
- * `c` is the border-box centre (the CSS `transform-origin` default). The
- * resulting device-absolute matrix can be applied by the backend about (0,0)
- * and still pivots scale/rotate/skew about the element's centre.
+ * Bake the transform-origin into an affine matrix: returns `T(o)·M·T(−o)`
+ * where `o` is the resolved `transform-origin` point (the CSS default is the
+ * border-box centre). The resulting device-absolute matrix can be applied by
+ * the backend about (0,0) and still pivots scale/rotate/skew about `o`.
  */
-function originRelativeMatrix(m: Matrix, borderBox: Rect): Matrix {
+function originRelativeMatrix(m: Matrix, origin: { readonly x: number; readonly y: number }): Matrix {
   const [a, b, c, d, e, f] = m;
-  const cx = Number(borderBox.x) + Number(borderBox.width) / 2;
-  const cy = Number(borderBox.y) + Number(borderBox.height) / 2;
-  return [a, b, c, d, e + cx - (a * cx + c * cy), f + cy - (b * cx + d * cy)];
+  const { x: ox, y: oy } = origin;
+  return [a, b, c, d, e + ox - (a * ox + c * oy), f + oy - (b * ox + d * oy)];
+}
+
+/** `m1 · m2` — standard 2×3 affine composition (m1 applied AFTER m2). */
+function mulMatrix(m1: Matrix, m2: Matrix): Matrix {
+  return [
+    m1[0] * m2[0] + m1[2] * m2[1],
+    m1[1] * m2[0] + m1[3] * m2[1],
+    m1[0] * m2[2] + m1[2] * m2[3],
+    m1[1] * m2[2] + m1[3] * m2[3],
+    m1[0] * m2[4] + m1[2] * m2[5] + m1[4],
+    m1[1] * m2[4] + m1[3] * m2[5] + m1[5],
+  ];
+}
+
+/** Narrow one `<length>`/`<number>`/`<percent>` token to px against `base`. */
+function transformLen(tok: string, base: number): number | null {
+  const t = tok.trim().toLowerCase();
+  if (t.endsWith("%")) {
+    const n = Number(t.slice(0, -1));
+    return Number.isFinite(n) ? (n / 100) * base : null;
+  }
+  const pxm = /^(-?\d+(?:\.\d+)?)(px)?$/.exec(t);
+  if (pxm !== null) return Number(pxm[1]);
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Narrow an `<angle>` token to radians (`deg`/`rad`/`grad`/`turn`). */
+function transformAngle(tok: string): number | null {
+  const m = /^(-?\d+(?:\.\d+)?)(deg|rad|grad|turn)?$/.exec(tok.trim().toLowerCase());
+  if (m === null) return null;
+  const n = Number(m[1]);
+  switch (m[2] ?? "deg") {
+    case "deg": return (n * Math.PI) / 180;
+    case "rad": return n;
+    case "grad": return (n * Math.PI) / 200;
+    case "turn": return n * 2 * Math.PI;
+    default: return null;
+  }
+}
+
+/**
+ * The individual transform properties (CSS Transforms L2): `translate`,
+ * `rotate`, `scale` — each a raw string in the computed style (`none` initial).
+ * 2D subset: a 3D `rotate` axis (x/y or arbitrary vector) yields `null` rather
+ * than a wrong 2D matrix. `%` translate resolves against the border box.
+ */
+function individualTransform(style: ComputedStyle, box: Rect): Matrix | null {
+  const bw = Number(box.width);
+  const bh = Number(box.height);
+  const translateV = style["translate"];
+  const rotateV = style["rotate"];
+  const scaleV = style["scale"];
+  let acc: Matrix | null = null;
+  const fold = (m: Matrix): void => {
+    acc = acc === null ? m : mulMatrix(acc, m);
+  };
+  if (typeof translateV === "string" && translateV.trim() !== "" && translateV.trim() !== "none") {
+    const toks = translateV.trim().split(/\s+/);
+    const x = transformLen(toks[0] ?? "0", bw);
+    const y = toks.length >= 2 ? transformLen(toks[1] ?? "0", bh) : 0;
+    if (x !== null && y !== null) fold([1, 0, 0, 1, x, y]);
+  }
+  if (typeof rotateV === "string" && rotateV.trim() !== "" && rotateV.trim() !== "none") {
+    const toks = rotateV.trim().split(/\s+/);
+    let angle: number | null = null;
+    if (toks.length === 1) {
+      angle = transformAngle(toks[0]!);
+    } else if (toks.length === 2 && toks[0] === "z") {
+      angle = transformAngle(toks[1]!);
+    } else if (toks.length === 4) {
+      // `x y z <angle>`: only the z axis (0 0 1) is a 2D rotation.
+      if (toks[0] === "0" && toks[1] === "0") angle = transformAngle(toks[3]!);
+    }
+    if (angle !== null) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      fold([cos, sin, -sin, cos, 0, 0]);
+    }
+  }
+  if (typeof scaleV === "string" && scaleV.trim() !== "" && scaleV.trim() !== "none") {
+    const toks = scaleV.trim().split(/\s+/);
+    const sx = toks[0] === "none" ? 1 : Number(toks[0]);
+    const sy = toks.length >= 2 ? (toks[1] === "none" ? 1 : Number(toks[1])) : sx;
+    if (Number.isFinite(sx) && Number.isFinite(sy)) fold([sx, 0, 0, sy, 0, 0]);
+  }
+  return acc;
+}
+
+/**
+ * Resolve `transform-origin` to an absolute point inside `borderBox`
+ * (CSS Transforms §4: offset from the reference box's top-left; keywords
+ * `left/center/right/top/bottom`, lengths and `%` of the box's size; default
+ * `50% 50%` — the centre). A single token sets x unless it is a y-axis
+ * keyword; two tokens order as (x, y) unless the first is a y-axis keyword or
+ * the second an x-axis one. A third (z) token is ignored — 2D only.
+ */
+function readTransformOrigin(
+  value: unknown,
+  box: Rect,
+): { readonly x: number; readonly y: number } {
+  const bx = Number(box.x);
+  const by = Number(box.y);
+  const bw = Number(box.width);
+  const bh = Number(box.height);
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+  if (typeof value !== "string" || value.trim() === "") {
+    return { x: cx, y: cy };
+  }
+  const isXKw = (t: string): boolean => t === "left" || t === "right";
+  const isYKw = (t: string): boolean => t === "top" || t === "bottom";
+  const resolveTok = (t: string, axis: "x" | "y"): number | null => {
+    const base = axis === "x" ? bw : bh;
+    const off = axis === "x" ? bx : by;
+    switch (t) {
+      case "left": case "top": return off;
+      case "center": return off + base / 2;
+      case "right": case "bottom": return off + base;
+      default: break;
+    }
+    const len = transformLen(t, base);
+    return len === null ? null : off + len;
+  };
+  const toks = value.trim().toLowerCase().split(/\s+/).slice(0, 3);
+  let xTok = "center";
+  let yTok = "center";
+  if (toks.length === 1) {
+    if (isYKw(toks[0]!)) {
+      yTok = toks[0]!;
+    } else {
+      xTok = toks[0]!;
+    }
+  } else {
+    if (isYKw(toks[0]!) || isXKw(toks[1]!)) {
+      yTok = toks[0]!;
+      xTok = toks[1]!;
+    } else {
+      xTok = toks[0]!;
+      yTok = toks[1]!;
+    }
+  }
+  const x = resolveTok(xTok, "x");
+  const y = resolveTok(yTok, "y");
+  return { x: x ?? cx, y: y ?? cy };
 }
 
 /** A resolved compositing layer: its opacity, transform, and filter for `push-layer`. */
@@ -1038,13 +1839,24 @@ interface LayerProps {
  * 6-tuple, and `filter` is the raw functions string (or `undefined`), so the
  * emitted `push-layer` command holds only plain values (Req 3.5).
  */
-function readLayer(style: ComputedStyle): LayerProps | null {
+function readLayer(style: ComputedStyle, box: Rect): LayerProps | null {
   const opacity = readOpacity(style["opacity"]);
-  const transform = readMatrix(style["transform"]);
+  // CSS Transforms L2 composition: `translate` · `rotate` · `scale` · `transform`
+  // — the individual properties apply FIRST (leftmost), then the `transform`
+  // function list; `%` translate resolves against the border box.
+  const individual = individualTransform(style, box);
+  const declared = readMatrix(style["transform"]);
+  const transform =
+    individual === null
+      ? declared
+      : declared === null
+        ? individual
+        : mulMatrix(individual, declared);
   const filter = readFilter(style["filter"]);
+  const hinted = willChangePromotesLayer(style["willChange"]);
   const hasOpacity = opacity < 1;
   const hasTransform = transform !== null;
-  if (!hasOpacity && !hasTransform && filter === undefined) {
+  if (!hasOpacity && !hasTransform && filter === undefined && !hinted) {
     return null; // establishes no layer.
   }
   return {
@@ -1052,6 +1864,15 @@ function readLayer(style: ComputedStyle): LayerProps | null {
     transform: transform ?? IDENTITY_MATRIX,
     filter,
   };
+}
+
+/** `will-change: transform|opacity|filter` promotes a layer before those properties animate. */
+function willChangePromotesLayer(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return value.split(",").some((part) => {
+    const name = part.trim().toLowerCase();
+    return name === "transform" || name === "opacity" || name === "filter";
+  });
 }
 
 /** Narrow a `filter` field to a non-empty functions string, or `undefined`. */

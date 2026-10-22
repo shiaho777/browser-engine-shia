@@ -52,6 +52,7 @@ import { cascade } from "./index.js";
 import {
   buildRuleIndex,
   candidateRulesFor,
+  matchPseudoRules,
   matchRulesByScan,
   matchRulesFor,
 } from "./rule-index.js";
@@ -293,7 +294,29 @@ void test(":first-child / :last-child skip text siblings and match element edges
 
 void test("an unsupported pseudo-class never matches (out-of-subset → safe no-match)", () => {
   assert.deepEqual(matchedElementIds(":hover"), []); // dynamic state, not statically decidable.
-  assert.deepEqual(matchedElementIds("::before"), []); // pseudo-element, not supported yet.
+  assert.deepEqual(matchedElementIds("::before"), []); // generated content, not an element match.
+});
+
+void test("::first-letter is indexed for the pseudo and does not match the element", () => {
+  assert.deepEqual(matchedElementIds("p::first-letter"), []);
+  assert.deepEqual(matchedElementIds(":first-letter"), []);
+  assert.deepEqual(matchedElementIds("::first-line"), []);
+  const sheet = buildSheet([
+    { selector: "p::first-letter", specificity: [0, 0, 2], declarations: [{ property: "font-size", value: "32px" }] },
+    { selector: "div p::first-letter", specificity: [0, 0, 3], declarations: [{ property: "font-size", value: "40px" }] },
+    { selector: "::first-line", specificity: [0, 0, 1], declarations: [{ property: "font-size", value: "8px" }] },
+  ]);
+  const index = buildRuleIndex([sheet]);
+  assert.deepEqual(ordersIn(index, { tag: "p" }), [0, 1]);
+  assert.deepEqual(ordersIn(index, "universal"), [2]);
+  const letter = matchPseudoRules(index, DOM, nodeId(4), "first-letter").map((r) => r.order);
+  assert.deepEqual(letter, [0, 1]);
+  assert.deepEqual(matchPseudoRules(index, DOM, nodeId(2), "first-letter").map((r) => r.order), []);
+  assert.deepEqual(matchPseudoRules(index, DOM, nodeId(4), "first-line").map((r) => r.order), [2]);
+  assert.deepEqual(
+    matchRulesFor(index, DOM, nodeId(4)).map((r) => r.order),
+    matchRulesByScan([sheet], DOM, nodeId(4)).map((r) => r.order),
+  );
 });
 
 void test(":has() relative selector matches elements with matching descendants", () => {

@@ -16,4 +16,13 @@ contextBridge.exposeInMainWorld("engineShell", {
   selectTab: (id) => ipcRenderer.invoke("shell:selectTab", id),
   closeTab: (id) => ipcRenderer.invoke("shell:closeTab", id),
   tabs: () => ipcRenderer.invoke("shell:tabs"),
+  downloads: () => ipcRenderer.invoke("shell:downloads"),
+  // Push channel: every download lifecycle event (started/progress/completed/
+  // failed) arrives as { url, filename, path, bytes, totalBytes, state, error }.
+  onDownload: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const h = (_event, file) => cb(file);
+    ipcRenderer.on("downloads:event", h);
+    return () => ipcRenderer.removeListener("downloads:event", h);
+  },
 });
